@@ -16,128 +16,10 @@ async function getBrowser() {
   return browser;
 }
 
-async function extractLowestBin(page) {
-  return await page.evaluate(() => {
-    const clean = (s) => (s || "").replace(/\s+/g, " ").trim();
-
-    const parsePrice = (raw) => {
-      if (!raw) return null;
-
-      const compact = raw
-        .replace(/\u00a0/g, " ")
-        .replace(/\s+/g, "")
-        .replace(/,/g, "")
-        .toLowerCase();
-
-      const match = compact.match(/(\d+(?:\.\d+)?)([km])?/i);
-      if (!match) return null;
-
-      let price = Number(match[1]);
-      if (!Number.isFinite(price)) return null;
-
-      if (match[2] === "k") price *= 1000;
-      if (match[2] === "m") price *= 1000000;
-
-      price = Math.round(price);
-
-      return price >= 100 ? price : null;
-    };
-
-    const nodes = Array.from(document.querySelectorAll("body *"))
-      .filter((el) => {
-        const text = clean(el.textContent);
-        return text === "Lowest BIN" || text.startsWith("Lowest BIN ");
-      })
-      .slice(0, 20);
-
-    for (const node of nodes) {
-      const candidates = [];
-
-      if (node.nextElementSibling) {
-        candidates.push(node.nextElementSibling);
-      }
-
-      if (node.parentElement) {
-        candidates.push(node.parentElement);
-
-        if (node.parentElement.nextElementSibling) {
-          candidates.push(node.parentElement.nextElementSibling);
-        }
-
-        if (node.parentElement.parentElement) {
-          candidates.push(node.parentElement.parentElement);
-        }
-      }
-
-      for (const element of candidates) {
-        const text = clean(
-          element?.innerText || element?.textContent || ""
-        );
-
-        if (!text) continue;
-
-        const matches =
-          text.match(
-            /\b\d{3,}(?:[.,]\d+)?\b|\b\d+(?:\.\d+)?[kKmM]\b/g
-          ) || [];
-
-        for (const value of matches) {
-          const price = parsePrice(value);
-
-          if (price) {
-            return {
-              price,
-              raw: value,
-              context: text.slice(0, 500)
-            };
-          }
-        }
-      }
-    }
-
-    const body = clean(document.body?.innerText || "");
-    const index = body.indexOf("Lowest BIN");
-
-    if (index !== -1) {
-      const after = body.slice(index, index + 800);
-
-      const matches =
-        after.match(
-          /\b\d{3,}(?:[.,]\d+)?\b|\b\d+(?:\.\d+)?[kKmM]\b/g
-        ) || [];
-
-      for (const value of matches) {
-        const price = parsePrice(value);
-
-        if (price) {
-          return {
-            price,
-            raw: value,
-            context: after
-          };
-        }
-      }
-
-      return {
-        price: null,
-        raw: null,
-        context: after
-      };
-    }
-
-    return {
-      price: null,
-      raw: null,
-      context: null
-    };
-  });
-}
-
 app.get("/", (req, res) => {
   res.json({
     online: true,
-    service: "FC Price Browser",
-    endpoint: "/price?url=https://www.fut.gg/players/..."
+    service: "FC Price Browser"
   });
 });
 
@@ -147,7 +29,7 @@ app.get("/price", async (req, res) => {
   if (!url || !url.startsWith("https://www.fut.gg/")) {
     return res.status(400).json({
       ok: false,
-      error: "Valid public FUT.GG URL required"
+      error: "Valid FUT.GG URL required"
     });
   }
 
@@ -163,78 +45,71 @@ app.get("/price", async (req, res) => {
       }
     });
 
+    const captured = [];
+
+    page.on("response", async response => {
+      const responseUrl = response.url();
+
+      if (
+        responseUrl.includes("player-prices") ||
+        responseUrl.includes("price-access") ||
+        responseUrl.includes("manifest.json")
+      ) {
+        try {
+          const body = await response.text();
+
+          captured.push({
+            url: responseUrl,
+            status: response.status(),
+            contentType:
+              response.headers()["content-type"] || null,
+            body: body.slice(0, 10000)
+          });
+        } catch (e) {
+          captured.push({
+            url: responseUrl,
+            status: response.status(),
+            error: String(e)
+          });
+        }
+      }
+    });
+
     await page.goto(url, {
       waitUntil: "domcontentloaded",
       timeout: 45000
     });
 
-    await page.waitForTimeout(8000);
+    await page.waitForTimeout(10000);
+
+    const text = await page.locator("body").innerText();
+
+    const itemId =
+      text.match(/Item ID\s+(\d+)/i)?.[1] || null;
+
+    const playerId =
+      text.match(/Player ID\s+(\d+)/i)?.[1] || null;
 
     const title = await page.title();
-    const bodyText = await page.locator("body").innerText();
-
-    const playerName =
-      (await page
-        .locator("h1")
-        .first()
-        .textContent()
-        .catch(() => null)) ||
-      title.split(" - ")[0] ||
-      null;
-
-    const itemIdMatch =
-      bodyText.match(/Item ID\s+(\d+)/i);
-
-    const playerIdMatch =
-      bodyText.match(/Player ID\s+(\d+)/i);
-
-    const lowestBin =
-      await extractLowestBin(page);
 
     return res.json({
       ok: true,
       source: "FUT.GG",
-
-      player:
-        playerName
-          ? playerName.trim()
-          : null,
-
+      title,
       playerId:
-        playerIdMatch
-          ? Number(playerIdMatch[1])
-          : null,
-
+        playerId ? Number(playerId) : null,
       itemId:
-        itemIdMatch
-          ? Number(itemIdMatch[1])
-          : null,
-
-      lowestBin:
-        lowestBin.price,
-
-      rawLowestBin:
-        lowestBin.raw,
-
-      updatedAt:
-        new Date().toISOString(),
-
-      debug:
-        lowestBin.price === null
-          ? {
-              message:
-                "Page loaded, but Lowest BIN value was not found in visible DOM text.",
-              lowestBinContext:
-                lowestBin.context,
-              title
-            }
-          : undefined
+        itemId ? Number(itemId) : null,
+      capturedRequests: captured,
+      updatedAt: new Date().toISOString()
     });
+
   } catch (error) {
     return res.status(500).json({
       ok: false,
       error: String(error)
     });
+
   } finally {
     if (page) {
       await page.close().catch(() => {});
@@ -243,7 +118,5 @@ app.get("/price", async (req, res) => {
 });
 
 app.listen(port, () => {
-  console.log(
-    `FC Price Browser running on ${port}`
-  );
+  console.log(`FC Price Browser running on ${port}`);
 });
