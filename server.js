@@ -3,128 +3,76 @@ import { chromium } from "playwright";
 
 const app = express();
 const port = process.env.PORT || 3000;
-
-app.use(express.json({ limit: "1mb" }));
+app.use(express.json({ limit: "2mb" }));
 
 let browser;
 
-const CACHE_TTL_MS = 60000;
-const cache = new Map();
+const CACHE_TTL_MS = 60_000;
+const PLAYER_LIMIT_PER_RATING = 40;   // safe first version
+const RATING_MIN = 75;
+const RATING_MAX = 99;
 
-const DEFAULT_TEST_URLS = [
-  "https://www.fut.gg/players/212198-bruno-fernandes/26-184761574/"
-];
+const priceCache = new Map();
+const ratingLinkCache = new Map();
 
 async function getBrowser() {
   if (!browser) {
     browser = await chromium.launch({
       headless: true,
-      args: [
-        "--no-sandbox",
-        "--disable-dev-shm-usage"
-      ]
+      args: ["--no-sandbox", "--disable-dev-shm-usage"]
     });
   }
-
   return browser;
 }
 
 function avg(values) {
   const nums = values.filter(Number.isFinite);
-
-  if (!nums.length) {
-    return null;
-  }
-
-  return Math.round(
-    nums.reduce((a, b) => a + b, 0) /
-    nums.length
-  );
+  return nums.length
+    ? Math.round(nums.reduce((a, b) => a + b, 0) / nums.length)
+    : null;
 }
 
 function median(values) {
-  const nums = values
-    .filter(Number.isFinite)
-    .sort((a, b) => a - b);
-
-  if (!nums.length) {
-    return null;
-  }
-
-  const middle = Math.floor(nums.length / 2);
-
-  if (nums.length % 2) {
-    return nums[middle];
-  }
-
-  return Math.round(
-    (nums[middle - 1] + nums[middle]) / 2
-  );
+  const nums = values.filter(Number.isFinite).sort((a, b) => a - b);
+  if (!nums.length) return null;
+  const mid = Math.floor(nums.length / 2);
+  return nums.length % 2
+    ? nums[mid]
+    : Math.round((nums[mid - 1] + nums[mid]) / 2);
 }
 
 function pct(current, old) {
-  if (
-    !Number.isFinite(current) ||
-    !Number.isFinite(old) ||
-    old === 0
-  ) {
+  if (!Number.isFinite(current) || !Number.isFinite(old) || old === 0) {
     return null;
   }
-
-  return Number(
-    (
-      ((current - old) / old) *
-      100
-    ).toFixed(2)
-  );
+  return Number((((current - old) / old) * 100).toFixed(2));
 }
 
-function closest(history, millisecondsAgo) {
-  if (
-    !Array.isArray(history) ||
-    !history.length
-  ) {
-    return null;
-  }
+function closest(history, msAgo) {
+  if (!Array.isArray(history) || !history.length) return null;
 
-  const target =
-    Date.now() - millisecondsAgo;
-
-  let best = null;
-  let bestDifference = Infinity;
+  const target = Date.now() - msAgo;
+  let bestPrice = null;
+  let bestDiff = Infinity;
 
   for (const point of history) {
-    const timestamp =
-      Date.parse(point.date);
+    const t = Date.parse(point.date);
+    if (!Number.isFinite(t) || !Number.isFinite(point.price)) continue;
 
-    if (
-      !Number.isFinite(timestamp) ||
-      !Number.isFinite(point.price)
-    ) {
-      continue;
-    }
-
-    const difference =
-      Math.abs(timestamp - target);
-
-    if (difference < bestDifference) {
-      bestDifference = difference;
-      best = point.price;
+    const diff = Math.abs(t - target);
+    if (diff < bestDiff) {
+      bestDiff = diff;
+      bestPrice = point.price;
     }
   }
 
-  return best;
+  return bestPrice;
 }
 
-function analyzeMarket(currentPrice, history) {
-  const prices = (history || [])
-    .map(x => x.price)
-    .filter(Number.isFinite);
+function analyze(currentPrice, history) {
+  const prices = (history || []).map(x => x.price).filter(Number.isFinite);
 
-  if (
-    !Number.isFinite(currentPrice) ||
-    prices.length < 3
-  ) {
+  if (!Number.isFinite(currentPrice) || prices.length < 3) {
     return {
       marketStatus: "UNKNOWN",
       signal: "HOLD",
@@ -134,362 +82,212 @@ function analyzeMarket(currentPrice, history) {
     };
   }
 
-  const low = Math.min(...prices);
-  const high = Math.max(...prices);
-  const average = avg(prices);
+  const recentLow = Math.min(...prices);
+  const recentHigh = Math.max(...prices);
+  const recentAverage = avg(prices);
 
   let marketStatus = "STABLE";
   let signal = "HOLD";
 
-  if (
-    Number.isFinite(average) &&
-    currentPrice <= average * 0.88
-  ) {
+  if (Number.isFinite(recentAverage) && currentPrice <= recentAverage * 0.88) {
     marketStatus = "STRONG DROP";
     signal = "WATCH";
-  } else if (
-    Number.isFinite(average) &&
-    currentPrice <= average * 0.93
-  ) {
+  } else if (Number.isFinite(recentAverage) && currentPrice <= recentAverage * 0.93) {
     marketStatus = "DROP";
     signal = "WATCH";
   }
 
-  if (
-    Number.isFinite(low) &&
-    currentPrice <= low * 1.05
-  ) {
+  if (Number.isFinite(recentLow) && currentPrice <= recentLow * 1.05) {
     marketStatus = "NEAR LOW";
-
-    if (
-      Number.isFinite(average) &&
-      currentPrice <= average * 0.93
-    ) {
-      signal = "BUY";
-    } else {
-      signal = "WATCH";
-    }
+    signal =
+      Number.isFinite(recentAverage) && currentPrice <= recentAverage * 0.93
+        ? "BUY"
+        : "WATCH";
   } else if (
-    Number.isFinite(low) &&
-    Number.isFinite(high) &&
-    currentPrice >= low * 1.10 &&
-    currentPrice < high * 0.95
+    Number.isFinite(recentLow) &&
+    Number.isFinite(recentHigh) &&
+    currentPrice >= recentLow * 1.10 &&
+    currentPrice < recentHigh * 0.95
   ) {
     marketStatus = "STRONG RECOVERY";
     signal = "HOLD";
   } else if (
-    Number.isFinite(low) &&
-    Number.isFinite(high) &&
-    currentPrice >= low * 1.05 &&
-    currentPrice < high * 0.95
+    Number.isFinite(recentLow) &&
+    Number.isFinite(recentHigh) &&
+    currentPrice >= recentLow * 1.05 &&
+    currentPrice < recentHigh * 0.95
   ) {
     marketStatus = "RECOVERY";
     signal = "HOLD";
   }
 
-  if (
-    Number.isFinite(high) &&
-    currentPrice >= high * 0.95
-  ) {
+  if (Number.isFinite(recentHigh) && currentPrice >= recentHigh * 0.95) {
     marketStatus = "HIGH MARKET";
     signal = "SELL";
   }
 
-  return {
-    marketStatus,
-    signal,
-    recentLow: low,
-    recentHigh: high,
-    recentAverage: average
-  };
+  return { marketStatus, signal, recentLow, recentHigh, recentAverage };
 }
 
-async function fetchPrice(url) {
-
-  const cached = cache.get(url);
-
-  if (
-    cached &&
-    Date.now() - cached.savedAt <
-      CACHE_TTL_MS
-  ) {
-    return {
-      ...cached.data,
-      cached: true
-    };
+async function getRatingPlayerUrls(rating) {
+  const cached = ratingLinkCache.get(rating);
+  if (cached && Date.now() - cached.savedAt < CACHE_TTL_MS) {
+    return cached.urls;
   }
 
-  const browser =
-    await getBrowser();
-
-  const page =
-    await browser.newPage({
-      viewport: {
-        width: 1440,
-        height: 1200
-      }
-    });
+  const b = await getBrowser();
+  const page = await b.newPage({ viewport: { width: 1440, height: 1400 } });
 
   try {
+    const listUrl =
+      `https://www.fut.gg/players/?overall__gte=${rating}` +
+      `&overall__lte=${rating}&sorts=current_price`;
 
-    const waitForPrice =
-      page.waitForResponse(
-        response =>
-          response
-            .url()
-            .includes(
-              "/api/fut/player-prices/"
-            ) &&
-          response.status() === 200,
-        {
-          timeout: 30000
+    await page.goto(listUrl, {
+      waitUntil: "domcontentloaded",
+      timeout: 45_000
+    });
+
+    await page.waitForTimeout(5000);
+
+    const urls = await page.evaluate(() => {
+      const out = new Set();
+
+      for (const a of document.querySelectorAll('a[href*="/players/"]')) {
+        const href = a.getAttribute("href");
+        if (!href) continue;
+
+        // Player detail URLs look like /players/212198-name/26-184761574/
+        if (/^\/players\/\d+[^/]*\/\d+-\d+\/?$/.test(href)) {
+          out.add(new URL(href, location.origin).href);
         }
-      );
+      }
+
+      return Array.from(out);
+    });
+
+    const limited = urls.slice(0, PLAYER_LIMIT_PER_RATING);
+
+    ratingLinkCache.set(rating, {
+      savedAt: Date.now(),
+      urls: limited
+    });
+
+    return limited;
+  } finally {
+    await page.close().catch(() => {});
+  }
+}
+
+async function fetchPlayerPrice(url) {
+  const cached = priceCache.get(url);
+
+  if (cached && Date.now() - cached.savedAt < CACHE_TTL_MS) {
+    return { ...cached.data, cached: true };
+  }
+
+  const b = await getBrowser();
+  const page = await b.newPage({ viewport: { width: 1440, height: 1200 } });
+
+  try {
+    const waitPrice = page.waitForResponse(
+      response =>
+        response.url().includes("/api/fut/player-prices/") &&
+        response.status() === 200,
+      { timeout: 30_000 }
+    );
 
     await page.goto(url, {
       waitUntil: "domcontentloaded",
-      timeout: 45000
+      timeout: 45_000
     });
 
-    const priceResponse =
-      await waitForPrice;
-
-    const json =
-      await priceResponse.json();
-
-    const data =
-      json?.data;
+    const priceResponse = await waitPrice;
+    const json = await priceResponse.json();
+    const data = json?.data;
 
     if (!data?.currentPrice) {
-      throw new Error(
-        "currentPrice missing"
-      );
+      throw new Error("currentPrice missing");
     }
 
-    const text =
-      await page
-        .locator("body")
-        .innerText();
-
-    const title =
-      await page.title();
+    const text = await page.locator("body").innerText();
+    const title = await page.title();
 
     const rating = Number(
-      title.match(
-        /\b(\d{2})\s+OVR\b/i
-      )?.[1] ||
-      text.match(
-        /\b(\d{2})\s+OVR\b/i
-      )?.[1] ||
+      title.match(/\b(\d{2})\s+OVR\b/i)?.[1] ||
+      text.match(/\b(\d{2})\s+OVR\b/i)?.[1] ||
       NaN
     );
 
-    const playerId =
-      text.match(
-        /Player ID\s+(\d+)/i
-      )?.[1] || null;
+    const playerId = text.match(/Player ID\s+(\d+)/i)?.[1] || null;
+    const itemId = text.match(/Item ID\s+(\d+)/i)?.[1] || null;
 
-    const itemId =
-      text.match(
-        /Item ID\s+(\d+)/i
-      )?.[1] || null;
+    const current = data.currentPrice;
+    const completed = data.completedAuctions || [];
+    const live = data.liveAuctions || [];
+    const history = data.history || [];
 
-    const current =
-      data.currentPrice;
+    const liveBins = live.map(x => x.buyNowPrice).filter(Number.isFinite);
+    const recentSold = completed.slice(0, 20).map(x => x.soldPrice).filter(Number.isFinite);
 
-    const completed =
-      data.completedAuctions || [];
+    const p1h = closest(history, 60 * 60 * 1000);
+    const p24h = closest(history, 24 * 60 * 60 * 1000);
+    const p7d = closest(history, 7 * 24 * 60 * 60 * 1000);
 
-    const live =
-      data.liveAuctions || [];
-
-    const history =
-      data.history || [];
-
-    const liveBins =
-      live
-        .map(x => x.buyNowPrice)
-        .filter(Number.isFinite);
-
-    const recentSold =
-      completed
-        .slice(0, 20)
-        .map(x => x.soldPrice)
-        .filter(Number.isFinite);
-
-    const price1HourAgo =
-      closest(
-        history,
-        60 * 60 * 1000
-      );
-
-    const price24HoursAgo =
-      closest(
-        history,
-        24 * 60 * 60 * 1000
-      );
-
-    const price7DaysAgo =
-      closest(
-        history,
-        7 * 24 * 60 * 60 * 1000
-      );
-
-    const analysis =
-      analyzeMarket(
-        current.price,
-        history
-      );
-
-    const playerName =
-      title
-        .replace(
-          /\s+\d{2}\s+OVR.*$/i,
-          ""
-        )
-        .trim();
+    const analysis = analyze(current.price, history);
 
     const result = {
       ok: true,
-
       source: "FUT.GG",
-
-      player: playerName,
-
-      rating:
-        Number.isFinite(rating)
-          ? rating
-          : null,
-
-      playerId:
-        playerId
-          ? Number(playerId)
-          : null,
-
-      itemId:
-        itemId
-          ? Number(itemId)
-          : null,
-
-      platform:
-        current.platform,
-
-      price:
-        current.price,
-
-      lowestLiveBin:
-        liveBins.length
-          ? Math.min(...liveBins)
-          : null,
-
-      lastSoldPrice:
-        completed.length
-          ? completed[0].soldPrice
-          : null,
-
-      averageRecentSold:
-        avg(recentSold),
-
-      extinct:
-        current.isExtinct,
-
-      change1h:
-        pct(
-          current.price,
-          price1HourAgo
-        ),
-
-      change24h:
-        pct(
-          current.price,
-          price24HoursAgo
-        ),
-
-      change7d:
-        pct(
-          current.price,
-          price7DaysAgo
-        ),
-
-      recentLow:
-        analysis.recentLow,
-
-      recentHigh:
-        analysis.recentHigh,
-
-      recentAverage:
-        analysis.recentAverage,
-
-      marketStatus:
-        analysis.marketStatus,
-
-      signal:
-        analysis.signal,
-
-      priceUpdatedAt:
-        current.priceUpdatedAt,
-
-      history:
-        history.slice(-168),
-
-      updatedAt:
-        new Date().toISOString(),
-
+      player: title.replace(/\s+\d{2}\s+OVR.*$/i, "").trim(),
+      rating: Number.isFinite(rating) ? rating : null,
+      playerId: playerId ? Number(playerId) : null,
+      itemId: itemId ? Number(itemId) : null,
+      platform: current.platform,
+      price: current.price,
+      lowestLiveBin: liveBins.length ? Math.min(...liveBins) : null,
+      lastSoldPrice: completed.length ? completed[0].soldPrice : null,
+      averageRecentSold: avg(recentSold),
+      extinct: current.isExtinct,
+      change1h: pct(current.price, p1h),
+      change24h: pct(current.price, p24h),
+      change7d: pct(current.price, p7d),
+      marketStatus: analysis.marketStatus,
+      signal: analysis.signal,
+      recentLow: analysis.recentLow,
+      recentHigh: analysis.recentHigh,
+      recentAverage: analysis.recentAverage,
+      priceUpdatedAt: current.priceUpdatedAt,
+      updatedAt: new Date().toISOString(),
       cached: false
     };
 
-    cache.set(url, {
+    priceCache.set(url, {
       savedAt: Date.now(),
       data: result
     });
 
     return result;
-
   } finally {
-
-    await page
-      .close()
-      .catch(() => {});
+    await page.close().catch(() => {});
   }
 }
 
-async function mapLimit(
-  items,
-  limit,
-  functionToRun
-) {
-
-  const output =
-    new Array(items.length);
-
+async function mapLimit(items, limit, fn) {
+  const results = new Array(items.length);
   let index = 0;
 
   async function worker() {
-
     while (true) {
-
-      const currentIndex =
-        index++;
-
-      if (
-        currentIndex >=
-        items.length
-      ) {
-        return;
-      }
+      const i = index++;
+      if (i >= items.length) return;
 
       try {
-
-        output[currentIndex] =
-          await functionToRun(
-            items[currentIndex]
-          );
-
+        results[i] = await fn(items[i]);
       } catch (error) {
-
-        output[currentIndex] = {
+        results[i] = {
           ok: false,
-          url: items[currentIndex],
+          url: items[i],
           error: String(error)
         };
       }
@@ -497,489 +295,170 @@ async function mapLimit(
   }
 
   await Promise.all(
-    Array.from(
-      {
-        length:
-          Math.min(
-            limit,
-            items.length
-          )
-      },
-      () => worker()
-    )
+    Array.from({ length: Math.min(limit, items.length) }, () => worker())
   );
 
-  return output;
+  return results;
 }
 
-function ratingSummary(players) {
+function summarizeRating(rating, players) {
+  const good = players.filter(
+    p => p?.ok && p.rating === rating && Number.isFinite(p.price)
+  );
 
-  const rows = [];
+  const prices = good.map(p => p.price);
+  const d1 = good.map(p => p.change1h).filter(Number.isFinite);
+  const d24 = good.map(p => p.change24h).filter(Number.isFinite);
+  const d7 = good.map(p => p.change7d).filter(Number.isFinite);
 
-  for (
-    let rating = 75;
-    rating <= 99;
-    rating++
-  ) {
+  let marketStatus = "NO DATA";
+  let signal = "NO SIGNAL";
 
-    const cards =
-      players.filter(
-        player =>
-          player?.ok &&
-          player.rating === rating &&
-          Number.isFinite(
-            player.price
-          )
-      );
+  if (good.length) {
+    const statusCounts = {};
 
-    const prices =
-      cards
-        .map(x => x.price)
-        .filter(Number.isFinite);
-
-    const change1hValues =
-      cards
-        .map(x => x.change1h)
-        .filter(Number.isFinite);
-
-    const change24Values =
-      cards
-        .map(x => x.change24h)
-        .filter(Number.isFinite);
-
-    const change7Values =
-      cards
-        .map(x => x.change7d)
-        .filter(Number.isFinite);
-
-    let marketStatus =
-      "NO DATA";
-
-    let signal =
-      "NO SIGNAL";
-
-    if (cards.length) {
-
-      const statusCounts = {};
-
-      for (const card of cards) {
-
-        const status =
-          card.marketStatus ||
-          "UNKNOWN";
-
-        statusCounts[status] =
-          (
-            statusCounts[status] ||
-            0
-          ) + 1;
-      }
-
-      marketStatus =
-        Object.entries(
-          statusCounts
-        )
-        .sort(
-          (a, b) =>
-            b[1] - a[1]
-        )[0]?.[0] ||
-        "STABLE";
-
-      const average24 =
-        change24Values.length
-          ? change24Values.reduce(
-              (a, b) => a + b,
-              0
-            ) /
-            change24Values.length
-          : null;
-
-      const average7 =
-        change7Values.length
-          ? change7Values.reduce(
-              (a, b) => a + b,
-              0
-            ) /
-            change7Values.length
-          : null;
-
-      if (
-        Number.isFinite(average7) &&
-        average7 <= -12
-      ) {
-        signal = "WATCH";
-      }
-
-      if (
-        marketStatus ===
-        "NEAR LOW"
-      ) {
-        signal = "BUY";
-      }
-
-      if (
-        marketStatus ===
-        "HIGH MARKET"
-      ) {
-        signal = "SELL";
-      }
+    for (const p of good) {
+      const s = p.marketStatus || "UNKNOWN";
+      statusCounts[s] = (statusCounts[s] || 0) + 1;
     }
 
-    rows.push({
+    marketStatus =
+      Object.entries(statusCounts).sort((a, b) => b[1] - a[1])[0]?.[0] ||
+      "STABLE";
 
-      rating,
-
-      label:
-        `${rating} Rated`,
-
-      playerCount:
-        cards.length,
-
-      averagePrice:
-        avg(prices),
-
-      medianPrice:
-        median(prices),
-
-      minimumPrice:
-        prices.length
-          ? Math.min(...prices)
-          : null,
-
-      maximumPrice:
-        prices.length
-          ? Math.max(...prices)
-          : null,
-
-      averageChange1h:
-        change1hValues.length
-          ? Number(
-              (
-                change1hValues.reduce(
-                  (a, b) =>
-                    a + b,
-                  0
-                ) /
-                change1hValues.length
-              ).toFixed(2)
-            )
-          : null,
-
-      averageChange24h:
-        change24Values.length
-          ? Number(
-              (
-                change24Values.reduce(
-                  (a, b) =>
-                    a + b,
-                  0
-                ) /
-                change24Values.length
-              ).toFixed(2)
-            )
-          : null,
-
-      averageChange7d:
-        change7Values.length
-          ? Number(
-              (
-                change7Values.reduce(
-                  (a, b) =>
-                    a + b,
-                  0
-                ) /
-                change7Values.length
-              ).toFixed(2)
-            )
-          : null,
-
-      marketStatus,
-
-      signal
-    });
+    if (marketStatus === "NEAR LOW") signal = "BUY";
+    else if (marketStatus === "HIGH MARKET") signal = "SELL";
+    else if (marketStatus === "STRONG DROP" || marketStatus === "DROP") {
+      signal = "WATCH";
+    } else {
+      signal = "HOLD";
+    }
   }
 
-  return rows;
+  return {
+    rating,
+    label: `${rating} Rated`,
+    playerCount: good.length,
+    averagePrice: avg(prices),
+    medianPrice: median(prices),
+    minimumPrice: prices.length ? Math.min(...prices) : null,
+    maximumPrice: prices.length ? Math.max(...prices) : null,
+    averageChange1h: d1.length
+      ? Number((d1.reduce((a, b) => a + b, 0) / d1.length).toFixed(2))
+      : null,
+    averageChange24h: d24.length
+      ? Number((d24.reduce((a, b) => a + b, 0) / d24.length).toFixed(2))
+      : null,
+    averageChange7d: d7.length
+      ? Number((d7.reduce((a, b) => a + b, 0) / d7.length).toFixed(2))
+      : null,
+    marketStatus,
+    signal
+  };
 }
 
 app.get("/", (req, res) => {
-
   res.json({
-
     online: true,
-
-    service:
-      "FC Trading Price API",
-
-    version: "2.1",
-
-    refreshSeconds:
-      CACHE_TTL_MS / 1000,
-
-    ratingRange:
-      "75-99",
-
+    service: "FC Trading Price API",
+    version: "3.0",
+    refreshSeconds: 60,
+    ratingRange: "75-99",
+    maxPlayersPerRating: PLAYER_LIMIT_PER_RATING,
     endpoints: {
-
-      single:
-        "GET /price?url=<FUT.GG URL>",
-
-      test:
-        "GET /test-ratings",
-
-      batch:
-        "POST /batch-prices",
-
-      ratings:
-        "POST /rating-markets"
+      single: "GET /price?url=<FUT.GG player URL>",
+      oneRating: "GET /rating/86",
+      allRatings: "GET /ratings"
     }
   });
 });
 
-app.get(
-  "/price",
-  async (req, res) => {
+app.get("/price", async (req, res) => {
+  const url = req.query.url;
 
-    const url =
-      req.query.url;
+  if (!url || !url.startsWith("https://www.fut.gg/")) {
+    return res.status(400).json({
+      ok: false,
+      error: "Valid FUT.GG URL required"
+    });
+  }
 
-    if (
-      !url ||
-      !url.startsWith(
-        "https://www.fut.gg/"
-      )
-    ) {
+  try {
+    res.json(await fetchPlayerPrice(url));
+  } catch (error) {
+    res.status(500).json({
+      ok: false,
+      error: String(error)
+    });
+  }
+});
 
-      return res
-        .status(400)
-        .json({
-          ok: false,
-          error:
-            "Valid FUT.GG URL required"
-        });
-    }
+app.get("/rating/:rating", async (req, res) => {
+  const rating = Number(req.params.rating);
 
+  if (!Number.isInteger(rating) || rating < RATING_MIN || rating > RATING_MAX) {
+    return res.status(400).json({
+      ok: false,
+      error: `Rating must be ${RATING_MIN}-${RATING_MAX}`
+    });
+  }
+
+  try {
+    const urls = await getRatingPlayerUrls(rating);
+    const players = await mapLimit(urls, 3, fetchPlayerPrice);
+
+    res.json({
+      ok: true,
+      source: "FUT.GG",
+      refreshSeconds: 60,
+      rating: summarizeRating(rating, players),
+      players,
+      discoveredUrls: urls.length,
+      updatedAt: new Date().toISOString()
+    });
+  } catch (error) {
+    res.status(500).json({
+      ok: false,
+      error: String(error)
+    });
+  }
+});
+
+app.get("/ratings", async (req, res) => {
+  const ratings = [];
+
+  // Free Render is small, so process one rating at a time.
+  // This endpoint can take a while. Individual /rating/:rating is better for live use.
+  for (let rating = RATING_MIN; rating <= RATING_MAX; rating++) {
     try {
+      const urls = await getRatingPlayerUrls(rating);
+      const players = await mapLimit(urls, 3, fetchPlayerPrice);
 
-      const result =
-        await fetchPrice(url);
-
-      res.json(result);
-
+      ratings.push({
+        ...summarizeRating(rating, players),
+        discoveredUrls: urls.length
+      });
     } catch (error) {
-
-      res
-        .status(500)
-        .json({
-          ok: false,
-          error:
-            String(error)
-        });
+      ratings.push({
+        rating,
+        label: `${rating} Rated`,
+        playerCount: 0,
+        marketStatus: "ERROR",
+        signal: "NO SIGNAL",
+        error: String(error)
+      });
     }
   }
-);
 
-app.get(
-  "/test-ratings",
-  async (req, res) => {
+  res.json({
+    ok: true,
+    source: "FUT.GG",
+    refreshSeconds: 60,
+    ratings,
+    updatedAt: new Date().toISOString()
+  });
+});
 
-    let urls =
-      req.query.url;
-
-    if (!urls) {
-
-      urls =
-        DEFAULT_TEST_URLS;
-
-    } else if (
-      !Array.isArray(urls)
-    ) {
-
-      urls = [urls];
-    }
-
-    urls =
-      urls
-        .filter(
-          value =>
-            typeof value ===
-              "string" &&
-            value.startsWith(
-              "https://www.fut.gg/"
-            )
-        )
-        .slice(0, 20);
-
-    if (!urls.length) {
-
-      return res
-        .status(400)
-        .json({
-          ok: false,
-          error:
-            "No valid FUT.GG URLs"
-        });
-    }
-
-    const players =
-      await mapLimit(
-        urls,
-        3,
-        fetchPrice
-      );
-
-    const ratings =
-      ratingSummary(players);
-
-    res.json({
-
-      ok: true,
-
-      source:
-        "FUT.GG",
-
-      refreshSeconds:
-        60,
-
-      testedPlayers:
-        players.length,
-
-      ratings,
-
-      players,
-
-      updatedAt:
-        new Date().toISOString()
-    });
-  }
-);
-
-app.post(
-  "/batch-prices",
-  async (req, res) => {
-
-    const urls =
-      Array.isArray(
-        req.body?.urls
-      )
-        ? req.body.urls
-        : [];
-
-    const valid =
-      urls
-        .filter(
-          value =>
-            typeof value ===
-              "string" &&
-            value.startsWith(
-              "https://www.fut.gg/"
-            )
-        )
-        .slice(0, 50);
-
-    if (!valid.length) {
-
-      return res
-        .status(400)
-        .json({
-          ok: false,
-          error:
-            "Provide urls: [...]"
-        });
-    }
-
-    const players =
-      await mapLimit(
-        valid,
-        3,
-        fetchPrice
-      );
-
-    res.json({
-
-      ok: true,
-
-      count:
-        players.length,
-
-      players,
-
-      updatedAt:
-        new Date().toISOString()
-    });
-  }
-);
-
-app.post(
-  "/rating-markets",
-  async (req, res) => {
-
-    const urls =
-      Array.isArray(
-        req.body?.urls
-      )
-        ? req.body.urls
-        : [];
-
-    const valid =
-      urls
-        .filter(
-          value =>
-            typeof value ===
-              "string" &&
-            value.startsWith(
-              "https://www.fut.gg/"
-            )
-        )
-        .slice(0, 50);
-
-    if (!valid.length) {
-
-      return res
-        .status(400)
-        .json({
-          ok: false,
-          error:
-            "Provide urls: [...]"
-        });
-    }
-
-    const players =
-      await mapLimit(
-        valid,
-        3,
-        fetchPrice
-      );
-
-    res.json({
-
-      ok: true,
-
-      source:
-        "FUT.GG",
-
-      refreshSeconds:
-        60,
-
-      ratings:
-        ratingSummary(
-          players
-        ),
-
-      players,
-
-      updatedAt:
-        new Date().toISOString()
-    });
-  }
-);
-
-app.listen(
-  port,
-  () => {
-
-    console.log(
-      `FC Trading Price API running on ${port}`
-    );
-  }
-);
+app.listen(port, () => {
+  console.log(`FC Trading Price API running on ${port}`);
+});
