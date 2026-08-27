@@ -34,7 +34,6 @@ async function collectAllCardsForRating(rating) {
   });
 
   try {
-    // Load FUT.GG first so the API calls happen from the normal site origin.
     await page.goto("https://www.fut.gg/players/", {
       waitUntil: "domcontentloaded",
       timeout: 45_000
@@ -45,27 +44,44 @@ async function collectAllCardsForRating(rating) {
     let pagesRead = 0;
 
     for (let pageNumber = 1; pageNumber <= MAX_PAGES; pageNumber++) {
+      const pagePart = pageNumber === 1 ? "" : `&page=${pageNumber}`;
+
       const apiUrl =
         `/api/fut/players/v2/26/?overall__gte=${rating}` +
-        `&overall__lte=${rating}&sorts=current_price&page=${pageNumber}`;
+        `&overall__lte=${rating}&sorts=current_price${pagePart}`;
 
-      const json = await page.evaluate(async (url) => {
+      const result = await page.evaluate(async (url) => {
         const response = await fetch(url, {
           credentials: "same-origin",
-          headers: {
-            "accept": "application/json"
-          }
+          headers: { "accept": "application/json" }
         });
 
-        if (!response.ok) {
-          throw new Error(`HTTP ${response.status}`);
-        }
+        const text = await response.text();
 
-        return await response.json();
+        return {
+          ok: response.ok,
+          status: response.status,
+          text
+        };
       }, apiUrl);
 
-      const rows = Array.isArray(json?.data) ? json.data : [];
+      if (!result.ok) {
+        if (pageNumber === 1) {
+          throw new Error(`HTTP ${result.status} on first page`);
+        }
 
+        // End of pagination or unsupported page number.
+        break;
+      }
+
+      let json;
+      try {
+        json = JSON.parse(result.text);
+      } catch {
+        throw new Error(`Invalid JSON on page ${pageNumber}`);
+      }
+
+      const rows = Array.isArray(json?.data) ? json.data : [];
       if (!rows.length) break;
 
       let addedThisPage = 0;
@@ -81,7 +97,11 @@ async function collectAllCardsForRating(rating) {
           id: p.id ?? null,
           eaId: p.eaId ?? null,
           overall: p.overall ?? null,
-          name: p.commonName || p.cardName || [p.firstName, p.lastName].filter(Boolean).join(" ") || null,
+          name:
+            p.commonName ||
+            p.cardName ||
+            [p.firstName, p.lastName].filter(Boolean).join(" ") ||
+            null,
           cardName: p.cardName ?? null,
           firstName: p.firstName ?? null,
           lastName: p.lastName ?? null,
@@ -98,17 +118,18 @@ async function collectAllCardsForRating(rating) {
           basePlayerSlug: p.basePlayerSlug ?? null,
           isEvolutionPlayerItem: p.isEvolutionPlayerItem ?? false,
           isProvisional: p.isProvisional ?? false,
-          currentDbPrice: Number.isFinite(p.currentDbPrice) ? p.currentDbPrice : null
+          currentDbPrice: Number.isFinite(p.currentDbPrice)
+            ? p.currentDbPrice
+            : null
         });
       }
 
       pagesRead++;
 
-      // If a page returns only duplicates, we have reached the end / repeated page.
       if (addedThisPage === 0) break;
     }
 
-    const result = {
+    const data = {
       ok: true,
       source: "FUT.GG public players API",
       rating,
@@ -121,10 +142,10 @@ async function collectAllCardsForRating(rating) {
 
     cardsCache.set(rating, {
       savedAt: Date.now(),
-      data: result
+      data
     });
 
-    return result;
+    return data;
   } finally {
     await page.close().catch(() => {});
   }
@@ -134,7 +155,7 @@ app.get("/", (req, res) => {
   res.json({
     online: true,
     service: "FC Trading Price API",
-    version: "5.0",
+    version: "5.1",
     refreshSeconds: 60,
     ratingRange: `${RATING_MIN}-${RATING_MAX}`,
     endpoints: {
@@ -155,8 +176,7 @@ app.get("/cards/:rating", async (req, res) => {
   }
 
   try {
-    const data = await collectAllCardsForRating(rating);
-    res.json(data);
+    res.json(await collectAllCardsForRating(rating));
   } catch (error) {
     res.status(500).json({
       ok: false,
@@ -181,19 +201,4 @@ app.get("/cards/:rating/count", async (req, res) => {
     res.json({
       ok: true,
       rating,
-      cardCount: data.cardCount,
-      pagesRead: data.pagesRead,
-      cached: data.cached,
-      updatedAt: data.updatedAt
-    });
-  } catch (error) {
-    res.status(500).json({
-      ok: false,
-      error: String(error)
-    });
-  }
-});
-
-app.listen(port, () => {
-  console.log(`FC Trading Price API v5 running on ${port}`);
-});
+      cardCount: data.car
