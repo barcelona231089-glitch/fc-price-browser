@@ -4,7 +4,13 @@ import { chromium } from "playwright";
 const app = express();
 const port = process.env.PORT || 3000;
 
+const RATING_MIN = 75;
+const RATING_MAX = 99;
+const CACHE_TTL_MS = 60_000;
+const MAX_PAGES = 50;
+
 let browser;
+const cardsCache = new Map();
 
 async function getBrowser() {
   if (!browser) {
@@ -16,119 +22,178 @@ async function getBrowser() {
   return browser;
 }
 
+async function collectAllCardsForRating(rating) {
+  const cached = cardsCache.get(rating);
+  if (cached && Date.now() - cached.savedAt < CACHE_TTL_MS) {
+    return { ...cached.data, cached: true };
+  }
+
+  const b = await getBrowser();
+  const page = await b.newPage({
+    viewport: { width: 1440, height: 1000 }
+  });
+
+  try {
+    // Load FUT.GG first so the API calls happen from the normal site origin.
+    await page.goto("https://www.fut.gg/players/", {
+      waitUntil: "domcontentloaded",
+      timeout: 45_000
+    });
+
+    const all = [];
+    const seen = new Set();
+    let pagesRead = 0;
+
+    for (let pageNumber = 1; pageNumber <= MAX_PAGES; pageNumber++) {
+      const apiUrl =
+        `/api/fut/players/v2/26/?overall__gte=${rating}` +
+        `&overall__lte=${rating}&sorts=current_price&page=${pageNumber}`;
+
+      const json = await page.evaluate(async (url) => {
+        const response = await fetch(url, {
+          credentials: "same-origin",
+          headers: {
+            "accept": "application/json"
+          }
+        });
+
+        if (!response.ok) {
+          throw new Error(`HTTP ${response.status}`);
+        }
+
+        return await response.json();
+      }, apiUrl);
+
+      const rows = Array.isArray(json?.data) ? json.data : [];
+
+      if (!rows.length) break;
+
+      let addedThisPage = 0;
+
+      for (const p of rows) {
+        const key = p.eaId ?? p.id ?? p.url;
+        if (key == null || seen.has(String(key))) continue;
+
+        seen.add(String(key));
+        addedThisPage++;
+
+        all.push({
+          id: p.id ?? null,
+          eaId: p.eaId ?? null,
+          overall: p.overall ?? null,
+          name: p.commonName || p.cardName || [p.firstName, p.lastName].filter(Boolean).join(" ") || null,
+          cardName: p.cardName ?? null,
+          firstName: p.firstName ?? null,
+          lastName: p.lastName ?? null,
+          rarityName: p.rarityName ?? null,
+          rarityId: p.rarityId ?? null,
+          rarityEaId: p.rarityEaId ?? null,
+          rarityGroupName: p.rarityGroupName ?? null,
+          position: p.position ?? null,
+          club: p.club?.name ?? p.uniqueClub?.name ?? null,
+          nation: p.nation?.name ?? null,
+          league: p.league?.name ?? null,
+          url: p.url ? new URL(p.url, "https://www.fut.gg").href : null,
+          slug: p.slug ?? null,
+          basePlayerSlug: p.basePlayerSlug ?? null,
+          isEvolutionPlayerItem: p.isEvolutionPlayerItem ?? false,
+          isProvisional: p.isProvisional ?? false,
+          currentDbPrice: Number.isFinite(p.currentDbPrice) ? p.currentDbPrice : null
+        });
+      }
+
+      pagesRead++;
+
+      // If a page returns only duplicates, we have reached the end / repeated page.
+      if (addedThisPage === 0) break;
+    }
+
+    const result = {
+      ok: true,
+      source: "FUT.GG public players API",
+      rating,
+      cardCount: all.length,
+      pagesRead,
+      cards: all,
+      cached: false,
+      updatedAt: new Date().toISOString()
+    };
+
+    cardsCache.set(rating, {
+      savedAt: Date.now(),
+      data: result
+    });
+
+    return result;
+  } finally {
+    await page.close().catch(() => {});
+  }
+}
+
 app.get("/", (req, res) => {
   res.json({
     online: true,
     service: "FC Trading Price API",
-    version: "4.0-debug",
+    version: "5.0",
+    refreshSeconds: 60,
+    ratingRange: `${RATING_MIN}-${RATING_MAX}`,
     endpoints: {
-      ratingDebug: "GET /debug-rating/83"
+      cardsByRating: "GET /cards/83",
+      cardCountByRating: "GET /cards/83/count"
     }
   });
 });
 
-app.get("/debug-rating/:rating", async (req, res) => {
+app.get("/cards/:rating", async (req, res) => {
   const rating = Number(req.params.rating);
 
-  if (!Number.isInteger(rating) || rating < 75 || rating > 99) {
+  if (!Number.isInteger(rating) || rating < RATING_MIN || rating > RATING_MAX) {
     return res.status(400).json({
       ok: false,
-      error: "Rating must be between 75 and 99"
+      error: `Rating must be ${RATING_MIN}-${RATING_MAX}`
     });
   }
 
-  let page;
-
   try {
-    const b = await getBrowser();
-
-    page = await b.newPage({
-      viewport: { width: 1440, height: 1400 }
-    });
-
-    const captured = [];
-
-    page.on("response", async response => {
-      const url = response.url();
-      const type = response.request().resourceType();
-      const contentType = response.headers()["content-type"] || "";
-
-      const interesting =
-        contentType.includes("application/json") ||
-        url.includes("/api/") ||
-        url.includes("r2.fut.gg");
-
-      if (!interesting) return;
-      if (captured.length >= 80) return;
-
-      let body = null;
-
-      try {
-        body = await response.text();
-      } catch {}
-
-      captured.push({
-        url,
-        status: response.status(),
-        resourceType: type,
-        contentType,
-        body: body ? body.slice(0, 6000) : null
-      });
-    });
-
-    const target =
-      `https://www.fut.gg/players/?overall__gte=${rating}` +
-      `&overall__lte=${rating}&sorts=current_price`;
-
-    await page.goto(target, {
-      waitUntil: "domcontentloaded",
-      timeout: 45000
-    });
-
-    await page.waitForTimeout(10000);
-
-    const title = await page.title();
-    const bodyText = await page.locator("body").innerText();
-
-    const links = await page.evaluate(() => {
-      const out = [];
-      for (const a of document.querySelectorAll("a[href]")) {
-        const href = a.getAttribute("href");
-        if (!href) continue;
-        if (href.includes("/players/")) {
-          out.push({
-            href,
-            text: (a.innerText || a.textContent || "").trim().slice(0, 200)
-          });
-        }
-      }
-      return out.slice(0, 100);
-    });
-
-    res.json({
-      ok: true,
-      rating,
-      target,
-      title,
-      bodyPreview: bodyText.slice(0, 5000),
-      playerLinksFound: links.length,
-      links,
-      capturedResponses: captured,
-      updatedAt: new Date().toISOString()
-    });
-
+    const data = await collectAllCardsForRating(rating);
+    res.json(data);
   } catch (error) {
     res.status(500).json({
       ok: false,
       error: String(error)
     });
-  } finally {
-    if (page) {
-      await page.close().catch(() => {});
-    }
+  }
+});
+
+app.get("/cards/:rating/count", async (req, res) => {
+  const rating = Number(req.params.rating);
+
+  if (!Number.isInteger(rating) || rating < RATING_MIN || rating > RATING_MAX) {
+    return res.status(400).json({
+      ok: false,
+      error: `Rating must be ${RATING_MIN}-${RATING_MAX}`
+    });
+  }
+
+  try {
+    const data = await collectAllCardsForRating(rating);
+
+    res.json({
+      ok: true,
+      rating,
+      cardCount: data.cardCount,
+      pagesRead: data.pagesRead,
+      cached: data.cached,
+      updatedAt: data.updatedAt
+    });
+  } catch (error) {
+    res.status(500).json({
+      ok: false,
+      error: String(error)
+    });
   }
 });
 
 app.listen(port, () => {
-  console.log(`FC Trading Price API running on ${port}`);
+  console.log(`FC Trading Price API v5 running on ${port}`);
 });
