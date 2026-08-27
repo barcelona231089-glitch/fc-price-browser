@@ -201,4 +201,19 @@ app.get("/cards/:rating/count", async (req, res) => {
     res.json({
       ok: true,
       rating,
-      cardCount: data.car
+      cardCount: data.cardCount,
+      pagesRead: data.pagesRead,
+      cached: data.cached,
+      updatedAt: data.updatedAt
+    });
+  } catch (error) {
+    res.status(500).json({
+      ok: false,
+      error: String(error)
+    });
+  }
+});
+
+app.listen(port, () => {
+  console.log(`FC Trading Price API v5.1 running on ${port}`);
+});
