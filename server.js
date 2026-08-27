@@ -42,36 +42,36 @@ app.get("/price", async (req, res) => {
       viewport: { width: 1440, height: 1200 }
     });
 
-    let priceData = null;
-
-    page.on("response", async response => {
-      const responseUrl = response.url();
-
-      if (
-        responseUrl.includes(
-          "/api/fut/player-prices/"
-        )
-      ) {
-        try {
-          const json = await response.json();
-
-          if (json?.data?.currentPrice) {
-            priceData = json.data;
-          }
-        } catch {}
-      }
-    });
+    const priceResponsePromise = page.waitForResponse(
+      response =>
+        response.url().includes("/api/fut/player-prices/") &&
+        response.status() === 200,
+      { timeout: 30000 }
+    );
 
     await page.goto(url, {
       waitUntil: "domcontentloaded",
       timeout: 45000
     });
 
-    await page.waitForTimeout(10000);
+    const priceResponse = await priceResponsePromise;
+    const priceJson = await priceResponse.json();
 
-    const bodyText =
-      await page.locator("body").innerText();
+    const data = priceJson?.data;
 
+    if (!data?.currentPrice) {
+      return res.json({
+        ok: false,
+        error: "Price response received but currentPrice missing"
+      });
+    }
+
+    const current = data.currentPrice;
+    const completed = data.completedAuctions || [];
+    const live = data.liveAuctions || [];
+    const history = data.history || [];
+
+    const bodyText = await page.locator("body").innerText();
     const title = await page.title();
 
     const playerId =
@@ -80,97 +80,44 @@ app.get("/price", async (req, res) => {
     const itemId =
       bodyText.match(/Item ID\s+(\d+)/i)?.[1] || null;
 
-    if (!priceData) {
-      return res.json({
-        ok: false,
-        error: "Price data not received",
-        playerId,
-        itemId
-      });
-    }
-
-    const current =
-      priceData.currentPrice;
-
-    const completed =
-      priceData.completedAuctions || [];
-
-    const live =
-      priceData.liveAuctions || [];
-
-    const history =
-      priceData.history || [];
+    const liveBins = live
+      .map(x => x.buyNowPrice)
+      .filter(x => Number.isFinite(x));
 
     const lowestLiveBin =
-      live.length
-        ? Math.min(
-            ...live
-              .map(x => x.buyNowPrice)
-              .filter(Boolean)
-          )
-        : null;
+      liveBins.length ? Math.min(...liveBins) : null;
 
     const lastSoldPrice =
-      completed.length
-        ? completed[0].soldPrice
-        : null;
+      completed.length ? completed[0].soldPrice : null;
 
-    const recentSoldPrices =
-      completed
-        .slice(0, 20)
-        .map(x => x.soldPrice);
+    const recentSold = completed
+      .slice(0, 20)
+      .map(x => x.soldPrice)
+      .filter(x => Number.isFinite(x));
 
     const averageRecentSold =
-      recentSoldPrices.length
+      recentSold.length
         ? Math.round(
-            recentSoldPrices.reduce(
-              (a, b) => a + b,
-              0
-            ) / recentSoldPrices.length
+            recentSold.reduce((a, b) => a + b, 0) /
+            recentSold.length
           )
         : null;
 
     return res.json({
       ok: true,
-
       source: "FUT.GG",
-
-      player:
-        title.split(" Winter")[0],
-
-      playerId:
-        playerId
-          ? Number(playerId)
-          : null,
-
-      itemId:
-        itemId
-          ? Number(itemId)
-          : null,
-
-      platform:
-        current.platform,
-
-      price:
-        current.price,
-
+      player: title.split(" Winter")[0],
+      playerId: playerId ? Number(playerId) : null,
+      itemId: itemId ? Number(itemId) : null,
+      platform: current.platform,
+      price: current.price,
       lowestLiveBin,
-
       lastSoldPrice,
-
       averageRecentSold,
-
-      priceUpdatedAt:
-        current.priceUpdatedAt,
-
-      extinct:
-        current.isExtinct,
-
-      history:
-        history.slice(-30),
-
-      updatedAt:
-        new Date().toISOString()
+      extinct: current.isExtinct,
+      priceUpdatedAt: current.priceUpdatedAt,
+      history: history.slice(-30),
+      updatedAt: new Date().toISOString()
     });
 
   } catch (error) {
@@ -178,7 +125,6 @@ app.get("/price", async (req, res) => {
       ok: false,
       error: String(error)
     });
-
   } finally {
     if (page) {
       await page.close().catch(() => {});
@@ -187,7 +133,5 @@ app.get("/price", async (req, res) => {
 });
 
 app.listen(port, () => {
-  console.log(
-    `FC Trading Price API running on ${port}`
-  );
+  console.log(`FC Trading Price API running on ${port}`);
 });
