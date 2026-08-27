@@ -12,7 +12,7 @@ const MAX_PAGES = 50;
 
 let browser;
 const cardsCache = new Map();
-let priceMapCache = null;
+let priceFilesCache = null;
 
 async function getBrowser() {
   if (!browser) {
@@ -104,7 +104,7 @@ async function collectAllCardsForRating(rating) {
       let added = 0;
 
       for (const p of rows) {
-        const key = p.id ?? p.eaId ?? p.url;
+        const key = p.eaId ?? p.id ?? p.url;
 
         if (key == null || seen.has(String(key))) continue;
 
@@ -173,55 +173,13 @@ function buildCumulativeIds(indexData) {
   return ids;
 }
 
-function chooseAlignment(ids, prices, wantedIds) {
-  const wanted = new Set(wantedIds.filter(Number.isFinite));
-
-  const candidates = [];
-
-  // FUT.GG's compact index may align the first price to id0 or to
-  // the first cumulative delta. Test both and choose whichever
-  // matches more real card IDs from the requested rating.
-  for (const offset of [0, 1]) {
-    let matches = 0;
-    let positiveMatches = 0;
-
-    const length = Math.min(prices.length, Math.max(0, ids.length - offset));
-
-    for (let i = 0; i < length; i++) {
-      const id = ids[i + offset];
-
-      if (wanted.has(id)) {
-        matches++;
-        if (Number.isFinite(prices[i]) && prices[i] > 0) {
-          positiveMatches++;
-        }
-      }
-    }
-
-    candidates.push({
-      offset,
-      matches,
-      positiveMatches
-    });
-  }
-
-  candidates.sort(
-    (a, b) =>
-      b.matches - a.matches ||
-      b.positiveMatches - a.positiveMatches
-  );
-
-  return candidates[0];
-}
-
-async function loadPublicPriceMap(wantedIds = []) {
+async function loadPublicPriceFiles() {
   if (
-    priceMapCache &&
-    Date.now() - priceMapCache.savedAt < PRICE_CACHE_MS &&
-    priceMapCache.map
+    priceFilesCache &&
+    Date.now() - priceFilesCache.savedAt < PRICE_CACHE_MS
   ) {
     return {
-      ...priceMapCache,
+      ...priceFilesCache,
       cached: true
     };
   }
@@ -285,32 +243,10 @@ async function loadPublicPriceMap(wantedIds = []) {
       throw new Error("No prices in public price file");
     }
 
-    const alignment = chooseAlignment(ids, prices, wantedIds);
-
-    const map = new Map();
-    const rawMap = new Map();
-
-    const usableLength = Math.min(
-      prices.length,
-      Math.max(0, ids.length - alignment.offset)
-    );
-
-    for (let i = 0; i < usableLength; i++) {
-      const id = ids[i + alignment.offset];
-      const rawPrice = prices[i];
-
-      rawMap.set(id, rawPrice);
-
-      if (Number.isFinite(rawPrice) && rawPrice > 0) {
-        map.set(id, rawPrice);
-      }
-    }
-
     const result = {
       savedAt: Date.now(),
-      map,
-      rawMap,
-      alignment,
+      ids,
+      prices,
       totalIndexedIds: ids.length,
       totalPriceValues: prices.length,
       indexUrl: payload.indexUrl,
@@ -320,12 +256,112 @@ async function loadPublicPriceMap(wantedIds = []) {
       cached: false
     };
 
-    priceMapCache = result;
-
+    priceFilesCache = result;
     return result;
   } finally {
     await page.close().catch(() => {});
   }
+}
+
+function chooseJoinStrategy(cards, ids, prices) {
+  const candidates = [];
+
+  for (const keyType of ["eaId", "id"]) {
+    const wanted = new Set(
+      cards.map(c => c[keyType]).filter(Number.isFinite)
+    );
+
+    for (const offset of [0, 1]) {
+      let matches = 0;
+      let positiveMatches = 0;
+
+      const length = Math.min(
+        prices.length,
+        Math.max(0, ids.length - offset)
+      );
+
+      for (let i = 0; i < length; i++) {
+        const indexedId = ids[i + offset];
+
+        if (wanted.has(indexedId)) {
+          matches++;
+
+          if (Number.isFinite(prices[i]) && prices[i] > 0) {
+            positiveMatches++;
+          }
+        }
+      }
+
+      candidates.push({
+        keyType,
+        offset,
+        matches,
+        positiveMatches
+      });
+    }
+  }
+
+  candidates.sort(
+    (a, b) =>
+      b.matches - a.matches ||
+      b.positiveMatches - a.positiveMatches
+  );
+
+  return {
+    best: candidates[0],
+    candidates
+  };
+}
+
+function attachPrices(cards, priceFiles) {
+  const strategy = chooseJoinStrategy(
+    cards,
+    priceFiles.ids,
+    priceFiles.prices
+  );
+
+  const best = strategy.best;
+
+  const rawMap = new Map();
+  const positiveMap = new Map();
+
+  const length = Math.min(
+    priceFiles.prices.length,
+    Math.max(0, priceFiles.ids.length - best.offset)
+  );
+
+  for (let i = 0; i < length; i++) {
+    const indexedId = priceFiles.ids[i + best.offset];
+    const rawPrice = priceFiles.prices[i];
+
+    rawMap.set(indexedId, rawPrice);
+
+    if (Number.isFinite(rawPrice) && rawPrice > 0) {
+      positiveMap.set(indexedId, rawPrice);
+    }
+  }
+
+  const joinedCards = cards.map(card => {
+    const key = card[best.keyType];
+    const rawPrice = Number.isFinite(key)
+      ? rawMap.get(key)
+      : undefined;
+
+    const price = Number.isFinite(key)
+      ? positiveMap.get(key) ?? null
+      : null;
+
+    return {
+      ...card,
+      price,
+      extinctOrUnavailable: rawPrice === 0 || price == null
+    };
+  });
+
+  return {
+    cards: joinedCards,
+    strategy
+  };
 }
 
 function summarizeMarket(rating, cards) {
@@ -360,7 +396,7 @@ app.get("/", (req, res) => {
   res.json({
     online: true,
     service: "FC Trading Price API",
-    version: "6.0",
+    version: "6.1",
     ratingRange: `${RATING_MIN}-${RATING_MAX}`,
     priceRefreshSeconds: 60,
     endpoints: {
@@ -439,45 +475,27 @@ app.get("/market/:rating", async (req, res) => {
 
   try {
     const cardData = await collectAllCardsForRating(rating);
-    const cardIds = cardData.cards.map(c => c.id).filter(Number.isFinite);
+    const priceFiles = await loadPublicPriceFiles();
 
-    const priceData = await loadPublicPriceMap(cardIds);
-
-    const cards = cardData.cards.map(card => {
-      const rawPrice = Number.isFinite(card.id)
-        ? priceData.rawMap.get(card.id)
-        : undefined;
-
-      const price = Number.isFinite(card.id)
-        ? priceData.map.get(card.id) ?? null
-        : null;
-
-      return {
-        ...card,
-        price,
-        extinctOrUnavailable: rawPrice === 0 || price == null
-      };
-    });
-
-    const matchedCardIds = cards.filter(c =>
-      Number.isFinite(c.id) && priceData.rawMap.has(c.id)
-    ).length;
+    const joined = attachPrices(cardData.cards, priceFiles);
 
     res.json({
       ok: true,
       source: "FUT.GG public player list + public PS5 price data",
       refreshSeconds: 60,
-      market: summarizeMarket(rating, cards),
+      market: summarizeMarket(rating, joined.cards),
       debug: {
-        matchedCardIds,
-        alignmentOffset: priceData.alignment.offset,
-        alignmentMatches: priceData.alignment.matches,
-        totalIndexedIds: priceData.totalIndexedIds,
-        totalPriceValues: priceData.totalPriceValues,
+        selectedKey: joined.strategy.best.keyType,
+        alignmentOffset: joined.strategy.best.offset,
+        matchedCardIds: joined.strategy.best.matches,
+        positivePriceMatches: joined.strategy.best.positiveMatches,
+        candidates: joined.strategy.candidates,
+        totalIndexedIds: priceFiles.totalIndexedIds,
+        totalPriceValues: priceFiles.totalPriceValues,
         cardsCached: cardData.cached,
-        pricesCached: priceData.cached
+        pricesCached: priceFiles.cached
       },
-      cards,
+      cards: joined.cards,
       updatedAt: new Date().toISOString()
     });
   } catch (error) {
@@ -489,5 +507,5 @@ app.get("/market/:rating", async (req, res) => {
 });
 
 app.listen(port, () => {
-  console.log(`FC Trading Price API v6 running on ${port}`);
+  console.log(`FC Trading Price API v6.1 running on ${port}`);
 });
