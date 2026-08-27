@@ -6,6 +6,12 @@ const port = process.env.PORT || 3000;
 
 let browser;
 
+const BRUNO = {
+  name: "Bruno Fernandes",
+  eaId: 184761574,
+  url: "https://www.fut.gg/players/212198-bruno-fernandes/26-184761574/"
+};
+
 async function getBrowser() {
   if (!browser) {
     browser = await chromium.launch({
@@ -19,7 +25,7 @@ async function getBrowser() {
 async function fetchJson(url) {
   const response = await fetch(url, {
     headers: {
-      "accept": "application/json",
+      accept: "application/json",
       "user-agent": "Mozilla/5.0"
     }
   });
@@ -48,36 +54,34 @@ function buildIds(indexData) {
   return ids;
 }
 
-function summarizeValue(value, depth = 0) {
-  if (depth > 2) return "[depth-limit]";
+function summarize(obj) {
+  if (!obj || typeof obj !== "object") return obj;
 
-  if (Array.isArray(value)) {
-    return {
-      type: "array",
-      length: value.length,
-      sample: value.slice(0, 12).map(v => summarizeValue(v, depth + 1))
-    };
-  }
+  const out = {
+    keys: Object.keys(obj)
+  };
 
-  if (value && typeof value === "object") {
-    const keys = Object.keys(value);
-    const sample = {};
-
-    for (const key of keys.slice(0, 12)) {
-      sample[key] = summarizeValue(value[key], depth + 1);
+  for (const key of Object.keys(obj)) {
+    if (Array.isArray(obj[key])) {
+      out[key] = {
+        type: "array",
+        length: obj[key].length,
+        first10: obj[key].slice(0, 10)
+      };
+    } else if (
+      obj[key] === null ||
+      typeof obj[key] === "string" ||
+      typeof obj[key] === "number" ||
+      typeof obj[key] === "boolean"
+    ) {
+      out[key] = obj[key];
     }
-
-    return {
-      type: "object",
-      keys: keys.slice(0, 40),
-      sample
-    };
   }
 
-  return value;
+  return out;
 }
 
-async function getLivePagePrice(url) {
+async function getLivePrice(url) {
   const b = await getBrowser();
   const page = await b.newPage({
     viewport: { width: 1280, height: 900 }
@@ -100,15 +104,9 @@ async function getLivePagePrice(url) {
     const json = await response.json();
 
     return {
-      livePrice: json?.data?.currentPrice?.price ?? null,
+      price: json?.data?.currentPrice?.price ?? null,
       platform: json?.data?.currentPrice?.platform ?? null,
       priceUpdatedAt: json?.data?.currentPrice?.priceUpdatedAt ?? null
-    };
-  } catch (error) {
-    return {
-      livePrice: null,
-      platform: null,
-      error: String(error)
     };
   } finally {
     await page.close().catch(() => {});
@@ -119,119 +117,82 @@ app.get("/", (req, res) => {
   res.json({
     online: true,
     service: "FC Trading Price API",
-    version: "6.3-debug",
-    nextTest: "GET /verify-price"
+    version: "6.4-debug",
+    nextTest: "GET /verify-bruno"
   });
 });
 
-app.get("/verify-price", async (req, res) => {
+app.get("/verify-bruno", async (req, res) => {
   try {
     const manifest = await fetchJson("https://r2.fut.gg/26/manifest.json");
 
     const indexHash = manifest["player-prices-index"];
-    const ps5Hash = manifest["player-prices-ps5-dyn"];
-    const tokenHash = manifest["token-store"];
+    const staticHash = manifest["player-prices-ps5"];
+    const dynHash = manifest["player-prices-ps5-dyn"];
 
-    if (!indexHash || !ps5Hash || !tokenHash) {
-      throw new Error("Required hashes missing from manifest");
+    if (!indexHash || !staticHash || !dynHash) {
+      throw new Error("Required price hashes missing from manifest");
     }
 
     const indexUrl =
       `https://r2.fut.gg/26/player-prices-index.v1.${indexHash}.json`;
 
-    const priceUrl =
-      `https://r2.fut.gg/26/player-prices-ps5-dyn.v1.${ps5Hash}.json`;
+    const staticUrl =
+      `https://r2.fut.gg/26/player-prices-ps5.v1.${staticHash}.json`;
 
-    const tokenUrl =
-      `https://r2.fut.gg/26/token-store.v1.${tokenHash}.json`;
+    const dynUrl =
+      `https://r2.fut.gg/26/player-prices-ps5-dyn.v1.${dynHash}.json`;
 
-    const playersUrl =
-      "https://www.fut.gg/api/fut/players/v2/26/" +
-      "?overall__gte=83&overall__lte=83&sorts=current_price";
-
-    const [indexData, priceData, tokenData, playersData] = await Promise.all([
+    const [indexData, staticData, dynData] = await Promise.all([
       fetchJson(indexUrl),
-      fetchJson(priceUrl),
-      fetchJson(tokenUrl),
-      fetchJson(playersUrl)
+      fetchJson(staticUrl),
+      fetchJson(dynUrl)
     ]);
 
     const ids = buildIds(indexData);
-    const prices = Array.isArray(priceData?.p) ? priceData.p : [];
 
-    if (!prices.length) {
-      throw new Error("No compact prices found");
-    }
+    // v6.1 proved eaId alignment uses ids[i + 1] for price array index i.
+    const targetArrayIndex = ids.findIndex(id => id === BRUNO.eaId) - 1;
 
-    // v6.1 showed the best join is eaId with offset 1.
-    const rawByEaId = new Map();
+    const staticP = Array.isArray(staticData?.p) ? staticData.p : null;
+    const dynP = Array.isArray(dynData?.p) ? dynData.p : null;
 
-    const usable = Math.min(prices.length, Math.max(0, ids.length - 1));
+    const staticValue =
+      staticP && targetArrayIndex >= 0 ? staticP[targetArrayIndex] ?? null : null;
 
-    for (let i = 0; i < usable; i++) {
-      rawByEaId.set(ids[i + 1], prices[i]);
-    }
+    const dynValue =
+      dynP && targetArrayIndex >= 0 ? dynP[targetArrayIndex] ?? null : null;
 
-    const rows = Array.isArray(playersData?.data) ? playersData.data : [];
-
-    const candidates = rows
-      .filter(p =>
-        Number.isFinite(p?.eaId) &&
-        p?.url &&
-        Number.isFinite(rawByEaId.get(p.eaId)) &&
-        rawByEaId.get(p.eaId) > 0
-      )
-      .slice(0, 3);
-
-    const comparisons = [];
-
-    // Sequentially, to keep Render Free memory low.
-    for (const p of candidates) {
-      const url = new URL(p.url, "https://www.fut.gg").href;
-      const live = await getLivePagePrice(url);
-
-      const compactRawValue = rawByEaId.get(p.eaId);
-
-      comparisons.push({
-        name: p.commonName || p.cardName || null,
-        overall: p.overall ?? null,
-        rarityName: p.rarityName ?? null,
-        eaId: p.eaId,
-        compactRawValue,
-        livePagePrice: live.livePrice,
-        sameValue:
-          Number.isFinite(live.livePagePrice) &&
-          live.livePagePrice === compactRawValue,
-        platform: live.platform,
-        priceUpdatedAt: live.priceUpdatedAt ?? null,
-        error: live.error ?? null,
-        url
-      });
-    }
-
-    // Fix comparison field in case of typo above
-    for (const c of comparisons) {
-      c.sameValue =
-        Number.isFinite(c.livePagePrice) &&
-        c.livePagePrice === c.compactRawValue;
-    }
-
-    const valid = comparisons.filter(c => Number.isFinite(c.livePagePrice));
-    const directMatches = valid.filter(c => c.sameValue).length;
+    const live = await getLivePrice(BRUNO.url);
 
     res.json({
       ok: true,
-      conclusion:
-        valid.length && directMatches === valid.length
-          ? "compact values appear to be direct prices"
-          : valid.length
-          ? "compact values are NOT direct coin prices; decoding is required"
-          : "could not compare live prices",
-      comparisons,
-      publicFiles: {
-        totalIndexedIds: ids.length,
-        totalPriceValues: prices.length,
-        tokenStoreSummary: summarizeValue(tokenData)
+      player: BRUNO,
+      live,
+      index: {
+        targetArrayIndex,
+        totalIds: ids.length
+      },
+      publicPriceFiles: {
+        staticValueAtBruno: staticValue,
+        dynamicValueAtBruno: dynValue,
+        staticSummary: summarize(staticData),
+        dynamicSummary: summarize(dynData)
+      },
+      quickChecks: {
+        staticEqualsLive:
+          Number.isFinite(staticValue) &&
+          Number.isFinite(live.price) &&
+          staticValue === live.price,
+        dynamicEqualsLive:
+          Number.isFinite(dynValue) &&
+          Number.isFinite(live.price) &&
+          dynValue === live.price,
+        staticPlusDynamicEqualsLive:
+          Number.isFinite(staticValue) &&
+          Number.isFinite(dynValue) &&
+          Number.isFinite(live.price) &&
+          staticValue + dynValue === live.price
       },
       updatedAt: new Date().toISOString()
     });
@@ -244,6 +205,7 @@ app.get("/verify-price", async (req, res) => {
 });
 
 app.listen(port, () => {
-  console.log(`FC Trading Price API v6.3-debug running on ${port}`);
+  console.log(`FC Trading Price API v6.4-debug running on ${port}`);
 });
+
 
