@@ -19,7 +19,7 @@ async function getBrowser() {
 app.get("/", (req, res) => {
   res.json({
     online: true,
-    service: "FC Price Browser"
+    service: "FC Trading Price API"
   });
 });
 
@@ -39,39 +39,26 @@ app.get("/price", async (req, res) => {
     const b = await getBrowser();
 
     page = await b.newPage({
-      viewport: {
-        width: 1440,
-        height: 1200
-      }
+      viewport: { width: 1440, height: 1200 }
     });
 
-    const captured = [];
+    let priceData = null;
 
     page.on("response", async response => {
       const responseUrl = response.url();
 
       if (
-        responseUrl.includes("player-prices") ||
-        responseUrl.includes("price-access") ||
-        responseUrl.includes("manifest.json")
+        responseUrl.includes(
+          "/api/fut/player-prices/"
+        )
       ) {
         try {
-          const body = await response.text();
+          const json = await response.json();
 
-          captured.push({
-            url: responseUrl,
-            status: response.status(),
-            contentType:
-              response.headers()["content-type"] || null,
-            body: body.slice(0, 10000)
-          });
-        } catch (e) {
-          captured.push({
-            url: responseUrl,
-            status: response.status(),
-            error: String(e)
-          });
-        }
+          if (json?.data?.currentPrice) {
+            priceData = json.data;
+          }
+        } catch {}
       }
     });
 
@@ -82,26 +69,108 @@ app.get("/price", async (req, res) => {
 
     await page.waitForTimeout(10000);
 
-    const text = await page.locator("body").innerText();
-
-    const itemId =
-      text.match(/Item ID\s+(\d+)/i)?.[1] || null;
-
-    const playerId =
-      text.match(/Player ID\s+(\d+)/i)?.[1] || null;
+    const bodyText =
+      await page.locator("body").innerText();
 
     const title = await page.title();
 
+    const playerId =
+      bodyText.match(/Player ID\s+(\d+)/i)?.[1] || null;
+
+    const itemId =
+      bodyText.match(/Item ID\s+(\d+)/i)?.[1] || null;
+
+    if (!priceData) {
+      return res.json({
+        ok: false,
+        error: "Price data not received",
+        playerId,
+        itemId
+      });
+    }
+
+    const current =
+      priceData.currentPrice;
+
+    const completed =
+      priceData.completedAuctions || [];
+
+    const live =
+      priceData.liveAuctions || [];
+
+    const history =
+      priceData.history || [];
+
+    const lowestLiveBin =
+      live.length
+        ? Math.min(
+            ...live
+              .map(x => x.buyNowPrice)
+              .filter(Boolean)
+          )
+        : null;
+
+    const lastSoldPrice =
+      completed.length
+        ? completed[0].soldPrice
+        : null;
+
+    const recentSoldPrices =
+      completed
+        .slice(0, 20)
+        .map(x => x.soldPrice);
+
+    const averageRecentSold =
+      recentSoldPrices.length
+        ? Math.round(
+            recentSoldPrices.reduce(
+              (a, b) => a + b,
+              0
+            ) / recentSoldPrices.length
+          )
+        : null;
+
     return res.json({
       ok: true,
+
       source: "FUT.GG",
-      title,
+
+      player:
+        title.split(" Winter")[0],
+
       playerId:
-        playerId ? Number(playerId) : null,
+        playerId
+          ? Number(playerId)
+          : null,
+
       itemId:
-        itemId ? Number(itemId) : null,
-      capturedRequests: captured,
-      updatedAt: new Date().toISOString()
+        itemId
+          ? Number(itemId)
+          : null,
+
+      platform:
+        current.platform,
+
+      price:
+        current.price,
+
+      lowestLiveBin,
+
+      lastSoldPrice,
+
+      averageRecentSold,
+
+      priceUpdatedAt:
+        current.priceUpdatedAt,
+
+      extinct:
+        current.isExtinct,
+
+      history:
+        history.slice(-30),
+
+      updatedAt:
+        new Date().toISOString()
     });
 
   } catch (error) {
@@ -118,5 +187,7 @@ app.get("/price", async (req, res) => {
 });
 
 app.listen(port, () => {
-  console.log(`FC Price Browser running on ${port}`);
+  console.log(
+    `FC Trading Price API running on ${port}`
+  );
 });
