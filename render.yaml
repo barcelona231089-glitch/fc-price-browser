@@ -1,0 +1,7 @@
+services:
+  - type: web
+    name: fc-price-browser
+    env: node
+    plan: free
+    buildCommand: npm install && npx playwright install chromium
+    startCommand: npm start
