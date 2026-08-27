@@ -12,7 +12,11 @@ const MAX_PAGES = 60;
 const FETCH_TIMEOUT_MS = 20_000;
 
 const cardCache = new Map();
+const cardInflight = new Map();
+
 let bulkPriceCache = null;
+let bulkPriceInflight = null;
+
 const lastRatingSnapshots = new Map();
 
 async function fetchJson(url) {
@@ -77,117 +81,100 @@ function pct(current, previous) {
   return Number((((current - previous) / previous) * 100).toFixed(2));
 }
 
-async function mapLimit(items, limit, fn) {
-  const results = new Array(items.length);
-  let index = 0;
-
-  async function worker() {
-    while (true) {
-      const i = index++;
-      if (i >= items.length) return;
-
-      try {
-        results[i] = await fn(items[i]);
-      } catch (error) {
-        results[i] = {
-          ok: false,
-          error: String(error),
-          input: items[i]
-        };
-      }
-    }
-  }
-
-  await Promise.all(
-    Array.from({ length: Math.min(limit, items.length) }, () => worker())
-  );
-
-  return results;
-}
-
 async function collectAllCardsForRating(rating) {
   const cached = cardCache.get(rating);
 
   if (cached && Date.now() - cached.savedAt < CARD_CACHE_MS) {
-    return {
-      ...cached.data,
-      cached: true
+    return { ...cached.data, cached: true };
+  }
+
+  if (cardInflight.has(rating)) {
+    const data = await cardInflight.get(rating);
+    return { ...data, cached: false };
+  }
+
+  const promise = (async () => {
+    const cards = [];
+    const seen = new Set();
+    let pagesRead = 0;
+
+    for (let pageNumber = 1; pageNumber <= MAX_PAGES; pageNumber++) {
+      const pagePart = pageNumber === 1 ? "" : `&page=${pageNumber}`;
+
+      const url =
+        `https://www.fut.gg/api/fut/players/v2/26/` +
+        `?overall__gte=${rating}&overall__lte=${rating}` +
+        `&sorts=current_price${pagePart}`;
+
+      let json;
+
+      try {
+        json = await fetchJson(url);
+      } catch (error) {
+        if (pageNumber > 1 && error?.status === 404) break;
+        throw error;
+      }
+
+      const rows = Array.isArray(json?.data) ? json.data : [];
+      if (!rows.length) break;
+
+      let added = 0;
+
+      for (const p of rows) {
+        const key = p.eaId ?? p.id ?? p.url;
+        if (key == null || seen.has(String(key))) continue;
+
+        seen.add(String(key));
+        added++;
+
+        cards.push({
+          id: Number.isFinite(p.id) ? p.id : null,
+          eaId: Number.isFinite(p.eaId) ? p.eaId : null,
+          overall: Number.isFinite(p.overall) ? p.overall : null,
+          name:
+            p.commonName ||
+            p.cardName ||
+            [p.firstName, p.lastName].filter(Boolean).join(" ") ||
+            null,
+          cardName: p.cardName ?? null,
+          rarityName: p.rarityName ?? null,
+          rarityGroupName: p.rarityGroupName ?? null,
+          position: p.position ?? null,
+          club: p.club?.name ?? p.uniqueClub?.name ?? null,
+          nation: p.nation?.name ?? null,
+          league: p.league?.name ?? null,
+          url: p.url ? new URL(p.url, "https://www.fut.gg").href : null,
+          slug: p.slug ?? null
+        });
+      }
+
+      pagesRead++;
+
+      if (added === 0) break;
+    }
+
+    const data = {
+      rating,
+      cardCount: cards.length,
+      pagesRead,
+      cards
     };
+
+    cardCache.set(rating, {
+      savedAt: Date.now(),
+      data
+    });
+
+    return data;
+  })();
+
+  cardInflight.set(rating, promise);
+
+  try {
+    return { ...(await promise), cached: false };
+  } finally {
+    cardInflight.delete(rating);
   }
-
-  const cards = [];
-  const seen = new Set();
-  let pagesRead = 0;
-
-  for (let pageNumber = 1; pageNumber <= MAX_PAGES; pageNumber++) {
-    const pagePart = pageNumber === 1 ? "" : `&page=${pageNumber}`;
-
-    const url =
-      `https://www.fut.gg/api/fut/players/v2/26/` +
-      `?overall__gte=${rating}&overall__lte=${rating}` +
-      `&sorts=current_price${pagePart}`;
-
-    let json;
-
-    try {
-      json = await fetchJson(url);
-    } catch (error) {
-      if (pageNumber > 1 && error?.status === 404) break;
-      throw error;
-    }
-
-    const rows = Array.isArray(json?.data) ? json.data : [];
-    if (!rows.length) break;
-
-    let added = 0;
-
-    for (const p of rows) {
-      const key = p.eaId ?? p.id ?? p.url;
-      if (key == null || seen.has(String(key))) continue;
-
-      seen.add(String(key));
-      added++;
-
-      cards.push({
-        id: Number.isFinite(p.id) ? p.id : null,
-        eaId: Number.isFinite(p.eaId) ? p.eaId : null,
-        overall: Number.isFinite(p.overall) ? p.overall : null,
-        name:
-          p.commonName ||
-          p.cardName ||
-          [p.firstName, p.lastName].filter(Boolean).join(" ") ||
-          null,
-        cardName: p.cardName ?? null,
-        rarityName: p.rarityName ?? null,
-        rarityGroupName: p.rarityGroupName ?? null,
-        position: p.position ?? null,
-        club: p.club?.name ?? p.uniqueClub?.name ?? null,
-        nation: p.nation?.name ?? null,
-        league: p.league?.name ?? null,
-        url: p.url ? new URL(p.url, "https://www.fut.gg").href : null,
-        slug: p.slug ?? null
-      });
-    }
-
-    pagesRead++;
-
-    if (added === 0) break;
-  }
-
-  const data = {
-    rating,
-    cardCount: cards.length,
-    pagesRead,
-    cards,
-    cached: false
-  };
-
-  cardCache.set(rating, {
-    savedAt: Date.now(),
-    data
-  });
-
-  return data;
 }
 
 function buildIds(priceData) {
@@ -208,61 +195,65 @@ function buildIds(priceData) {
 }
 
 async function loadBulkPs5Prices() {
-  if (
-    bulkPriceCache &&
-    Date.now() - bulkPriceCache.savedAt < PRICE_CACHE_MS
-  ) {
-    return {
-      ...bulkPriceCache,
-      cached: true
+  if (bulkPriceCache && Date.now() - bulkPriceCache.savedAt < PRICE_CACHE_MS) {
+    return { ...bulkPriceCache, cached: true };
+  }
+
+  if (bulkPriceInflight) {
+    const data = await bulkPriceInflight;
+    return { ...data, cached: false };
+  }
+
+  bulkPriceInflight = (async () => {
+    const manifest = await fetchJson("https://r2.fut.gg/26/manifest.json");
+    const staticHash = manifest["player-prices-ps5"];
+
+    if (!staticHash) {
+      throw new Error("player-prices-ps5 missing from FUT.GG manifest");
+    }
+
+    const priceUrl =
+      `https://r2.fut.gg/26/player-prices-ps5.v1.${staticHash}.json`;
+
+    const data = await fetchJson(priceUrl);
+
+    if (!Array.isArray(data?.p)) {
+      throw new Error("FUT.GG PS5 bulk-price array missing");
+    }
+
+    const ids = buildIds(data);
+
+    if (ids.length !== data.p.length) {
+      throw new Error(
+        `Price mapping length mismatch: ids=${ids.length}, prices=${data.p.length}`
+      );
+    }
+
+    const map = new Map();
+
+    for (let i = 0; i < ids.length; i++) {
+      map.set(ids[i], {
+        price: Number.isFinite(data.p[i]) && data.p[i] > 0 ? data.p[i] : null,
+        statusCode: Array.isArray(data.s) ? data.s[i] ?? null : null
+      });
+    }
+
+    const result = {
+      savedAt: Date.now(),
+      map,
+      priceUrl,
+      totalValues: data.p.length
     };
+
+    bulkPriceCache = result;
+    return result;
+  })();
+
+  try {
+    return { ...(await bulkPriceInflight), cached: false };
+  } finally {
+    bulkPriceInflight = null;
   }
-
-  const manifest = await fetchJson("https://r2.fut.gg/26/manifest.json");
-  const staticHash = manifest["player-prices-ps5"];
-
-  if (!staticHash) {
-    throw new Error("player-prices-ps5 missing from FUT.GG manifest");
-  }
-
-  const priceUrl =
-    `https://r2.fut.gg/26/player-prices-ps5.v1.${staticHash}.json`;
-
-  const data = await fetchJson(priceUrl);
-
-  if (!Array.isArray(data?.p)) {
-    throw new Error("FUT.GG PS5 bulk-price array missing");
-  }
-
-  const ids = buildIds(data);
-
-  if (ids.length !== data.p.length) {
-    throw new Error(
-      `Price mapping length mismatch: ids=${ids.length}, prices=${data.p.length}`
-    );
-  }
-
-  const map = new Map();
-
-  for (let i = 0; i < ids.length; i++) {
-    map.set(ids[i], {
-      price: Number.isFinite(data.p[i]) && data.p[i] > 0 ? data.p[i] : null,
-      statusCode: Array.isArray(data.s) ? data.s[i] ?? null : null
-    });
-  }
-
-  const result = {
-    savedAt: Date.now(),
-    map,
-    priceUrl,
-    totalValues: data.p.length,
-    publishedAt:
-      manifest?._published_at?.["player-prices-ps5-dyn"] ?? null,
-    cached: false
-  };
-
-  bulkPriceCache = result;
-  return result;
 }
 
 function attachPrices(cards, bulk) {
@@ -328,7 +319,6 @@ function summarizeRating(rating, cards) {
 
   const previous = lastRatingSnapshots.get(rating);
   const currentMedian = all.robustMedianPrice ?? all.medianPrice;
-
   const change1m = pct(currentMedian, previous?.median);
 
   lastRatingSnapshots.set(rating, {
@@ -375,13 +365,13 @@ app.get("/", (req, res) => {
   res.json({
     online: true,
     service: "FC Trading Market API",
-    version: "7.0-core",
+    version: "7.1-progressive",
     ratingRange: `${RATING_MIN}-${RATING_MAX}`,
     priceRefreshSeconds: 60,
     endpoints: {
       dashboard: "GET /dashboard",
       oneRating: "GET /market/83",
-      allRatings: "GET /markets",
+      oneSummary: "GET /summary/83",
       health: "GET /health"
     }
   });
@@ -390,23 +380,33 @@ app.get("/", (req, res) => {
 app.get("/health", (req, res) => {
   res.json({
     ok: true,
-    version: "7.0-core",
+    version: "7.1-progressive",
     uptimeSeconds: Math.round(process.uptime()),
     cardCacheRatings: cardCache.size,
+    cardInflightRatings: cardInflight.size,
     bulkPricesCached: Boolean(bulkPriceCache),
+    bulkPriceInflight: Boolean(bulkPriceInflight),
     now: new Date().toISOString()
   });
 });
 
-app.get("/market/:rating", async (req, res) => {
+function validateRating(req, res) {
   const rating = Number(req.params.rating);
 
   if (!Number.isInteger(rating) || rating < RATING_MIN || rating > RATING_MAX) {
-    return res.status(400).json({
+    res.status(400).json({
       ok: false,
       error: `Rating must be ${RATING_MIN}-${RATING_MAX}`
     });
+    return null;
   }
+
+  return rating;
+}
+
+app.get("/market/:rating", async (req, res) => {
+  const rating = validateRating(req, res);
+  if (rating == null) return;
 
   try {
     res.json(await getMarketForRating(rating, true));
@@ -418,49 +418,16 @@ app.get("/market/:rating", async (req, res) => {
   }
 });
 
-app.get("/markets", async (req, res) => {
-  let min = Number(req.query.min ?? RATING_MIN);
-  let max = Number(req.query.max ?? RATING_MAX);
-
-  if (!Number.isInteger(min)) min = RATING_MIN;
-  if (!Number.isInteger(max)) max = RATING_MAX;
-
-  min = Math.max(RATING_MIN, min);
-  max = Math.min(RATING_MAX, max);
-
-  if (min > max) {
-    return res.status(400).json({
-      ok: false,
-      error: "min must be <= max"
-    });
-  }
-
-  const ratings = [];
-  for (let r = min; r <= max; r++) ratings.push(r);
+app.get("/summary/:rating", async (req, res) => {
+  const rating = validateRating(req, res);
+  if (rating == null) return;
 
   try {
-    // Direct HTTP only, no Chromium. Concurrency 4 is safe for Render Free.
-    const results = await mapLimit(ratings, 4, async rating => {
-      const market = await getMarketForRating(rating, false);
-      return {
-        ok: true,
-        rating: market.rating,
-        metadata: market.metadata
-      };
-    });
-
-    res.json({
-      ok: true,
-      source: "FUT.GG public player list + PS5 bulk market prices",
-      refreshSeconds: 60,
-      minRating: min,
-      maxRating: max,
-      results,
-      updatedAt: new Date().toISOString()
-    });
+    res.json(await getMarketForRating(rating, false));
   } catch (error) {
     res.status(500).json({
       ok: false,
+      rating,
       error: String(error)
     });
   }
@@ -483,15 +450,18 @@ app.get("/dashboard", (req, res) => {
   th:first-child,td:first-child{text-align:left}
   th{position:sticky;top:0;background:#222}
   tr:hover{background:#202020}
-  .buy{font-weight:bold}
+  .signal{font-weight:bold}
   .small{font-size:12px;color:#aaa}
+  .loading{color:#888}
+  .error{color:#ff9a9a}
   a{color:#ddd}
 </style>
 </head>
 <body>
 <h1>FC Trading Market</h1>
 <div class="sub">FUT.GG PS5 bulk prices • Ratings 75–99 • Refresh every 60 seconds</div>
-<div id="status" class="status">Loading market…</div>
+<div id="status" class="status">Starting market…</div>
+
 <table>
 <thead>
 <tr>
@@ -508,66 +478,125 @@ app.get("/dashboard", (req, res) => {
 </thead>
 <tbody id="rows"></tbody>
 </table>
+
 <script>
+const RATINGS = Array.from({length: 25}, (_, i) => 75 + i);
+const CONCURRENCY = 3;
+let loadingCycle = false;
+
 const fmt = n => Number.isFinite(n) ? n.toLocaleString("de-DE") : "-";
 const pct = n => Number.isFinite(n) ? (n > 0 ? "+" : "") + n.toFixed(2) + "%" : "-";
 
-async function load(){
-  const status = document.getElementById("status");
-  try{
-    status.textContent = "Loading all ratings…";
-    const r = await fetch("/markets?min=75&max=99", {cache:"no-store"});
-    const j = await r.json();
+function makePlaceholderRows(){
+  const rows = document.getElementById("rows");
+  rows.innerHTML = "";
 
-    if(!j.ok) throw new Error(j.error || "Market request failed");
-
-    const rows = document.getElementById("rows");
-    rows.innerHTML = "";
-
-    for(const item of j.results){
-      if(!item.ok){
-        const tr = document.createElement("tr");
-        tr.innerHTML = "<td colspan='9'>Error loading rating</td>";
-        rows.appendChild(tr);
-        continue;
-      }
-
-      const x = item.rating;
-      const all = x.allCards;
-      const rare = x.rareCards;
-
-      const tr = document.createElement("tr");
-      tr.innerHTML = \`
-        <td><a href="/market/\${x.rating}" target="_blank">\${x.rating} Rated</a></td>
-        <td>\${all.cardCount}</td>
-        <td>\${all.pricedCards}</td>
-        <td>\${fmt(all.robustMedianPrice)}</td>
-        <td>\${fmt(rare.robustMedianPrice ?? rare.medianPrice)}</td>
-        <td>\${fmt(all.minimumPrice)}</td>
-        <td>\${fmt(all.maximumPrice)}</td>
-        <td>\${pct(x.marketChangeSinceLastRefresh)}</td>
-        <td class="buy">\${x.signal}</td>
-      \`;
-      rows.appendChild(tr);
-    }
-
-    status.innerHTML =
-      "Updated: " + new Date(j.updatedAt).toLocaleTimeString("de-DE") +
-      " <span class='small'>• automatic refresh in 60s</span>";
-  }catch(e){
-    status.textContent = "Error: " + e.message;
+  for(const rating of RATINGS){
+    const tr = document.createElement("tr");
+    tr.id = "rating-" + rating;
+    tr.className = "loading";
+    tr.innerHTML = \`
+      <td><a href="/market/\${rating}" target="_blank">\${rating} Rated</a></td>
+      <td colspan="8">Loading…</td>
+    \`;
+    rows.appendChild(tr);
   }
 }
 
-load();
-setInterval(load, 60000);
+function renderRating(j){
+  const x = j.rating;
+  const all = x.allCards;
+  const rare = x.rareCards;
+  const tr = document.getElementById("rating-" + x.rating);
+
+  tr.className = "";
+  tr.innerHTML = \`
+    <td><a href="/market/\${x.rating}" target="_blank">\${x.rating} Rated</a></td>
+    <td>\${all.cardCount}</td>
+    <td>\${all.pricedCards}</td>
+    <td>\${fmt(all.robustMedianPrice)}</td>
+    <td>\${fmt(rare.robustMedianPrice ?? rare.medianPrice)}</td>
+    <td>\${fmt(all.minimumPrice)}</td>
+    <td>\${fmt(all.maximumPrice)}</td>
+    <td>\${pct(x.marketChangeSinceLastRefresh)}</td>
+    <td class="signal">\${x.signal}</td>
+  \`;
+}
+
+function renderError(rating, message){
+  const tr = document.getElementById("rating-" + rating);
+  tr.className = "error";
+  tr.innerHTML = \`
+    <td><a href="/market/\${rating}" target="_blank">\${rating} Rated</a></td>
+    <td colspan="8">Error: \${message}</td>
+  \`;
+}
+
+async function fetchOne(rating){
+  const response = await fetch("/summary/" + rating, {cache:"no-store"});
+  const json = await response.json();
+
+  if(!response.ok || !json.ok){
+    throw new Error(json.error || "Request failed");
+  }
+
+  renderRating(json);
+}
+
+async function runQueue(){
+  if(loadingCycle) return;
+  loadingCycle = true;
+
+  const status = document.getElementById("status");
+  makePlaceholderRows();
+
+  let next = 0;
+  let done = 0;
+  let failed = 0;
+
+  status.textContent = "Loading 0/25 ratings…";
+
+  async function worker(){
+    while(true){
+      const i = next++;
+      if(i >= RATINGS.length) return;
+
+      const rating = RATINGS[i];
+
+      try{
+        await fetchOne(rating);
+      }catch(e){
+        failed++;
+        renderError(rating, e.message);
+      }finally{
+        done++;
+        status.textContent =
+          "Loaded " + done + "/25 ratings" +
+          (failed ? " • " + failed + " error(s)" : "");
+      }
+    }
+  }
+
+  await Promise.all(
+    Array.from({length: CONCURRENCY}, () => worker())
+  );
+
+  status.innerHTML =
+    "Updated: " + new Date().toLocaleTimeString("de-DE") +
+    " <span class='small'>• next refresh in 60s</span>";
+
+  loadingCycle = false;
+}
+
+runQueue();
+setInterval(runQueue, 60000);
 </script>
 </body>
 </html>`);
 });
 
 app.listen(port, () => {
-  console.log(`FC Trading Market API v7 running on ${port}`);
-});
 
+  console.log(`FC Trading Market API v7.1 running on ${port}`);
+});
 
