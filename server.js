@@ -60,6 +60,14 @@ const FETCH_TIMEOUT_MS = 20_000;
 const MAX_PAGES = 60;
 const META_CONCURRENCY = 3;
 
+const SOURCE_HEALTH_MIN_ROWS = Math.max(50, Number(process.env.SOURCE_HEALTH_MIN_ROWS || 250));
+const SOURCE_HEALTH_MIN_COVERAGE = Math.max(0.05, Math.min(0.8, Number(process.env.SOURCE_HEALTH_MIN_COVERAGE || 0.15)));
+const SOURCE_HEALTH_DEGRADED_COVERAGE = Math.max(
+  SOURCE_HEALTH_MIN_COVERAGE,
+  Math.min(0.9, Number(process.env.SOURCE_HEALTH_DEGRADED_COVERAGE || 0.30))
+);
+const SOURCE_HEALTH_STALE_MS = Math.max(2, Number(process.env.SOURCE_HEALTH_STALE_MIN || 3)) * 60_000;
+
 const cardCache = new Map();
 const cardInflight = new Map();
 
@@ -83,6 +91,23 @@ let latestMarketContext = {
   confidence: 0,
   updatedAt: null
 };
+let latestSourceHealth = {
+  status: "STARTING",
+  healthy: false,
+  usable: false,
+  reason: "Noch kein erfolgreicher FUT.GG-Marktcheck.",
+  universeCards: 0,
+  pricedCards: 0,
+  coveragePct: 0,
+  bulkValues: 0,
+  lastSuccessAt: null,
+  lastFailureAt: null,
+  lastError: null,
+  consecutiveFailures: 0,
+  updatedAt: null
+};
+let previousSourceHealthStatus = "STARTING";
+let lastSourceHealthDiscordAlertAt = 0;
 let lastBrainRunAt = null;
 let lastBrainError = null;
 let lastGeminiCandidate = null;
@@ -506,6 +531,127 @@ function currentPricedCards(cards, bulk) {
   }
 
   return rows;
+}
+
+function sourceHealthSnapshot() {
+  const snapshot = { ...latestSourceHealth };
+  const lastSuccessMs = snapshot.lastSuccessAt ? new Date(snapshot.lastSuccessAt).getTime() : 0;
+  const staleForMs = lastSuccessMs ? Math.max(0, Date.now() - lastSuccessMs) : null;
+
+  snapshot.staleForSeconds = staleForMs == null ? null : Math.round(staleForMs / 1000);
+  snapshot.staleAfterSeconds = Math.round(SOURCE_HEALTH_STALE_MS / 1000);
+
+  if (lastSuccessMs && staleForMs > SOURCE_HEALTH_STALE_MS) {
+    snapshot.status = "UNHEALTHY";
+    snapshot.healthy = false;
+    snapshot.usable = false;
+    snapshot.reason = `FUT.GG-Daten sind seit ${Math.round(staleForMs / 1000)} Sekunden nicht erfolgreich aktualisiert worden.`;
+  }
+
+  return snapshot;
+}
+
+function updateSourceHealthSuccess(cards, bulk, pricedRows) {
+  const universeCards = Array.isArray(cards) ? cards.length : 0;
+  const pricedCards = Array.isArray(pricedRows) ? pricedRows.length : 0;
+  const coverage = universeCards > 0 ? pricedCards / universeCards : 0;
+  const coveragePct = Number((coverage * 100).toFixed(2));
+  const bulkValues = Number(bulk?.totalValues || bulk?.map?.size || 0);
+
+  let status = "HEALTHY";
+  let reason = `FUT.GG liefert ${pricedCards}/${universeCards} bepreiste Karten (${coveragePct}%).`;
+
+  if (pricedCards < SOURCE_HEALTH_MIN_ROWS || coverage < SOURCE_HEALTH_MIN_COVERAGE) {
+    status = "UNHEALTHY";
+    reason = `Zu wenig verwertbare FUT.GG-Preisdaten: ${pricedCards}/${universeCards} Karten (${coveragePct}%).`;
+  } else if (coverage < SOURCE_HEALTH_DEGRADED_COVERAGE) {
+    status = "DEGRADED";
+    reason = `FUT.GG-Abdeckung ist reduziert: ${pricedCards}/${universeCards} Karten (${coveragePct}%).`;
+  }
+
+  latestSourceHealth = {
+    status,
+    healthy: status === "HEALTHY",
+    usable: status !== "UNHEALTHY",
+    reason,
+    universeCards,
+    pricedCards,
+    coveragePct,
+    bulkValues,
+    sourceUrl: bulk?.sourceUrl || null,
+    lastSuccessAt: new Date().toISOString(),
+    lastFailureAt: latestSourceHealth.lastFailureAt || null,
+    lastError: null,
+    consecutiveFailures: 0,
+    thresholds: {
+      minRows: SOURCE_HEALTH_MIN_ROWS,
+      minCoveragePct: Number((SOURCE_HEALTH_MIN_COVERAGE * 100).toFixed(2)),
+      degradedCoveragePct: Number((SOURCE_HEALTH_DEGRADED_COVERAGE * 100).toFixed(2))
+    },
+    updatedAt: new Date().toISOString()
+  };
+
+  return sourceHealthSnapshot();
+}
+
+function updateSourceHealthFailure(error) {
+  const failures = Number(latestSourceHealth.consecutiveFailures || 0) + 1;
+  const previousSuccess = latestSourceHealth.lastSuccessAt || null;
+  const status = failures >= 2 || !previousSuccess ? "UNHEALTHY" : "DEGRADED";
+
+  latestSourceHealth = {
+    ...latestSourceHealth,
+    status,
+    healthy: false,
+    usable: status !== "UNHEALTHY",
+    reason: `FUT.GG-Marktcheck fehlgeschlagen (${failures}x in Folge).`,
+    lastFailureAt: new Date().toISOString(),
+    lastError: String(error?.message || error),
+    consecutiveFailures: failures,
+    updatedAt: new Date().toISOString()
+  };
+
+  return sourceHealthSnapshot();
+}
+
+function sourceHealthAllowsTradingCycle() {
+  return sourceHealthSnapshot().usable === true;
+}
+
+async function notifySourceHealthTransition(snapshot) {
+  const current = String(snapshot?.status || "UNKNOWN");
+  const previous = previousSourceHealthStatus;
+  previousSourceHealthStatus = current;
+
+  if (!DISCORD_CONFIGURED || current === previous) return;
+
+  const now = Date.now();
+  const becameUnhealthy = current === "UNHEALTHY";
+  const recovered = previous === "UNHEALTHY" && current !== "UNHEALTHY";
+
+  if (!becameUnhealthy && !recovered) return;
+  if (becameUnhealthy && now - lastSourceHealthDiscordAlertAt < 30 * 60_000) return;
+
+  try {
+    await sendDiscordPayload({
+      embeds: [{
+        title: becameUnhealthy
+          ? "⚠️ FUT.GG Datenquelle nicht sicher"
+          : "✅ FUT.GG Datenquelle wieder stabil",
+        description: String(snapshot.reason || "Source-Health-Status geändert."),
+        fields: [
+          { name: "Status", value: current, inline: true },
+          { name: "Abdeckung", value: `${Number(snapshot.coveragePct || 0).toFixed(2)}%`, inline: true },
+          { name: "Karten", value: `${snapshot.pricedCards || 0}/${snapshot.universeCards || 0}`, inline: true }
+        ],
+        footer: { text: "FC Trader Brain • Source Health Guard" },
+        timestamp: new Date().toISOString()
+      }]
+    });
+    lastSourceHealthDiscordAlertAt = now;
+  } catch (error) {
+    console.error("Source health Discord alert error:", error);
+  }
 }
 
 async function initDb() {
@@ -2329,7 +2475,7 @@ async function sendDiscordStartupMessage() {
           { name: "Kaufalarm ab", value: `${DISCORD_MIN_BUY_CONFIDENCE}% KI-Sicherheit`, inline: true },
           { name: "Spam-Schutz", value: `${Math.round(DISCORD_ALERT_COOLDOWN_MS / 60_000)} Min. Cooldown`, inline: true }
         ],
-        footer: { text: "FC Trading Intelligence v10.15" },
+        footer: { text: "FC Trading Intelligence v10.17" },
         timestamp: new Date().toISOString()
       }]
     });
@@ -2360,6 +2506,16 @@ async function monitorOnce() {
     const currentRows = currentPricedCards(cards, bulk);
     const at = Date.now();
 
+    const sourceHealth = updateSourceHealthSuccess(cards, bulk, currentRows);
+    await notifySourceHealthTransition(sourceHealth);
+
+    if (!sourceHealthAllowsTradingCycle()) {
+      lastMonitorAt = new Date(at).toISOString();
+      lastMonitorError = `Source Health Guard: ${sourceHealth.reason}`;
+      console.warn(lastMonitorError);
+      return;
+    }
+
     recordMemory(currentRows, at);
 
     if (dbEnabled) {
@@ -2380,6 +2536,8 @@ async function monitorOnce() {
     lastMonitorAt = new Date(at).toISOString();
     lastMonitorError = null;
   } catch (error) {
+    const sourceHealth = updateSourceHealthFailure(error);
+    await notifySourceHealthTransition(sourceHealth);
     lastMonitorError = String(error);
     console.error("monitor error:", error);
   } finally {
@@ -4845,7 +5003,7 @@ app.get("/", (req, res) => {
   res.json({
     online: true,
     service: "FC Trading Intelligence",
-    version: "10.16-dynamic-market-context",
+    version: "10.17-source-health-guard",
     gameYear: GAME_YEAR,
     marketProfile: marketProfile(),
     refreshSeconds: 60,
@@ -4867,6 +5025,7 @@ app.get("/", (req, res) => {
       traderConfluenceStatus: "GET /api/trader-confluence/status",
       traderReliabilityStatus: "GET /api/trader-reliability/status",
       marketContext: "GET /api/market-context",
+      sourceHealth: "GET /api/source-health",
       health: "GET /health"
     }
   });
@@ -4875,10 +5034,11 @@ app.get("/", (req, res) => {
 app.get("/health", (req, res) => {
   res.json({
     ok: true,
-    version: "10.16-dynamic-market-context",
+    version: "10.17-source-health-guard",
     gameYear: GAME_YEAR,
     marketProfile: marketProfile(),
     marketContext: latestMarketContext,
+    sourceHealth: sourceHealthSnapshot(),
     monitoringStarted,
     monitoringBusy,
     lastMonitorAt,
@@ -4993,7 +5153,7 @@ app.get("/api/trader-reliability/status", async (req, res) => {
 
     return res.json({
       enabled: true,
-      version: "10.16-dynamic-market-context",
+      version: "10.17-source-health-guard",
       gameYear: GAME_YEAR,
       method: {
         priorAccuracy: TRADER_RELIABILITY_PRIOR_ACCURACY,
@@ -5052,7 +5212,7 @@ app.get("/api/trader-reliability/status", async (req, res) => {
 app.get("/api/trader-confluence/status", (req, res) => {
   res.json({
     enabled: DISCORD_CONFIGURED && dbEnabled,
-    version: "10.16-dynamic-market-context",
+    version: "10.17-source-health-guard",
     minCardConfidence: DISCORD_TRADER_CONFLUENCE_MIN_CONFIDENCE,
     minRatingConfidence: DISCORD_TRADER_CONFLUENCE_MIN_RATING_CONFIDENCE,
     minTraderReliability: DISCORD_TRADER_CONFLUENCE_MIN_RELIABILITY,
@@ -5286,10 +5446,28 @@ app.get("/api/ratings-intelligence", (req, res) => {
   });
 });
 
+app.get("/api/source-health", (req, res) => {
+  const health = sourceHealthSnapshot();
+  res.status(health.status === "UNHEALTHY" ? 503 : 200).json({
+    ok: health.status !== "UNHEALTHY",
+    version: "10.17-source-health-guard",
+    gameYear: GAME_YEAR,
+    refreshSeconds: 60,
+    source: "FUT.GG PS5 bulk prices",
+    health,
+    guard: {
+      blocksHistoryWriteWhenUnhealthy: true,
+      blocksBrainCycleWhenUnhealthy: true,
+      blocksTradingAlertsWhenUnhealthy: true,
+      note: "Bei klar unvollständigen oder ausgefallenen FUT.GG-Daten wird der komplette Trading-Zyklus gestoppt, damit keine kaputten Preise in Historie, Lernen oder Discord-Alerts gelangen."
+    }
+  });
+});
+
 app.get("/api/market-context", (req, res) => {
   res.json({
     ok: true,
-    version: "10.16-dynamic-market-context",
+    version: "10.17-source-health-guard",
     gameYear: GAME_YEAR,
     refreshSeconds: 60,
     context: latestMarketContext,
@@ -5300,7 +5478,7 @@ app.get("/api/market-context", (req, res) => {
 app.get("/api/trader-brain/status", (req, res) => {
   res.json({
     ok: true,
-    version: "10.16-dynamic-market-context",
+    version: "10.17-source-health-guard",
     gameYear: GAME_YEAR,
     marketProfile: marketProfile(),
     marketContext: latestMarketContext,
@@ -5310,7 +5488,7 @@ app.get("/api/trader-brain/status", (req, res) => {
     lastBrainError,
     lastGeminiCandidate,
     learning: {
-      version: "10.16-dynamic-market-context",
+      version: "10.17-source-health-guard",
       totalMatureDecisions: brainLearningCache.totalMatureDecisions,
       rawMatureDecisions: brainLearningCache.rawMatureDecisions,
       uniqueLearningEpisodes: brainLearningCache.uniqueLearningEpisodes,
@@ -5331,7 +5509,7 @@ app.get("/api/trader-brain/learning/status", async (req, res) => {
     const cache = await loadBrainLearningProfiles(true);
     return res.json({
       enabled: true,
-      version: "10.16-dynamic-market-context",
+      version: "10.17-source-health-guard",
       method: {
         windowDays: BRAIN_LEARNING_WINDOW_DAYS,
         priorAccuracy: BRAIN_LEARNING_PRIOR_ACCURACY,
@@ -6431,7 +6609,7 @@ app.listen(
   port,
   () => {
     console.log(
-      `FC Trading Intelligence v10.16 Dynamic Market Context (FC${GAME_YEAR}) running on ${port}`
+      `FC Trading Intelligence v10.17 FUT.GG Source Health Guard (FC${GAME_YEAR}) running on ${port}`
     );
 
     startMonitoring();
