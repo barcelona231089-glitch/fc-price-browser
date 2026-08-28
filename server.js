@@ -60,6 +60,8 @@ const BRAIN_LEARNING_EPISODE_MS = 6 * 60 * 60_000;
 const BRAIN_LEARNING_WINDOW_DAYS = Math.max(30, Number(process.env.BRAIN_LEARNING_WINDOW_DAYS || 90));
 const BRAIN_LEARNING_RECENCY_HALF_LIFE_DAYS = Math.max(3, Number(process.env.BRAIN_LEARNING_RECENCY_HALF_LIFE_DAYS || 14));
 const BRAIN_LEARNING_RECENCY_MIN_WEIGHT = Math.max(0.05, Math.min(0.5, Number(process.env.BRAIN_LEARNING_RECENCY_MIN_WEIGHT || 0.2)));
+const BRAIN_LEARNING_SEVERITY_MIN_EFFECTIVE = Math.max(3, Number(process.env.BRAIN_LEARNING_SEVERITY_MIN_EFFECTIVE || 6));
+const BRAIN_LEARNING_SEVERITY_MAX_ADJUSTMENT = Math.max(1, Math.min(3, Number(process.env.BRAIN_LEARNING_SEVERITY_MAX_ADJUSTMENT || 2)));
 const BRAIN_LEARNING_REGIME_MIN_SAMPLES = 4;
 const BRAIN_LEARNING_EXACT_MIN_SAMPLES = 4;
 const BRAIN_LEARNING_CARDTYPE_MIN_SAMPLES = 6;
@@ -2965,11 +2967,35 @@ function finalizeBrainLearningGroup(group) {
     ? group.totalMaxRoi / group.roiWeight
     : null;
 
-  let confidenceAdjustment = Math.max(
+  const accuracyAdjustment = Math.max(
     -BRAIN_LEARNING_MAX_CONFIDENCE_ADJUSTMENT,
     Math.min(
       BRAIN_LEARNING_MAX_CONFIDENCE_ADJUSTMENT,
       Math.round((smoothedAccuracy - 50) / 4)
+    )
+  );
+
+  // v10.8.1: Nicht jeder Treffer/Fehler ist gleich wertvoll.
+  // Erst bei genügend effektiver Evidenz darf die durchschnittliche
+  // Ergebnis-Schwere die Confidence zusätzlich konservativ kalibrieren.
+  let severityAdjustment = 0;
+  if (effectiveSamples >= BRAIN_LEARNING_SEVERITY_MIN_EFFECTIVE) {
+    if (averageOutcomeScore <= -40) {
+      severityAdjustment = -BRAIN_LEARNING_SEVERITY_MAX_ADJUSTMENT;
+    } else if (averageOutcomeScore <= -15) {
+      severityAdjustment = -1;
+    } else if (averageOutcomeScore >= 70) {
+      severityAdjustment = BRAIN_LEARNING_SEVERITY_MAX_ADJUSTMENT;
+    } else if (averageOutcomeScore >= 45) {
+      severityAdjustment = 1;
+    }
+  }
+
+  let confidenceAdjustment = Math.max(
+    -BRAIN_LEARNING_MAX_CONFIDENCE_ADJUSTMENT,
+    Math.min(
+      BRAIN_LEARNING_MAX_CONFIDENCE_ADJUSTMENT,
+      accuracyAdjustment + severityAdjustment
     )
   );
 
@@ -2994,6 +3020,8 @@ function finalizeBrainLearningGroup(group) {
     smoothedAccuracy: Number(smoothedAccuracy.toFixed(2)),
     averageOutcomeScore: Number(averageOutcomeScore.toFixed(2)),
     averageMaxRoi: averageMaxRoi == null ? null : Number(averageMaxRoi.toFixed(2)),
+    accuracyAdjustment,
+    severityAdjustment,
     confidenceAdjustment
   };
 }
@@ -3256,6 +3284,8 @@ function applyBrainLearningToDecision(decision, profile) {
       smoothedAccuracy: profile.smoothedAccuracy,
       averageOutcomeScore: profile.averageOutcomeScore,
       averageMaxRoi: profile.averageMaxRoi,
+      accuracyAdjustment: profile.accuracyAdjustment ?? profile.confidenceAdjustment,
+      severityAdjustment: profile.severityAdjustment ?? 0,
       confidenceBefore: oldConfidence,
       confidenceModifier: modifier,
       confidenceAfter: confidence
@@ -3886,7 +3916,7 @@ app.get("/", (req, res) => {
   res.json({
     online: true,
     service: "FC Trading Intelligence",
-    version: "10.8-market-regime-learning",
+    version: "10.8.1-outcome-severity-learning",
     refreshSeconds: 60,
     storage:
       dbEnabled
@@ -3912,7 +3942,7 @@ app.get("/", (req, res) => {
 app.get("/health", (req, res) => {
   res.json({
     ok: true,
-    version: "10.8-market-regime-learning",
+    version: "10.8.1-outcome-severity-learning",
     monitoringStarted,
     monitoringBusy,
     lastMonitorAt,
@@ -4022,7 +4052,7 @@ app.get("/api/trader-reliability/status", async (req, res) => {
 
     return res.json({
       enabled: true,
-      version: "10.8-market-regime-learning",
+      version: "10.8.1-outcome-severity-learning",
       method: {
         priorAccuracy: TRADER_RELIABILITY_PRIOR_ACCURACY,
         priorStrength: TRADER_RELIABILITY_PRIOR_STRENGTH,
@@ -4275,14 +4305,14 @@ app.get("/api/ratings-intelligence", (req, res) => {
 app.get("/api/trader-brain/status", (req, res) => {
   res.json({
     ok: true,
-    version: "10.8-market-regime-learning",
+    version: "10.8.1-outcome-severity-learning",
     automatic: true,
     refreshSeconds: 60,
     lastBrainRunAt,
     lastBrainError,
     lastGeminiCandidate,
     learning: {
-      version: "10.8-market-regime-learning",
+      version: "10.8.1-outcome-severity-learning",
       totalMatureDecisions: brainLearningCache.totalMatureDecisions,
       rawMatureDecisions: brainLearningCache.rawMatureDecisions,
       uniqueLearningEpisodes: brainLearningCache.uniqueLearningEpisodes,
@@ -4303,7 +4333,7 @@ app.get("/api/trader-brain/learning/status", async (req, res) => {
     const cache = await loadBrainLearningProfiles(true);
     return res.json({
       enabled: true,
-      version: "10.8-market-regime-learning",
+      version: "10.8.1-outcome-severity-learning",
       method: {
         windowDays: BRAIN_LEARNING_WINDOW_DAYS,
         priorAccuracy: BRAIN_LEARNING_PRIOR_ACCURACY,
@@ -4313,6 +4343,8 @@ app.get("/api/trader-brain/learning/status", async (req, res) => {
         episodeHours: Math.round(BRAIN_LEARNING_EPISODE_MS / 60 / 60_000),
         recencyHalfLifeDays: BRAIN_LEARNING_RECENCY_HALF_LIFE_DAYS,
         recencyMinWeight: BRAIN_LEARNING_RECENCY_MIN_WEIGHT,
+        severityMinEffectiveSamples: BRAIN_LEARNING_SEVERITY_MIN_EFFECTIVE,
+        severityMaxAdjustment: BRAIN_LEARNING_SEVERITY_MAX_ADJUSTMENT,
         regimeMinSamples: BRAIN_LEARNING_REGIME_MIN_SAMPLES,
         exactMinSamples: BRAIN_LEARNING_EXACT_MIN_SAMPLES,
         cardTypeMinSamples: BRAIN_LEARNING_CARDTYPE_MIN_SAMPLES,
@@ -4322,7 +4354,7 @@ app.get("/api/trader-brain/learning/status", async (req, res) => {
         cardTypeMinEffectiveSamples: BRAIN_LEARNING_CARDTYPE_MIN_EFFECTIVE,
         actionMinEffectiveSamples: BRAIN_LEARNING_ACTION_MIN_EFFECTIVE,
         marketRegimes: ["CRASH", "PUMP", "RECOVERY", "FLAT", "NORMAL"],
-        note: "v10.8 lernt zuerst aus derselben Marktlage: Crash, Pump, Recovery, Flat oder Normal. Nur wenn dafür nicht genug Evidenz existiert, fällt das System auf Rating/Kartentyp/Aktion zurück. Ähnliche Entscheidungen derselben Karte werden mit rollendem 6h-Abstand dedupliziert; ältere Marktphasen werden schwächer gewichtet. Confidence ändert sich weiterhin nur konservativ und Aktionen werden nicht blind umgedreht."
+        note: "v10.8.1 lernt zuerst aus derselben Marktlage: Crash, Pump, Recovery, Flat oder Normal. Zusätzlich berücksichtigt die Confidence nach genügend effektiven Fällen die Schwere historischer Ergebnisse: starke wiederholte Fehler drücken etwas stärker, klar positive Outcomes verstärken etwas. Der Zusatz bleibt auf wenige Confidence-Punkte begrenzt; Aktionen werden nicht blind umgedreht."
       },
       totalMatureDecisions: cache.totalMatureDecisions,
       rawMatureDecisions: cache.rawMatureDecisions,
@@ -5401,7 +5433,7 @@ app.listen(
   port,
   () => {
     console.log(
-      `FC Trading Intelligence v10.8 Market Regime Learning running on ${port}`
+      `FC Trading Intelligence v10.8.1 Outcome Severity Learning running on ${port}`
     );
 
     startMonitoring();
