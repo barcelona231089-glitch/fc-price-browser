@@ -75,6 +75,14 @@ let lastMonitorAt = null;
 let lastMonitorError = null;
 let latestTradingRows = [];
 let latestRatingStats = {};
+let latestMarketContext = {
+  mood: "neutral",
+  packSupplyActive: false,
+  source: "market-inference",
+  measuredCards: 0,
+  confidence: 0,
+  updatedAt: null
+};
 let lastBrainRunAt = null;
 let lastBrainError = null;
 let lastGeminiCandidate = null;
@@ -1454,7 +1462,8 @@ function buildCardDiscordPayload(row, type) {
     { name: "Kartentyp", value: String(row.cardType || "-"), inline: true },
     { name: "1m / 5m / 15m", value: `${discordPct(row.change1m)} / ${discordPct(row.change5m)} / ${discordPct(row.change15m)}`, inline: false },
     { name: "24h Tief / Hoch", value: `${discordNumber(row.low24h)} / ${discordNumber(row.high24h)}`, inline: true },
-    { name: "Rating-Markt", value: `${row.overall}er: ${String(row.ratingMarketTrend || "neutral").replaceAll("_", " ")}`, inline: true }
+    { name: "Rating-Markt", value: `${row.overall}er: ${String(row.ratingMarketTrend || "neutral").replaceAll("_", " ")}`, inline: true },
+    { name: "Gesamtmarkt", value: `${String(row.globalMarketMood || "neutral").replaceAll("_", " ")} • ${row.packSupplyActive ? "Angebotsdruck erkannt" : "kein Angebotsdruck"}`, inline: false }
   ];
 
   if (type === "sell" && row.tracked) {
@@ -2788,6 +2797,106 @@ function median(values) {
   return clean.length % 2
     ? clean[mid]
     : (clean[mid - 1] + clean[mid]) / 2;
+}
+
+function marketContextWindow(rows, field) {
+  const moves = rows
+    .map(row => Number(row?.[field]))
+    .filter(Number.isFinite);
+
+  if (!moves.length) {
+    return {
+      measuredCards: 0,
+      medianMove: 0,
+      risingPct: 0,
+      fallingPct: 0
+    };
+  }
+
+  const rising = moves.filter(value => value >= 0.5).length;
+  const falling = moves.filter(value => value <= -0.5).length;
+
+  return {
+    measuredCards: moves.length,
+    medianMove: Number((median(moves) ?? 0).toFixed(2)),
+    risingPct: Number(((rising / moves.length) * 100).toFixed(1)),
+    fallingPct: Number(((falling / moves.length) * 100).toFixed(1))
+  };
+}
+
+function buildGlobalMarketContext(rows) {
+  const eligible = (rows || []).filter(row =>
+    row?.cardType === "Base Rare" &&
+    !isLowWatchRating(row?.overall)
+  );
+
+  const w5m = marketContextWindow(eligible, "change5m");
+  const w15m = marketContextWindow(eligible, "change15m");
+  const w1h = marketContextWindow(eligible, "change1h");
+
+  const packSupplyActive = Boolean(
+    (w5m.measuredCards >= 25 && w5m.fallingPct >= 65 && w5m.medianMove <= -1.5) ||
+    (w15m.measuredCards >= 25 && w15m.fallingPct >= 70 && w15m.medianMove <= -2.5)
+  );
+
+  let mood = "neutral";
+
+  if (w5m.measuredCards < 25) {
+    mood = "insufficient_data";
+  } else if (w5m.fallingPct >= 75 && w5m.medianMove <= -2) {
+    mood = "crash";
+  } else if (packSupplyActive) {
+    mood = "supply_pressure";
+  } else if (
+    w5m.risingPct >= 55 &&
+    w5m.medianMove >= 0.5 &&
+    w15m.medianMove <= -0.75
+  ) {
+    mood = "recovery";
+  } else if (w5m.risingPct >= 70 && w5m.medianMove >= 1.5) {
+    mood = "rising";
+  } else if (w5m.fallingPct >= 60 && w5m.medianMove <= -0.75) {
+    mood = "falling";
+  } else if (
+    Math.abs(w5m.medianMove) < 0.5 &&
+    Math.abs(w15m.medianMove) < 1
+  ) {
+    mood = "flat";
+  }
+
+  const breadthStrength = Math.max(
+    Math.abs(w5m.risingPct - w5m.fallingPct),
+    Math.abs(w15m.risingPct - w15m.fallingPct)
+  );
+
+  const confidence = Math.max(
+    0,
+    Math.min(
+      95,
+      Math.round(
+        Math.min(60, eligible.length / 8) +
+        Math.min(35, breadthStrength * 0.45)
+      )
+    )
+  );
+
+  return {
+    gameYear: GAME_YEAR,
+    mood,
+    packSupplyActive,
+    packSupplyInference: packSupplyActive
+      ? "Breiter Base-Rare-Abverkauf deutet auf erhöhte Pack-/Angebotszufuhr hin."
+      : "Kein breites Angebotsdruck-Muster erkannt.",
+    source: "market-inference",
+    measuredCards: eligible.length,
+    confidence,
+    windows: {
+      m5: w5m,
+      m15: w15m,
+      h1: w1h
+    },
+    updatedAt: new Date().toISOString()
+  };
 }
 
 function reconstructPreviousPrice(currentPrice, changePctValue) {
@@ -4326,6 +4435,8 @@ async function buildTradingRows() {
   });
 
   const ratingStats = buildRatingStats(rows);
+  const globalMarketContext = buildGlobalMarketContext(rows);
+  latestMarketContext = globalMarketContext;
   const brainWork = new Map();
 
   for (const row of rows) {
@@ -4357,8 +4468,11 @@ async function buildTradingRows() {
       ratingMarketRisingPct: rating.risingPct,
       ratingMarketFallingPct: rating.fallingPct,
       marketContext: {
-        packSupplyActive: false,
-        overallMarketMood: "neutral"
+        packSupplyActive: globalMarketContext.packSupplyActive,
+        overallMarketMood: globalMarketContext.mood,
+        contextConfidence: globalMarketContext.confidence,
+        contextSource: globalMarketContext.source,
+        packSupplyInference: globalMarketContext.packSupplyInference
       },
       discordSignals: signals
     };
@@ -4380,6 +4494,9 @@ async function buildTradingRows() {
     row.ratingMarketTrend = rating.trend;
     row.ratingMarketRisingPct = rating.risingPct;
     row.ratingMarketFallingPct = rating.fallingPct;
+    row.globalMarketMood = globalMarketContext.mood;
+    row.packSupplyActive = globalMarketContext.packSupplyActive;
+    row.marketContextConfidence = globalMarketContext.confidence;
 
     brainWork.set(String(row.eaId), { input, quant, confluence, learningProfile });
   }
@@ -4728,7 +4845,7 @@ app.get("/", (req, res) => {
   res.json({
     online: true,
     service: "FC Trading Intelligence",
-    version: "10.15-fc27-market-profile",
+    version: "10.16-dynamic-market-context",
     gameYear: GAME_YEAR,
     marketProfile: marketProfile(),
     refreshSeconds: 60,
@@ -4749,6 +4866,7 @@ app.get("/", (req, res) => {
       discordStatus: "GET /api/discord/status",
       traderConfluenceStatus: "GET /api/trader-confluence/status",
       traderReliabilityStatus: "GET /api/trader-reliability/status",
+      marketContext: "GET /api/market-context",
       health: "GET /health"
     }
   });
@@ -4757,9 +4875,10 @@ app.get("/", (req, res) => {
 app.get("/health", (req, res) => {
   res.json({
     ok: true,
-    version: "10.15-fc27-market-profile",
+    version: "10.16-dynamic-market-context",
     gameYear: GAME_YEAR,
     marketProfile: marketProfile(),
+    marketContext: latestMarketContext,
     monitoringStarted,
     monitoringBusy,
     lastMonitorAt,
@@ -4874,7 +4993,7 @@ app.get("/api/trader-reliability/status", async (req, res) => {
 
     return res.json({
       enabled: true,
-      version: "10.15-fc27-market-profile",
+      version: "10.16-dynamic-market-context",
       gameYear: GAME_YEAR,
       method: {
         priorAccuracy: TRADER_RELIABILITY_PRIOR_ACCURACY,
@@ -4933,7 +5052,7 @@ app.get("/api/trader-reliability/status", async (req, res) => {
 app.get("/api/trader-confluence/status", (req, res) => {
   res.json({
     enabled: DISCORD_CONFIGURED && dbEnabled,
-    version: "10.15-fc27-market-profile",
+    version: "10.16-dynamic-market-context",
     minCardConfidence: DISCORD_TRADER_CONFLUENCE_MIN_CONFIDENCE,
     minRatingConfidence: DISCORD_TRADER_CONFLUENCE_MIN_RATING_CONFIDENCE,
     minTraderReliability: DISCORD_TRADER_CONFLUENCE_MIN_RELIABILITY,
@@ -5167,19 +5286,31 @@ app.get("/api/ratings-intelligence", (req, res) => {
   });
 });
 
+app.get("/api/market-context", (req, res) => {
+  res.json({
+    ok: true,
+    version: "10.16-dynamic-market-context",
+    gameYear: GAME_YEAR,
+    refreshSeconds: 60,
+    context: latestMarketContext,
+    note: "Der Pack-Supply-Kontext ist eine konservative Marktdaten-Inferenz aus Base-Rare-Breite und Preisbewegungen, kein externer Content-Leak."
+  });
+});
+
 app.get("/api/trader-brain/status", (req, res) => {
   res.json({
     ok: true,
-    version: "10.15-fc27-market-profile",
+    version: "10.16-dynamic-market-context",
     gameYear: GAME_YEAR,
     marketProfile: marketProfile(),
+    marketContext: latestMarketContext,
     automatic: true,
     refreshSeconds: 60,
     lastBrainRunAt,
     lastBrainError,
     lastGeminiCandidate,
     learning: {
-      version: "10.15-fc27-market-profile",
+      version: "10.16-dynamic-market-context",
       totalMatureDecisions: brainLearningCache.totalMatureDecisions,
       rawMatureDecisions: brainLearningCache.rawMatureDecisions,
       uniqueLearningEpisodes: brainLearningCache.uniqueLearningEpisodes,
@@ -5200,7 +5331,7 @@ app.get("/api/trader-brain/learning/status", async (req, res) => {
     const cache = await loadBrainLearningProfiles(true);
     return res.json({
       enabled: true,
-      version: "10.15-fc27-market-profile",
+      version: "10.16-dynamic-market-context",
       method: {
         windowDays: BRAIN_LEARNING_WINDOW_DAYS,
         priorAccuracy: BRAIN_LEARNING_PRIOR_ACCURACY,
@@ -6300,7 +6431,7 @@ app.listen(
   port,
   () => {
     console.log(
-      `FC Trading Intelligence v10.15 FC27 Market Profile (FC${GAME_YEAR}) running on ${port}`
+      `FC Trading Intelligence v10.16 Dynamic Market Context (FC${GAME_YEAR}) running on ${port}`
     );
 
     startMonitoring();
