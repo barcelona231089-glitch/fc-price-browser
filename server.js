@@ -1041,6 +1041,14 @@ function discordCycleHasRoom(budget) {
   return !budget || Number(budget.used || 0) < Number(budget.limit || DISCORD_MAX_ALERTS_PER_CYCLE);
 }
 
+function discordCycleHasRoomWithReserve(budget, reserveSlots = 0) {
+  if (!budget) return true;
+
+  const limit = Number(budget.limit || DISCORD_MAX_ALERTS_PER_CYCLE);
+  const reserve = Math.max(0, Math.min(Math.max(0, limit - 1), Number(reserveSlots || 0)));
+  return Number(budget.used || 0) < Math.max(1, limit - reserve);
+}
+
 function discordCycleConsume(budget) {
   if (!budget) return;
   budget.used = Number(budget.used || 0) + 1;
@@ -2598,7 +2606,10 @@ async function processTraderConfluenceAlerts(rows, ratingStats, brainWork, alert
     });
 
     for (const item of candidates) {
-      if (!discordCycleHasRoom(alertBudget)) {
+      // Trader-Confluence darf den kompletten Zyklus nicht auffressen.
+      // Bei normalem 5er-Budget bleiben bis zu 2 Slots für interne
+      // Signalwechsel und die stärksten Karten-/Rating-Alarme reserviert.
+      if (!discordCycleHasRoomWithReserve(alertBudget, 2)) {
         discordCycleBlock(alertBudget);
         break;
       }
@@ -2816,9 +2827,10 @@ async function processBrainStateChangeAlerts(rows, alertBudget = null) {
 
   if (DISCORD_CONFIGURED) {
     for (const item of candidates) {
-      if (!discordCycleHasRoom(alertBudget)) {
-        // Nicht verwerfen: Übergänge oberhalb des Zyklus-Limits bleiben für den
-        // nächsten 60-Sekunden-Lauf offen, statt durch den Brain-State verloren zu gehen.
+      if (!discordCycleHasRoomWithReserve(alertBudget, 1)) {
+        // Einen letzten Slot für den stärksten normalen Karten-/Rating-Alarm
+        // freihalten. Nicht gesendete Übergänge bleiben für den nächsten
+        // 60-Sekunden-Lauf offen, statt durch den Brain-State verloren zu gehen.
         retryIds.add(String(item.row.eaId));
         discordCycleBlock(alertBudget);
         continue;
@@ -5501,7 +5513,7 @@ app.get("/", (req, res) => {
   res.json({
     online: true,
     service: "FC Trading Intelligence",
-    version: "10.23-global-alert-budget-guard",
+    version: "10.24-alert-priority-reserve",
     gameYear: GAME_YEAR,
     marketProfile: marketProfile(),
     refreshSeconds: 60,
@@ -5534,7 +5546,7 @@ app.get("/", (req, res) => {
 app.get("/health", (req, res) => {
   res.json({
     ok: true,
-    version: "10.23-global-alert-budget-guard",
+    version: "10.24-alert-priority-reserve",
     gameYear: GAME_YEAR,
     marketProfile: marketProfile(),
     marketContext: latestMarketContext,
@@ -5655,7 +5667,7 @@ app.get("/api/trader-reliability/status", async (req, res) => {
 
     return res.json({
       enabled: true,
-      version: "10.23-global-alert-budget-guard",
+      version: "10.24-alert-priority-reserve",
       gameYear: GAME_YEAR,
       method: {
         priorAccuracy: TRADER_RELIABILITY_PRIOR_ACCURACY,
@@ -5714,7 +5726,7 @@ app.get("/api/trader-reliability/status", async (req, res) => {
 app.get("/api/trader-confluence/status", (req, res) => {
   res.json({
     enabled: DISCORD_CONFIGURED && dbEnabled,
-    version: "10.23-global-alert-budget-guard",
+    version: "10.24-alert-priority-reserve",
     minCardConfidence: DISCORD_TRADER_CONFLUENCE_MIN_CONFIDENCE,
     minRatingConfidence: DISCORD_TRADER_CONFLUENCE_MIN_RATING_CONFIDENCE,
     minTraderReliability: DISCORD_TRADER_CONFLUENCE_MIN_RELIABILITY,
@@ -5938,7 +5950,7 @@ app.get("/api/trading", async (req, res) => {
 
     res.json({
       ok: true,
-      version: "10.23-global-alert-budget-guard",
+      version: "10.24-alert-priority-reserve",
       refreshSeconds: 60,
       dbEnabled,
       sourceHealth: health,
@@ -6017,7 +6029,7 @@ app.get("/api/source-health", (req, res) => {
   const health = sourceHealthSnapshot();
   res.status(health.status === "UNHEALTHY" ? 503 : 200).json({
     ok: health.status !== "UNHEALTHY",
-    version: "10.23-global-alert-budget-guard",
+    version: "10.24-alert-priority-reserve",
     gameYear: GAME_YEAR,
     refreshSeconds: 60,
     source: "FUT.GG PS5 bulk prices",
@@ -6037,7 +6049,7 @@ app.get("/api/futbin/status", (req, res) => {
 
   res.json({
     ok: true,
-    version: "10.23-global-alert-budget-guard",
+    version: "10.24-alert-priority-reserve",
     gameYear: GAME_YEAR,
     configured: Boolean(FUTBIN_AUTHORIZED_FEED_URL),
     status: latestFutbinStatus,
@@ -6066,7 +6078,7 @@ app.get("/api/futbin/status", (req, res) => {
 app.get("/api/market-context", (req, res) => {
   res.json({
     ok: true,
-    version: "10.23-global-alert-budget-guard",
+    version: "10.24-alert-priority-reserve",
     gameYear: GAME_YEAR,
     refreshSeconds: 60,
     context: latestMarketContext,
@@ -6077,7 +6089,7 @@ app.get("/api/market-context", (req, res) => {
 app.get("/api/trader-brain/status", (req, res) => {
   res.json({
     ok: true,
-    version: "10.23-global-alert-budget-guard",
+    version: "10.24-alert-priority-reserve",
     gameYear: GAME_YEAR,
     marketProfile: marketProfile(),
     marketContext: latestMarketContext,
@@ -6087,7 +6099,7 @@ app.get("/api/trader-brain/status", (req, res) => {
     lastBrainError,
     lastGeminiCandidate,
     learning: {
-      version: "10.23-global-alert-budget-guard",
+      version: "10.24-alert-priority-reserve",
       totalMatureDecisions: brainLearningCache.totalMatureDecisions,
       rawMatureDecisions: brainLearningCache.rawMatureDecisions,
       uniqueLearningEpisodes: brainLearningCache.uniqueLearningEpisodes,
@@ -6108,7 +6120,7 @@ app.get("/api/trader-brain/learning/status", async (req, res) => {
     const cache = await loadBrainLearningProfiles(true);
     return res.json({
       enabled: true,
-      version: "10.23-global-alert-budget-guard",
+      version: "10.24-alert-priority-reserve",
       method: {
         windowDays: BRAIN_LEARNING_WINDOW_DAYS,
         priorAccuracy: BRAIN_LEARNING_PRIOR_ACCURACY,
@@ -7227,7 +7239,7 @@ app.listen(
   port,
   () => {
     console.log(
-      `FC Trading Intelligence v10.23 Global Alert Budget Guard (FC${GAME_YEAR}) running on ${port}`
+      `FC Trading Intelligence v10.24 Alert Priority Reserve (FC${GAME_YEAR}) running on ${port}`
     );
 
     startMonitoring();
