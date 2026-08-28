@@ -97,6 +97,12 @@ let bulkPriceInflight = null;
 
 let monitoringStarted = false;
 let monitoringBusy = false;
+let monitorIntervalHandle = null;
+let metadataIntervalHandle = null;
+let httpServer = null;
+let shuttingDown = false;
+let shutdownStartedAt = null;
+let shutdownReason = null;
 let lastMonitorAt = null;
 let lastMonitorError = null;
 let latestProcessingHealth = {
@@ -3219,7 +3225,7 @@ async function sendDiscordStartupMessage() {
           { name: "Kaufalarm ab", value: `${DISCORD_MIN_BUY_CONFIDENCE}% KI-Sicherheit`, inline: true },
           { name: "Spam-Schutz", value: `${Math.round(DISCORD_ALERT_COOLDOWN_MS / 60_000)} Min. Cooldown`, inline: true }
         ],
-        footer: { text: "FC Trading Intelligence v10.30" },
+        footer: { text: "FC Trading Intelligence v10.31" },
         timestamp: new Date().toISOString()
       }]
     });
@@ -3249,7 +3255,7 @@ async function monitorOnce() {
     let currentRows;
     const at = Date.now();
 
-    // v10.30: Nur echte FUT.GG-Lade-/Formatfehler dürfen den Source Health Guard verschlechtern.
+    // v10.31: Failure-Domain-Isolation bleibt aktiv; Deploys fahren den Dienst jetzt zusätzlich sauber herunter.
     // Fehler aus DB, Brain oder Discord gehören in eine getrennte Failure Domain.
     try {
       [cards, bulk, futbinFeed] = await Promise.all([
@@ -5800,7 +5806,7 @@ app.get("/", (req, res) => {
   res.json({
     online: true,
     service: "FC Trading Intelligence",
-    version: "10.30-failure-domain-isolation",
+    version: "10.31-production-freeze-candidate",
     gameYear: GAME_YEAR,
     marketProfile: marketProfile(),
     refreshSeconds: 60,
@@ -5846,6 +5852,12 @@ function runtimeReadinessSnapshot() {
   const brainAgeMs = brainAtMs ? Math.max(0, now - brainAtMs) : null;
 
   const checks = {
+    runtimeState: {
+      ok: shuttingDown !== true,
+      shuttingDown,
+      shutdownStartedAt,
+      shutdownReason
+    },
     monitoringLoop: {
       ok: monitoringStarted === true && monitorAtMs > 0 && monitorAgeMs <= monitorMaxAgeMs,
       lastAt: lastMonitorAt,
@@ -5914,7 +5926,7 @@ app.get("/api/readiness", (req, res) => {
   const readiness = runtimeReadinessSnapshot();
   res.status(readiness.ready ? 200 : 503).json({
     ok: readiness.ready,
-    version: "10.30-failure-domain-isolation",
+    version: "10.31-production-freeze-candidate",
     gameYear: GAME_YEAR,
     readiness,
     note: "Dieser Endpunkt ist absichtlich strenger als /health. /health zeigt, ob der Webdienst lebt; /api/readiness zeigt, ob Marktquelle, Monitoring, Datenbank, Discord und Trader Brain wirklich produktionsbereit sind."
@@ -5924,12 +5936,17 @@ app.get("/api/readiness", (req, res) => {
 app.get("/health", (req, res) => {
   res.json({
     ok: true,
-    version: "10.30-failure-domain-isolation",
+    version: "10.31-production-freeze-candidate",
     gameYear: GAME_YEAR,
     marketProfile: marketProfile(),
     marketContext: latestMarketContext,
     sourceHealth: sourceHealthSnapshot(),
     processingHealth: processingHealthSnapshot(),
+    runtime: {
+      shuttingDown,
+      shutdownStartedAt,
+      shutdownReason
+    },
     futbin: latestFutbinStatus,
     monitoringStarted,
     monitoringBusy,
@@ -6239,7 +6256,7 @@ app.get("/api/trader-reliability/status", async (req, res) => {
 
     return res.json({
       enabled: true,
-      version: "10.30-failure-domain-isolation",
+      version: "10.31-production-freeze-candidate",
       gameYear: GAME_YEAR,
       method: {
         priorAccuracy: TRADER_RELIABILITY_PRIOR_ACCURACY,
@@ -6298,7 +6315,7 @@ app.get("/api/trader-reliability/status", async (req, res) => {
 app.get("/api/trader-confluence/status", (req, res) => {
   res.json({
     enabled: DISCORD_CONFIGURED && dbEnabled,
-    version: "10.30-failure-domain-isolation",
+    version: "10.31-production-freeze-candidate",
     minCardConfidence: DISCORD_TRADER_CONFLUENCE_MIN_CONFIDENCE,
     minRatingConfidence: DISCORD_TRADER_CONFLUENCE_MIN_RATING_CONFIDENCE,
     minTraderReliability: DISCORD_TRADER_CONFLUENCE_MIN_RELIABILITY,
@@ -6533,7 +6550,7 @@ app.get("/api/trading", async (req, res) => {
 
     res.json({
       ok: true,
-      version: "10.30-failure-domain-isolation",
+      version: "10.31-production-freeze-candidate",
       refreshSeconds: 60,
       dbEnabled,
       sourceHealth: health,
@@ -6612,7 +6629,7 @@ app.get("/api/processing-health", (req, res) => {
   const health = processingHealthSnapshot();
   res.status(health.healthy ? 200 : 503).json({
     ok: health.healthy,
-    version: "10.30-failure-domain-isolation",
+    version: "10.31-production-freeze-candidate",
     gameYear: GAME_YEAR,
     processingHealth: health,
     note: "DB-, Brain- oder Discord-Fehler werden getrennt von FUT.GG-Quellfehlern bewertet und können den Source Health Guard nicht mehr fälschlich in Quarantäne schicken."
@@ -6623,7 +6640,7 @@ app.get("/api/source-health", (req, res) => {
   const health = sourceHealthSnapshot();
   res.status(health.status === "UNHEALTHY" ? 503 : 200).json({
     ok: health.status !== "UNHEALTHY",
-    version: "10.30-failure-domain-isolation",
+    version: "10.31-production-freeze-candidate",
     gameYear: GAME_YEAR,
     refreshSeconds: 60,
     source: "FUT.GG PS5 bulk prices",
@@ -6643,7 +6660,7 @@ app.get("/api/futbin/status", (req, res) => {
 
   res.json({
     ok: true,
-    version: "10.30-failure-domain-isolation",
+    version: "10.31-production-freeze-candidate",
     gameYear: GAME_YEAR,
     configured: Boolean(FUTBIN_AUTHORIZED_FEED_URL),
     status: latestFutbinStatus,
@@ -6672,7 +6689,7 @@ app.get("/api/futbin/status", (req, res) => {
 app.get("/api/market-context", (req, res) => {
   res.json({
     ok: true,
-    version: "10.30-failure-domain-isolation",
+    version: "10.31-production-freeze-candidate",
     gameYear: GAME_YEAR,
     refreshSeconds: 60,
     context: latestMarketContext,
@@ -6683,7 +6700,7 @@ app.get("/api/market-context", (req, res) => {
 app.get("/api/trader-brain/status", (req, res) => {
   res.json({
     ok: true,
-    version: "10.30-failure-domain-isolation",
+    version: "10.31-production-freeze-candidate",
     gameYear: GAME_YEAR,
     marketProfile: marketProfile(),
     marketContext: latestMarketContext,
@@ -6693,7 +6710,7 @@ app.get("/api/trader-brain/status", (req, res) => {
     lastBrainError,
     lastGeminiCandidate,
     learning: {
-      version: "10.30-failure-domain-isolation",
+      version: "10.31-production-freeze-candidate",
       totalMatureDecisions: brainLearningCache.totalMatureDecisions,
       rawMatureDecisions: brainLearningCache.rawMatureDecisions,
       uniqueLearningEpisodes: brainLearningCache.uniqueLearningEpisodes,
@@ -6714,7 +6731,7 @@ app.get("/api/trader-brain/learning/status", async (req, res) => {
     const cache = await loadBrainLearningProfiles(true);
     return res.json({
       enabled: true,
-      version: "10.30-failure-domain-isolation",
+      version: "10.31-production-freeze-candidate",
       method: {
         windowDays: BRAIN_LEARNING_WINDOW_DAYS,
         priorAccuracy: BRAIN_LEARNING_PRIOR_ACCURACY,
@@ -7809,12 +7826,12 @@ async function startMonitoring() {
   await sendDiscordStartupMessage();
   monitorOnce();
 
-  setInterval(
+  monitorIntervalHandle = setInterval(
     monitorOnce,
     PRICE_REFRESH_MS
   );
 
-  setInterval(
+  metadataIntervalHandle = setInterval(
     () => {
       ensureUniverse(true).catch(
         error => {
@@ -7829,11 +7846,82 @@ async function startMonitoring() {
   );
 }
 
-app.listen(
+function sleep(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+async function gracefulShutdown(reason = "shutdown") {
+  if (shuttingDown) return;
+
+  shuttingDown = true;
+  shutdownStartedAt = new Date().toISOString();
+  shutdownReason = String(reason);
+  monitoringStarted = false;
+
+  console.log(`Graceful shutdown gestartet: ${shutdownReason}`);
+
+  if (monitorIntervalHandle) {
+    clearInterval(monitorIntervalHandle);
+    monitorIntervalHandle = null;
+  }
+  if (metadataIntervalHandle) {
+    clearInterval(metadataIntervalHandle);
+    metadataIntervalHandle = null;
+  }
+
+  // Einen laufenden Marktzyklus kurz sauber auslaufen lassen.
+  const waitUntil = Date.now() + 10_000;
+  while (monitoringBusy && Date.now() < waitUntil) {
+    await sleep(100);
+  }
+
+  try {
+    if (discordClient) discordClient.destroy();
+  } catch (error) {
+    console.error("Discord shutdown error:", error);
+  }
+
+  if (pool) {
+    try {
+      await Promise.race([pool.end(), sleep(5_000)]);
+    } catch (error) {
+      console.error("PostgreSQL shutdown error:", error);
+    }
+  }
+
+  if (httpServer) {
+    await new Promise(resolve => {
+      const timer = setTimeout(resolve, 5_000);
+      httpServer.close(() => {
+        clearTimeout(timer);
+        resolve();
+      });
+    });
+  }
+
+  console.log("Graceful shutdown abgeschlossen.");
+  process.exit(0);
+}
+
+process.once("SIGTERM", () => {
+  gracefulShutdown("SIGTERM").catch(error => {
+    console.error("SIGTERM shutdown error:", error);
+    process.exit(1);
+  });
+});
+
+process.once("SIGINT", () => {
+  gracefulShutdown("SIGINT").catch(error => {
+    console.error("SIGINT shutdown error:", error);
+    process.exit(1);
+  });
+});
+
+httpServer = app.listen(
   port,
   () => {
     console.log(
-      `FC Trading Intelligence v10.30 Failure Domain Isolation (FC${GAME_YEAR}) running on ${port}`
+      `FC Trading Intelligence v10.31 Production Freeze Candidate (FC${GAME_YEAR}) running on ${port}`
     );
 
     startMonitoring();
