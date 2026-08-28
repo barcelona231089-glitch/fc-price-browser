@@ -117,8 +117,10 @@ let lastTraderSignalAt = null;
 let lastTraderSignalError = null;
 let traderConfluenceAlertsSent = 0;
 let traderConfluenceInvalidationsSent = 0;
+let traderConfluenceExpirationsSent = 0;
 let lastTraderConfluenceAlertAt = null;
 let lastTraderConfluenceInvalidationAt = null;
+let lastTraderConfluenceExpirationAt = null;
 let lastTraderConfluenceAlertError = null;
 let lastTraderConfluenceGate = null;
 const traderConfluenceSuppressedSignals = new Set();
@@ -1641,13 +1643,23 @@ function traderSignalLifecycleWindowMs(signal) {
   const preferredMs = Math.max(5, Number(preferredMinutes || 60)) * 60_000;
   const graceMs = 30 * 60_000;
 
-  // Mindestens 90 Minuten aktiv, maximal 24 Stunden.
-  // So bleibt ein "morgen"-Call bis zu seinem relevanten 24h-Fenster aktiv,
-  // während Short-Term-Flips nicht ewig als aktuelles Signal herumliegen.
+  // Mindestens 90 Minuten aktiv, maximal 26 Stunden.
+  // Die zusätzliche Grace-Zeit verhindert, dass ein "morgen"-/24h-Call
+  // kurz vor seiner finalen 24h-Auswertung aus dem System fällt.
   return Math.min(
-    24 * 60 * 60_000,
+    26 * 60 * 60_000,
     Math.max(90 * 60_000, preferredMs + graceMs)
   );
+}
+
+function traderSignalIsActive(signal, now = Date.now()) {
+  const timestamp = Number(signal?.timestamp || 0);
+  if (!Number.isFinite(timestamp) || timestamp <= 0) return false;
+
+  const ageMs = now - timestamp;
+  if (!Number.isFinite(ageMs) || ageMs < 0) return false;
+
+  return ageMs <= traderSignalLifecycleWindowMs(signal);
 }
 
 function traderConfluenceInvalidationReason(signal, kind) {
@@ -1680,10 +1692,73 @@ function buildTraderConfluenceInvalidationPayload(signal, kind, gate) {
         { name: "Status", value: kind === "MARKET_LOST" ? "FUT.GG-Marktbestätigung verloren" : "Brain-Bestätigung verloren", inline: false },
         { name: "Grund", value: reason, inline: false }
       ],
-      footer: { text: "FC Trader Brain • Confluence Lifecycle" },
+      footer: { text: "FC Trader Brain • Long-Horizon Lifecycle" },
       timestamp: new Date().toISOString()
     }]
   };
+}
+
+function buildTraderConfluenceExpirationPayload(signal, gate, lifecycleWindowMs) {
+  const call = String(signal?.call || "-").toUpperCase();
+  const target = String(signal?.playerOrRating || "-");
+  const reliability = Number(gate?.effectiveReliability ?? signal?.sourceReliability ?? 50);
+  const activeMinutes = Math.round(Number(lifecycleWindowMs || 0) / 60_000);
+
+  return {
+    embeds: [{
+      title: "⌛ TRADER-SIGNAL ABGELAUFEN",
+      description:
+        "Der erwartete Zeitraum dieses Trader-Calls ist vorbei. Das Signal wird ab jetzt nicht mehr zur aktuellen Brain-Konfluenz gezählt.",
+      fields: [
+        { name: "Trader-Call", value: `${call} • ${target}`, inline: true },
+        { name: "Quelle", value: String(signal?.source || "-").slice(0, 100), inline: true },
+        { name: "Trader-Zuverlässigkeit", value: `${reliability.toFixed(1)}%`, inline: true },
+        { name: "Erwarteter Zeitraum", value: String(signal?.expectedTimeframe || "nicht angegeben"), inline: true },
+        { name: "Aktiv-Fenster", value: `${activeMinutes} Minuten`, inline: true },
+        { name: "Status", value: "Nicht mehr aktiv für neue Kauf-/Verkaufsbestätigungen", inline: false }
+      ],
+      footer: { text: "FC Trader Brain • Long-Horizon Lifecycle" },
+      timestamp: new Date().toISOString()
+    }]
+  };
+}
+
+async function expireTraderConfluenceSignal(signal, state, gate, lifecycleWindowMs) {
+  const call = String(signal?.call || "").toUpperCase();
+  const expiredAction = `EXPIRED:${call}`;
+
+  // Nur ein zuvor wirklich bestätigtes Signal braucht eine mobile Ablaufmeldung.
+  // Unbestätigte/unterdrückte Calls verschwinden still aus der aktiven Konfluenz.
+  if (!state || !String(state.lastAction || "").startsWith("CONFIRMED:")) {
+    return false;
+  }
+
+  await sendDiscordPayload(
+    buildTraderConfluenceExpirationPayload(signal, gate, lifecycleWindowMs)
+  );
+
+  await saveDiscordAlertState({
+    alertKey: `trader-confluence:${signal.id}`,
+    alertType: "trader_confluence_expired",
+    action: expiredAction,
+    confidence: Number.isFinite(gate?.effectiveReliability)
+      ? Math.round(gate.effectiveReliability)
+      : null,
+    fingerprint: `${signal.id}|expired|${Math.round(Number(lifecycleWindowMs || 0) / 60_000)}`.slice(0, 240)
+  });
+
+  traderConfluenceExpirationsSent += 1;
+  lastTraderConfluenceExpirationAt = new Date().toISOString();
+  lastTraderConfluenceGate = {
+    signalId: signal.id,
+    source: signal.source,
+    result: "EXPIRED",
+    effectiveReliability: gate?.effectiveReliability ?? signal?.sourceReliability ?? 50,
+    lifecycleWindowMinutes: Math.round(Number(lifecycleWindowMs || 0) / 60_000),
+    at: lastTraderConfluenceExpirationAt
+  };
+
+  return true;
 }
 
 async function invalidateTraderConfluenceSignal(signal, state, kind, gate) {
@@ -1736,7 +1811,12 @@ async function processTraderConfluenceAlerts(rows, ratingStats, brainWork) {
       const alertKey = `trader-confluence:${signal.id}`;
       const state = await getDiscordAlertState(alertKey);
 
-      if (!Number.isFinite(ageMs) || ageMs < 0 || ageMs > lifecycleWindowMs) continue;
+      if (!Number.isFinite(ageMs) || ageMs < 0) continue;
+
+      if (ageMs > lifecycleWindowMs) {
+        await expireTraderConfluenceSignal(signal, state, gate, lifecycleWindowMs);
+        continue;
+      }
 
       if (signal.marketConfirmed !== true) {
         await invalidateTraderConfluenceSignal(signal, state, "MARKET_LOST", gate);
@@ -2134,7 +2214,7 @@ async function sendDiscordStartupMessage() {
           { name: "Kaufalarm ab", value: `${DISCORD_MIN_BUY_CONFIDENCE}% KI-Sicherheit`, inline: true },
           { name: "Spam-Schutz", value: `${Math.round(DISCORD_ALERT_COOLDOWN_MS / 60_000)} Min. Cooldown`, inline: true }
         ],
-        footer: { text: "FC Trading Intelligence v10.12" },
+        footer: { text: "FC Trading Intelligence v10.13" },
         timestamp: new Date().toISOString()
       }]
     });
@@ -2519,7 +2599,11 @@ function profitInfo(currentPrice, position) {
 }
 
 async function loadRecentDiscordSignals() {
-  if (!dbEnabled) return memoryTraderSignals.filter(signal => Date.now() - Number(signal.timestamp || 0) <= 6 * 60 * 60_000);
+  // Bis zu 30 Stunden laden, damit 24h-/"morgen"-Signale ihren gesamten
+  // Lebenszyklus inklusive 24h-Auswertung durchlaufen können. Ob ein Signal
+  // den aktuellen Brain noch beeinflussen darf, entscheidet separat der
+  // Lifecycle-Filter.
+  if (!dbEnabled) return memoryTraderSignals.filter(signal => Date.now() - Number(signal.timestamp || 0) <= 30 * 60 * 60_000);
 
   const result = await pool.query(`
     SELECT
@@ -2539,9 +2623,9 @@ async function loadRecentDiscordSignals() {
       initial_reference_at,
       created_at
     FROM fc_discord_signals
-    WHERE created_at >= NOW() - INTERVAL '6 hours'
+    WHERE created_at >= NOW() - INTERVAL '30 hours'
     ORDER BY created_at DESC
-    LIMIT 500
+    LIMIT 1000
   `);
 
   return result.rows.map(row => ({
@@ -4040,6 +4124,7 @@ async function buildTradingRows() {
   const current = currentPricedCards(cards, bulk);
   const ids = current.map(row => row.eaId);
   const now = Date.now();
+  const activeSignals = allSignals.filter(signal => traderSignalIsActive(signal, now));
 
   const thresholds = {
     m1: now - 60_000,
@@ -4126,7 +4211,7 @@ async function buildTradingRows() {
       fallingPct: 0
     };
 
-    const signals = matchingSignalsForRow(row, allSignals);
+    const signals = matchingSignalsForRow(row, activeSignals);
 
     const input = {
       playerName: row.name || `EA ${row.eaId}`,
@@ -4519,7 +4604,7 @@ app.get("/", (req, res) => {
   res.json({
     online: true,
     service: "FC Trading Intelligence",
-    version: "10.12-confluence-lifecycle",
+    version: "10.13-long-horizon-lifecycle",
     refreshSeconds: 60,
     storage:
       dbEnabled
@@ -4546,7 +4631,7 @@ app.get("/", (req, res) => {
 app.get("/health", (req, res) => {
   res.json({
     ok: true,
-    version: "10.12-confluence-lifecycle",
+    version: "10.13-long-horizon-lifecycle",
     monitoringStarted,
     monitoringBusy,
     lastMonitorAt,
@@ -4661,7 +4746,7 @@ app.get("/api/trader-reliability/status", async (req, res) => {
 
     return res.json({
       enabled: true,
-      version: "10.12-confluence-lifecycle",
+      version: "10.13-long-horizon-lifecycle",
       method: {
         priorAccuracy: TRADER_RELIABILITY_PRIOR_ACCURACY,
         priorStrength: TRADER_RELIABILITY_PRIOR_STRENGTH,
@@ -4719,7 +4804,7 @@ app.get("/api/trader-reliability/status", async (req, res) => {
 app.get("/api/trader-confluence/status", (req, res) => {
   res.json({
     enabled: DISCORD_CONFIGURED && dbEnabled,
-    version: "10.12-confluence-lifecycle",
+    version: "10.13-long-horizon-lifecycle",
     minCardConfidence: DISCORD_TRADER_CONFLUENCE_MIN_CONFIDENCE,
     minRatingConfidence: DISCORD_TRADER_CONFLUENCE_MIN_RATING_CONFIDENCE,
     minTraderReliability: DISCORD_TRADER_CONFLUENCE_MIN_RELIABILITY,
@@ -4732,16 +4817,19 @@ app.get("/api/trader-confluence/status", (req, res) => {
     },
     suppressedLowReliabilitySignals: traderConfluenceSuppressedSignals.size,
     lifecyclePolicy: {
+      signalLookbackHours: 30,
       minActiveMinutes: 90,
-      maxActiveMinutes: 1440,
+      maxActiveMinutes: 1560,
       reconfirmStabilityMinutes: 15,
-      note: "Signal-Laufzeit folgt dem erwarteten Horizont; verlorene Markt-/Brain-Bestätigung wird einmal als Invalidierung gemeldet."
+      note: "24h-/morgen-Signale bleiben bis zur finalen Auswertung verfügbar; nur aktive Signale beeinflussen den Brain. Bestätigte Signale melden Invalidierung oder Ablauf einmalig."
     },
     lastGate: lastTraderConfluenceGate,
     alertsSent: traderConfluenceAlertsSent,
     invalidationsSent: traderConfluenceInvalidationsSent,
+    expirationsSent: traderConfluenceExpirationsSent,
     lastAlertAt: lastTraderConfluenceAlertAt,
     lastInvalidationAt: lastTraderConfluenceInvalidationAt,
+    lastExpirationAt: lastTraderConfluenceExpirationAt,
     lastError: lastTraderConfluenceAlertError
   });
 });
@@ -4951,14 +5039,14 @@ app.get("/api/ratings-intelligence", (req, res) => {
 app.get("/api/trader-brain/status", (req, res) => {
   res.json({
     ok: true,
-    version: "10.12-confluence-lifecycle",
+    version: "10.13-long-horizon-lifecycle",
     automatic: true,
     refreshSeconds: 60,
     lastBrainRunAt,
     lastBrainError,
     lastGeminiCandidate,
     learning: {
-      version: "10.12-confluence-lifecycle",
+      version: "10.13-long-horizon-lifecycle",
       totalMatureDecisions: brainLearningCache.totalMatureDecisions,
       rawMatureDecisions: brainLearningCache.rawMatureDecisions,
       uniqueLearningEpisodes: brainLearningCache.uniqueLearningEpisodes,
@@ -4979,7 +5067,7 @@ app.get("/api/trader-brain/learning/status", async (req, res) => {
     const cache = await loadBrainLearningProfiles(true);
     return res.json({
       enabled: true,
-      version: "10.12-confluence-lifecycle",
+      version: "10.13-long-horizon-lifecycle",
       method: {
         windowDays: BRAIN_LEARNING_WINDOW_DAYS,
         priorAccuracy: BRAIN_LEARNING_PRIOR_ACCURACY,
@@ -6079,7 +6167,7 @@ app.listen(
   port,
   () => {
     console.log(
-      `FC Trading Intelligence v10.12 Confluence Lifecycle running on ${port}`
+      `FC Trading Intelligence v10.13 Long Horizon Lifecycle running on ${port}`
     );
 
     startMonitoring();
