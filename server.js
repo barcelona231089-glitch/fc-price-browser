@@ -213,6 +213,9 @@ const TRADER_SIGNAL_CHANNEL_ID = String(process.env.TRADER_SIGNAL_CHANNEL_ID || 
 // Ohne Token bleibt der HTTP-Ingest komplett geschlossen.
 const TRADER_FEED_INGEST_TOKEN = String(process.env.TRADER_FEED_INGEST_TOKEN || "").trim();
 const TRADER_FEED_INGEST_CONFIGURED = Boolean(TRADER_FEED_INGEST_TOKEN);
+const TRADER_FEED_MAX_REQUESTS_PER_MIN = Math.max(5, Math.min(300, Number(process.env.TRADER_FEED_MAX_REQUESTS_PER_MIN || 60)));
+const TRADER_FEED_MAX_EVENT_AGE_MS = Math.max(1, Math.min(1440, Number(process.env.TRADER_FEED_MAX_EVENT_AGE_MIN || 30))) * 60_000;
+const TRADER_FEED_MAX_FUTURE_SKEW_MS = Math.max(1, Math.min(30, Number(process.env.TRADER_FEED_MAX_FUTURE_SKEW_MIN || 3))) * 60_000;
 const DISCORD_CONFIGURED = Boolean(DISCORD_BOT_TOKEN);
 const DISCORD_ALERT_COOLDOWN_MS = Math.max(5, Number(process.env.DISCORD_ALERT_COOLDOWN_MIN || 30)) * 60_000;
 const DISCORD_MAX_ALERTS_PER_CYCLE = Math.max(1, Math.min(10, Number(process.env.DISCORD_MAX_ALERTS_PER_CYCLE || 5)));
@@ -248,6 +251,10 @@ let lastTraderSignalError = null;
 let authorizedTraderFeedReceived = 0;
 let authorizedTraderFeedAccepted = 0;
 let authorizedTraderFeedIgnored = 0;
+let authorizedTraderFeedRateLimited = 0;
+let authorizedTraderFeedReplayRejected = 0;
+let traderFeedRateWindowStartedAt = Date.now();
+let traderFeedRateWindowCount = 0;
 let lastAuthorizedTraderFeedAt = null;
 let lastAuthorizedTraderFeedSource = null;
 let lastAuthorizedTraderFeedError = null;
@@ -1443,6 +1450,42 @@ function traderFeedSafeKey(value, fallback = "event") {
     .replace(/^_+|_+$/g, "")
     .slice(0, 45);
   return clean || fallback;
+}
+
+function traderFeedRateLimitCheck() {
+  const now = Date.now();
+  if (now - traderFeedRateWindowStartedAt >= 60_000) {
+    traderFeedRateWindowStartedAt = now;
+    traderFeedRateWindowCount = 0;
+  }
+  traderFeedRateWindowCount++;
+  return {
+    allowed: traderFeedRateWindowCount <= TRADER_FEED_MAX_REQUESTS_PER_MIN,
+    count: traderFeedRateWindowCount,
+    limit: TRADER_FEED_MAX_REQUESTS_PER_MIN,
+    resetAt: new Date(traderFeedRateWindowStartedAt + 60_000).toISOString()
+  };
+}
+
+function parseTraderFeedEventTime(value) {
+  if (value == null || value === "") return null;
+  const numeric = Number(value);
+  if (Number.isFinite(numeric) && numeric > 0) {
+    const ms = numeric < 1e12 ? numeric * 1000 : numeric;
+    const date = new Date(ms);
+    return Number.isNaN(date.getTime()) ? null : date;
+  }
+  const date = new Date(String(value));
+  return Number.isNaN(date.getTime()) ? null : date;
+}
+
+function traderFeedFallbackEventKey(source, text, eventTime) {
+  const timePart = eventTime ? String(eventTime.getTime()) : String(Math.floor(Date.now() / 300_000));
+  return crypto
+    .createHash("sha256")
+    .update(`${source}\n${text}\n${timePart}`)
+    .digest("hex")
+    .slice(0, 32);
 }
 
 function collectDiscordText(message) {
@@ -3017,7 +3060,7 @@ async function sendDiscordStartupMessage() {
           { name: "Kaufalarm ab", value: `${DISCORD_MIN_BUY_CONFIDENCE}% KI-Sicherheit`, inline: true },
           { name: "Spam-Schutz", value: `${Math.round(DISCORD_ALERT_COOLDOWN_MS / 60_000)} Min. Cooldown`, inline: true }
         ],
-        footer: { text: "FC Trading Intelligence v10.25" },
+        footer: { text: "FC Trading Intelligence v10.26" },
         timestamp: new Date().toISOString()
       }]
     });
@@ -5563,7 +5606,7 @@ app.get("/", (req, res) => {
   res.json({
     online: true,
     service: "FC Trading Intelligence",
-    version: "10.25-authorized-trader-feed-bridge",
+    version: "10.26-trader-feed-abuse-guard",
     gameYear: GAME_YEAR,
     marketProfile: marketProfile(),
     refreshSeconds: 60,
@@ -5599,7 +5642,7 @@ app.get("/", (req, res) => {
 app.get("/health", (req, res) => {
   res.json({
     ok: true,
-    version: "10.25-authorized-trader-feed-bridge",
+    version: "10.26-trader-feed-abuse-guard",
     gameYear: GAME_YEAR,
     marketProfile: marketProfile(),
     marketContext: latestMarketContext,
@@ -5644,6 +5687,8 @@ app.get("/health", (req, res) => {
         received: authorizedTraderFeedReceived,
         accepted: authorizedTraderFeedAccepted,
         ignored: authorizedTraderFeedIgnored,
+        rateLimited: authorizedTraderFeedRateLimited,
+        replayRejected: authorizedTraderFeedReplayRejected,
         lastAt: lastAuthorizedTraderFeedAt,
         lastSource: lastAuthorizedTraderFeedSource,
         lastError: lastAuthorizedTraderFeedError
@@ -5690,6 +5735,15 @@ app.get("/api/trader-feeds/status", (req, res) => {
     received: authorizedTraderFeedReceived,
     accepted: authorizedTraderFeedAccepted,
     ignored: authorizedTraderFeedIgnored,
+    rateLimited: authorizedTraderFeedRateLimited,
+    replayRejected: authorizedTraderFeedReplayRejected,
+    guard: {
+      maxRequestsPerMinute: TRADER_FEED_MAX_REQUESTS_PER_MIN,
+      maxEventAgeMinutes: Math.round(TRADER_FEED_MAX_EVENT_AGE_MS / 60_000),
+      maxFutureSkewMinutes: Math.round(TRADER_FEED_MAX_FUTURE_SKEW_MS / 60_000),
+      currentWindowCount: traderFeedRateWindowCount,
+      windowResetAt: new Date(traderFeedRateWindowStartedAt + 60_000).toISOString()
+    },
     lastAt: lastAuthorizedTraderFeedAt,
     lastSource: lastAuthorizedTraderFeedSource,
     lastError: lastAuthorizedTraderFeedError
@@ -5714,9 +5768,20 @@ app.post("/api/trader-signals/ingest", async (req, res) => {
       return res.status(401).json({ ok: false, error: "Unauthorized" });
     }
 
+    const rate = traderFeedRateLimitCheck();
+    if (!rate.allowed) {
+      authorizedTraderFeedIgnored++;
+      authorizedTraderFeedRateLimited++;
+      lastAuthorizedTraderFeedError = `Trader-Feed Rate-Limit erreicht (${rate.limit}/Minute).`;
+      res.set("Retry-After", String(Math.max(1, Math.ceil((new Date(rate.resetAt).getTime() - Date.now()) / 1000))));
+      return res.status(429).json({ ok: false, error: lastAuthorizedTraderFeedError, resetAt: rate.resetAt });
+    }
+
     const source = compactWhitespace(req.body?.source || "").slice(0, 120);
     const text = compactWhitespace(req.body?.message ?? req.body?.text ?? "").slice(0, 3000);
     const externalIdRaw = compactWhitespace(req.body?.eventId ?? req.body?.id ?? "");
+    const eventTimeRaw = req.body?.eventTime ?? req.body?.timestamp ?? req.body?.createdAt ?? null;
+    const eventTime = parseTraderFeedEventTime(eventTimeRaw);
 
     if (!source || source.length < 2 || !text || text.length < 3) {
       authorizedTraderFeedIgnored++;
@@ -5724,10 +5789,33 @@ app.post("/api/trader-signals/ingest", async (req, res) => {
       return res.status(400).json({ ok: false, error: lastAuthorizedTraderFeedError });
     }
 
+    if (eventTimeRaw != null && !eventTime) {
+      authorizedTraderFeedIgnored++;
+      authorizedTraderFeedReplayRejected++;
+      lastAuthorizedTraderFeedError = "Ungueltiger eventTime/timestamp im Trader-Feed.";
+      return res.status(400).json({ ok: false, error: lastAuthorizedTraderFeedError });
+    }
+
+    if (eventTime) {
+      const ageMs = Date.now() - eventTime.getTime();
+      if (ageMs > TRADER_FEED_MAX_EVENT_AGE_MS) {
+        authorizedTraderFeedIgnored++;
+        authorizedTraderFeedReplayRejected++;
+        lastAuthorizedTraderFeedError = "Trader-Feed Event ist zu alt und wurde als Replay verworfen.";
+        return res.status(409).json({ ok: false, error: lastAuthorizedTraderFeedError });
+      }
+      if (ageMs < -TRADER_FEED_MAX_FUTURE_SKEW_MS) {
+        authorizedTraderFeedIgnored++;
+        authorizedTraderFeedReplayRejected++;
+        lastAuthorizedTraderFeedError = "Trader-Feed Event liegt unplausibel weit in der Zukunft.";
+        return res.status(409).json({ ok: false, error: lastAuthorizedTraderFeedError });
+      }
+    }
+
     lastAuthorizedTraderFeedSource = source;
 
     const eventKey = traderFeedSafeKey(
-      externalIdRaw || `${Date.now()}_${Math.random().toString(36).slice(2, 10)}`
+      externalIdRaw || traderFeedFallbackEventKey(source, text, eventTime)
     );
     const sourceKey = traderFeedSafeKey(source, "source");
     const synthetic = {
@@ -5771,7 +5859,9 @@ app.post("/api/trader-signals/ingest", async (req, res) => {
         call: parsed.signal.call,
         target: parsed.signal.playerOrRating,
         category: parsed.signal.category,
-        expectedTimeframe: parsed.signal.expectedTimeframe
+        expectedTimeframe: parsed.signal.expectedTimeframe,
+        eventTime: eventTime ? eventTime.toISOString() : null,
+        idempotency: externalIdRaw ? "external-event-id" : "deterministic-fallback"
       },
       nextStep: "Wird beim naechsten 60-Sekunden-Marktcheck gegen FUT.GG und den Trader Brain geprueft."
     });
@@ -5831,7 +5921,7 @@ app.get("/api/trader-reliability/status", async (req, res) => {
 
     return res.json({
       enabled: true,
-      version: "10.25-authorized-trader-feed-bridge",
+      version: "10.26-trader-feed-abuse-guard",
       gameYear: GAME_YEAR,
       method: {
         priorAccuracy: TRADER_RELIABILITY_PRIOR_ACCURACY,
@@ -5890,7 +5980,7 @@ app.get("/api/trader-reliability/status", async (req, res) => {
 app.get("/api/trader-confluence/status", (req, res) => {
   res.json({
     enabled: DISCORD_CONFIGURED && dbEnabled,
-    version: "10.25-authorized-trader-feed-bridge",
+    version: "10.26-trader-feed-abuse-guard",
     minCardConfidence: DISCORD_TRADER_CONFLUENCE_MIN_CONFIDENCE,
     minRatingConfidence: DISCORD_TRADER_CONFLUENCE_MIN_RATING_CONFIDENCE,
     minTraderReliability: DISCORD_TRADER_CONFLUENCE_MIN_RELIABILITY,
@@ -5943,6 +6033,8 @@ app.get("/api/discord/status", (req, res) => {
       received: authorizedTraderFeedReceived,
       accepted: authorizedTraderFeedAccepted,
       ignored: authorizedTraderFeedIgnored,
+      rateLimited: authorizedTraderFeedRateLimited,
+      replayRejected: authorizedTraderFeedReplayRejected,
       lastAt: lastAuthorizedTraderFeedAt,
       lastSource: lastAuthorizedTraderFeedSource,
       lastError: lastAuthorizedTraderFeedError
@@ -6123,7 +6215,7 @@ app.get("/api/trading", async (req, res) => {
 
     res.json({
       ok: true,
-      version: "10.25-authorized-trader-feed-bridge",
+      version: "10.26-trader-feed-abuse-guard",
       refreshSeconds: 60,
       dbEnabled,
       sourceHealth: health,
@@ -6202,7 +6294,7 @@ app.get("/api/source-health", (req, res) => {
   const health = sourceHealthSnapshot();
   res.status(health.status === "UNHEALTHY" ? 503 : 200).json({
     ok: health.status !== "UNHEALTHY",
-    version: "10.25-authorized-trader-feed-bridge",
+    version: "10.26-trader-feed-abuse-guard",
     gameYear: GAME_YEAR,
     refreshSeconds: 60,
     source: "FUT.GG PS5 bulk prices",
@@ -6222,7 +6314,7 @@ app.get("/api/futbin/status", (req, res) => {
 
   res.json({
     ok: true,
-    version: "10.25-authorized-trader-feed-bridge",
+    version: "10.26-trader-feed-abuse-guard",
     gameYear: GAME_YEAR,
     configured: Boolean(FUTBIN_AUTHORIZED_FEED_URL),
     status: latestFutbinStatus,
@@ -6251,7 +6343,7 @@ app.get("/api/futbin/status", (req, res) => {
 app.get("/api/market-context", (req, res) => {
   res.json({
     ok: true,
-    version: "10.25-authorized-trader-feed-bridge",
+    version: "10.26-trader-feed-abuse-guard",
     gameYear: GAME_YEAR,
     refreshSeconds: 60,
     context: latestMarketContext,
@@ -6262,7 +6354,7 @@ app.get("/api/market-context", (req, res) => {
 app.get("/api/trader-brain/status", (req, res) => {
   res.json({
     ok: true,
-    version: "10.25-authorized-trader-feed-bridge",
+    version: "10.26-trader-feed-abuse-guard",
     gameYear: GAME_YEAR,
     marketProfile: marketProfile(),
     marketContext: latestMarketContext,
@@ -6272,7 +6364,7 @@ app.get("/api/trader-brain/status", (req, res) => {
     lastBrainError,
     lastGeminiCandidate,
     learning: {
-      version: "10.25-authorized-trader-feed-bridge",
+      version: "10.26-trader-feed-abuse-guard",
       totalMatureDecisions: brainLearningCache.totalMatureDecisions,
       rawMatureDecisions: brainLearningCache.rawMatureDecisions,
       uniqueLearningEpisodes: brainLearningCache.uniqueLearningEpisodes,
@@ -6293,7 +6385,7 @@ app.get("/api/trader-brain/learning/status", async (req, res) => {
     const cache = await loadBrainLearningProfiles(true);
     return res.json({
       enabled: true,
-      version: "10.25-authorized-trader-feed-bridge",
+      version: "10.26-trader-feed-abuse-guard",
       method: {
         windowDays: BRAIN_LEARNING_WINDOW_DAYS,
         priorAccuracy: BRAIN_LEARNING_PRIOR_ACCURACY,
@@ -7412,7 +7504,7 @@ app.listen(
   port,
   () => {
     console.log(
-      `FC Trading Intelligence v10.25 Authorized Trader Feed Bridge (FC${GAME_YEAR}) running on ${port}`
+      `FC Trading Intelligence v10.26 Trader Feed Abuse Guard (FC${GAME_YEAR}) running on ${port}`
     );
 
     startMonitoring();
