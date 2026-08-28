@@ -98,6 +98,8 @@ const DISCORD_MIN_SELL_CONFIDENCE = Math.max(70, Math.min(95, Number(process.env
 const DISCORD_MIN_RATING_CONFIDENCE = Math.max(60, Math.min(95, Number(process.env.DISCORD_MIN_RATING_CONFIDENCE || 75)));
 const DISCORD_TRANSITION_MIN_BUY_CONFIDENCE = Math.max(70, Math.min(95, Number(process.env.DISCORD_TRANSITION_MIN_BUY_CONFIDENCE || 84)));
 const DISCORD_TRANSITION_MIN_SELL_CONFIDENCE = Math.max(70, Math.min(95, Number(process.env.DISCORD_TRANSITION_MIN_SELL_CONFIDENCE || 82)));
+const DISCORD_TRADER_CONFLUENCE_MIN_CONFIDENCE = Math.max(70, Math.min(95, Number(process.env.DISCORD_TRADER_CONFLUENCE_MIN_CONFIDENCE || 82)));
+const DISCORD_TRADER_CONFLUENCE_MIN_RATING_CONFIDENCE = Math.max(60, Math.min(95, Number(process.env.DISCORD_TRADER_CONFLUENCE_MIN_RATING_CONFIDENCE || 75)));
 
 let lastDiscordSendAt = null;
 let lastDiscordError = null;
@@ -112,6 +114,9 @@ let traderSignalsAccepted = 0;
 let traderSignalsIgnored = 0;
 let lastTraderSignalAt = null;
 let lastTraderSignalError = null;
+let traderConfluenceAlertsSent = 0;
+let lastTraderConfluenceAlertAt = null;
+let lastTraderConfluenceAlertError = null;
 let discordBotTag = null;
 let discordGuildCount = 0;
 let discordClient = null;
@@ -1464,6 +1469,203 @@ function buildRatingDiscordPayload(stat) {
   };
 }
 
+
+function traderSignalRating(signal) {
+  const target = String(signal?.playerOrRating || "").trim();
+  if (!/^\d{2}$/.test(target)) return null;
+  const rating = Number(target);
+  return rating >= RATING_MIN && rating <= RATING_MAX ? rating : null;
+}
+
+function traderSignalMatchingRows(signal, rows) {
+  if (!signal || !Array.isArray(rows)) return [];
+  return rows.filter(row => matchingSignalsForRow(row, [signal]).length > 0);
+}
+
+function traderSignalBrainAgreement(signal, rows, ratingStats, brainWork) {
+  const call = String(signal?.call || "").toUpperCase();
+  const rating = traderSignalRating(signal);
+
+  if (rating != null) {
+    const stat = ratingStats?.[rating] || null;
+    if (!stat || !Number.isFinite(stat.confidence)) return null;
+
+    let agrees = false;
+    if (call === "KAUFEN") {
+      agrees = stat.marketSignal === "KAUFZONE" && stat.confidence >= DISCORD_TRADER_CONFLUENCE_MIN_RATING_CONFIDENCE;
+    } else if (call === "VERKAUFEN") {
+      agrees = ["STARK FALLEND", "FÄLLT"].includes(stat.marketSignal) && stat.confidence >= DISCORD_TRADER_CONFLUENCE_MIN_RATING_CONFIDENCE;
+    } else if (call === "WARTEN") {
+      agrees = ["STARK FALLEND", "FÄLLT"].includes(stat.marketSignal) && stat.confidence >= DISCORD_TRADER_CONFLUENCE_MIN_RATING_CONFIDENCE;
+    }
+
+    if (!agrees) return null;
+
+    return {
+      kind: "rating",
+      rating,
+      stat,
+      confidence: stat.confidence,
+      summary: `${rating}er Markt: ${stat.marketSignal} • ${stat.marketAdvice}`,
+      reason: stat.reason || "Rating-Markt bestätigt den Trader-Call."
+    };
+  }
+
+  const candidates = traderSignalMatchingRows(signal, rows)
+    .filter(row => Number.isFinite(row.aiConfidence))
+    .filter(row => {
+      const quantAction = brainWork?.get(String(row.eaId))?.quant?.suggestedAction;
+
+      // Wichtig: Der externe Trader darf den eigenen Brain nicht zirkulär "bestätigen".
+      // Deshalb muss zusätzlich der unabhängige Quantitative Core dieselbe Richtung sehen.
+      if (call === "KAUFEN") {
+        return row.aiAction === "JETZT KAUFEN" && quantAction === "JETZT KAUFEN";
+      }
+      if (call === "VERKAUFEN") {
+        return row.aiAction === "VERKAUF PRÜFEN" && quantAction === "VERKAUF PRÜFEN";
+      }
+      if (call === "WARTEN") {
+        return ["NOCH WARTEN", "NICHT KAUFEN"].includes(row.aiAction) &&
+          ["NOCH WARTEN", "NICHT KAUFEN"].includes(quantAction);
+      }
+      return false;
+    })
+    .filter(row => row.aiConfidence >= DISCORD_TRADER_CONFLUENCE_MIN_CONFIDENCE)
+    .sort((a, b) => b.aiConfidence - a.aiConfidence);
+
+  const row = candidates[0];
+  if (!row) return null;
+
+  return {
+    kind: "card",
+    row,
+    confidence: row.aiConfidence,
+    summary: `${row.aiAction} • ${row.name || `EA ${row.eaId}`} (${row.overall})`,
+    reason: row.aiReason || "Trader Brain bestätigt den Trader-Call."
+  };
+}
+
+function buildTraderConfluencePayload(signal, agreement, currentReliability) {
+  const call = String(signal?.call || "").toUpperCase();
+  const emoji = call === "KAUFEN" ? "🧠🟢" : call === "VERKAUFEN" ? "🧠💰" : "🧠⏳";
+  const target = String(signal?.playerOrRating || "-");
+  const details = String(signal?.confirmationDetails || "Marktbestätigung aktiv.").slice(0, 900);
+  const brainReason = String(agreement?.reason || "Eigene Marktlogik bestätigt den Call.").slice(0, 900);
+
+  const fields = [
+    { name: "Trader-Call", value: `${call} • ${target}`, inline: true },
+    { name: "Quelle", value: String(signal?.source || "-").slice(0, 100), inline: true },
+    { name: "Trader-Zuverlässigkeit", value: `${Number(currentReliability ?? signal?.sourceReliability ?? 50).toFixed(1)}%`, inline: true },
+    { name: "Kategorie / Zeitraum", value: `${signal?.category || "-"} • ${signal?.expectedTimeframe || "nicht angegeben"}`, inline: false },
+    { name: "Eigener Brain", value: agreement?.summary || "bestätigt", inline: false },
+    { name: "FUT.GG Marktcheck", value: details, inline: false },
+    { name: "Warum Alarm?", value: brainReason, inline: false }
+  ];
+
+  const url = agreement?.kind === "card" ? agreement.row?.url || undefined : undefined;
+
+  return {
+    embeds: [{
+      title: `${emoji} TRADER + MARKT + BRAIN BESTÄTIGT`,
+      url,
+      description: `Externer Trader-Call wurde **nicht blind übernommen**. FUT.GG und der eigene Trader Brain stimmen aktuell überein.`,
+      fields,
+      footer: { text: "FC Trader Brain • Triple-Confluence Alert" },
+      timestamp: new Date().toISOString()
+    }]
+  };
+}
+
+async function processTraderConfluenceAlerts(rows, ratingStats, brainWork) {
+  if (!DISCORD_CONFIGURED || !dbEnabled || !rows?.length) return;
+
+  try {
+    const [signals, profiles] = await Promise.all([
+      loadRecentDiscordSignals(),
+      loadTraderProfiles()
+    ]);
+
+    const candidates = [];
+
+    for (const signal of signals) {
+      if (signal.marketConfirmed !== true) continue;
+
+      const agreement = traderSignalBrainAgreement(signal, rows, ratingStats, brainWork);
+      if (!agreement) continue;
+
+      const profile = profiles[String(signal.source || "").toLowerCase()];
+      const reliability = Number(profile?.overallAccuracy ?? signal.sourceReliability ?? 50);
+      const ageMs = Date.now() - Number(signal.timestamp || 0);
+      if (!Number.isFinite(ageMs) || ageMs < 0 || ageMs > 6 * 60 * 60_000) continue;
+
+      candidates.push({ signal, agreement, reliability });
+    }
+
+    candidates.sort((a, b) => {
+      const conf = (b.agreement.confidence || 0) - (a.agreement.confidence || 0);
+      if (conf !== 0) return conf;
+      return b.reliability - a.reliability;
+    });
+
+    let sent = 0;
+
+    for (const item of candidates) {
+      if (sent >= DISCORD_MAX_ALERTS_PER_CYCLE) break;
+
+      const { signal, agreement, reliability } = item;
+      const alertKey = `trader-confluence:${signal.id}`;
+      const action = `CONFIRMED:${String(signal.call || "").toUpperCase()}`;
+      const state = await getDiscordAlertState(alertKey);
+
+      // Ein Trader-Signal bekommt genau einen Triple-Confluence-Alarm.
+      if (state?.lastAction === action) continue;
+
+      await sendDiscordPayload(buildTraderConfluencePayload(signal, agreement, reliability));
+
+      await saveDiscordAlertState({
+        alertKey,
+        alertType: "trader_confluence",
+        action,
+        price: agreement.kind === "card" ? agreement.row?.price : agreement.stat?.medianPrice,
+        confidence: agreement.confidence,
+        fingerprint: `${signal.id}|${agreement.summary}`.slice(0, 240)
+      });
+
+      // Verhindert einen identischen Standardalarm direkt im Anschluss.
+      if (agreement.kind === "card" && agreement.row) {
+        const row = agreement.row;
+        await saveDiscordAlertState({
+          alertKey: `card:${row.eaId}`,
+          alertType: "trader_confluence_guard",
+          action: row.aiAction,
+          price: row.price,
+          confidence: row.aiConfidence,
+          fingerprint: `trader-confluence:${signal.id}`
+        });
+      } else if (agreement.kind === "rating" && agreement.stat) {
+        const stat = agreement.stat;
+        await saveDiscordAlertState({
+          alertKey: `rating:${stat.rating}`,
+          alertType: "trader_confluence_guard",
+          action: stat.marketSignal,
+          price: stat.medianPrice,
+          confidence: stat.confidence,
+          fingerprint: `trader-confluence:${signal.id}`
+        });
+      }
+
+      traderConfluenceAlertsSent += 1;
+      lastTraderConfluenceAlertAt = new Date().toISOString();
+      lastTraderConfluenceAlertError = null;
+      sent += 1;
+    }
+  } catch (error) {
+    lastTraderConfluenceAlertError = String(error);
+    lastDiscordError = String(error);
+    console.error("Trader confluence alert error:", error);
+  }
+}
+
 function brainTransitionKind(previousAction, nextAction) {
   const from = String(previousAction || "");
   const to = String(nextAction || "");
@@ -1737,7 +1939,7 @@ async function sendDiscordStartupMessage() {
           { name: "Kaufalarm ab", value: `${DISCORD_MIN_BUY_CONFIDENCE}% KI-Sicherheit`, inline: true },
           { name: "Spam-Schutz", value: `${Math.round(DISCORD_ALERT_COOLDOWN_MS / 60_000)} Min. Cooldown`, inline: true }
         ],
-        footer: { text: "FC Trading Intelligence v10.9" },
+        footer: { text: "FC Trading Intelligence v10.10" },
         timestamp: new Date().toISOString()
       }]
     });
@@ -1780,6 +1982,7 @@ async function monitorOnce() {
 
     await evaluateTraderSignalReliability(latestTradingRows);
     await automaticTraderBrain(latestTradingRows, built.brainWork);
+    await processTraderConfluenceAlerts(latestTradingRows, latestRatingStats, built.brainWork);
     await processBrainStateChangeAlerts(latestTradingRows);
     await processDiscordAlerts(latestTradingRows, latestRatingStats);
     await evaluatePendingDecisions();
@@ -4121,7 +4324,7 @@ app.get("/", (req, res) => {
   res.json({
     online: true,
     service: "FC Trading Intelligence",
-    version: "10.9-signal-transition-alerts",
+    version: "10.10-trader-confluence-alerts",
     refreshSeconds: 60,
     storage:
       dbEnabled
@@ -4138,6 +4341,7 @@ app.get("/", (req, res) => {
       traderBrainLearning: "GET /api/trader-brain/learning/status",
       geminiHealth: "GET /api/gemini-health",
       discordStatus: "GET /api/discord/status",
+      traderConfluenceStatus: "GET /api/trader-confluence/status",
       traderReliabilityStatus: "GET /api/trader-reliability/status",
       health: "GET /health"
     }
@@ -4147,7 +4351,7 @@ app.get("/", (req, res) => {
 app.get("/health", (req, res) => {
   res.json({
     ok: true,
-    version: "10.9-signal-transition-alerts",
+    version: "10.10-trader-confluence-alerts",
     monitoringStarted,
     monitoringBusy,
     lastMonitorAt,
@@ -4182,6 +4386,9 @@ app.get("/health", (req, res) => {
       traderSignalsIgnored,
       lastTraderSignalAt,
       lastTraderSignalError,
+      traderConfluenceAlertsSent,
+      lastTraderConfluenceAlertAt,
+      lastTraderConfluenceAlertError,
       alertsSent: discordAlertsSent,
       lastSendAt: lastDiscordSendAt,
       lastError: lastDiscordError
@@ -4257,7 +4464,7 @@ app.get("/api/trader-reliability/status", async (req, res) => {
 
     return res.json({
       enabled: true,
-      version: "10.9-signal-transition-alerts",
+      version: "10.10-trader-confluence-alerts",
       method: {
         priorAccuracy: TRADER_RELIABILITY_PRIOR_ACCURACY,
         priorStrength: TRADER_RELIABILITY_PRIOR_STRENGTH,
@@ -4312,6 +4519,18 @@ app.get("/api/trader-reliability/status", async (req, res) => {
   }
 });
 
+app.get("/api/trader-confluence/status", (req, res) => {
+  res.json({
+    enabled: DISCORD_CONFIGURED && dbEnabled,
+    version: "10.10-trader-confluence-alerts",
+    minCardConfidence: DISCORD_TRADER_CONFLUENCE_MIN_CONFIDENCE,
+    minRatingConfidence: DISCORD_TRADER_CONFLUENCE_MIN_RATING_CONFIDENCE,
+    alertsSent: traderConfluenceAlertsSent,
+    lastAlertAt: lastTraderConfluenceAlertAt,
+    lastError: lastTraderConfluenceAlertError
+  });
+});
+
 app.get("/api/discord/status", (req, res) => {
   res.json({
     configured: DISCORD_CONFIGURED,
@@ -4330,6 +4549,9 @@ app.get("/api/discord/status", (req, res) => {
     traderSignalsIgnored,
     lastTraderSignalAt,
     lastTraderSignalError,
+    traderConfluenceAlertsSent,
+    lastTraderConfluenceAlertAt,
+    lastTraderConfluenceAlertError,
     alertsSent: discordAlertsSent,
     lastSendAt: lastDiscordSendAt,
     lastError: lastDiscordError,
@@ -4510,14 +4732,14 @@ app.get("/api/ratings-intelligence", (req, res) => {
 app.get("/api/trader-brain/status", (req, res) => {
   res.json({
     ok: true,
-    version: "10.9-signal-transition-alerts",
+    version: "10.10-trader-confluence-alerts",
     automatic: true,
     refreshSeconds: 60,
     lastBrainRunAt,
     lastBrainError,
     lastGeminiCandidate,
     learning: {
-      version: "10.9-signal-transition-alerts",
+      version: "10.10-trader-confluence-alerts",
       totalMatureDecisions: brainLearningCache.totalMatureDecisions,
       rawMatureDecisions: brainLearningCache.rawMatureDecisions,
       uniqueLearningEpisodes: brainLearningCache.uniqueLearningEpisodes,
@@ -4538,7 +4760,7 @@ app.get("/api/trader-brain/learning/status", async (req, res) => {
     const cache = await loadBrainLearningProfiles(true);
     return res.json({
       enabled: true,
-      version: "10.9-signal-transition-alerts",
+      version: "10.10-trader-confluence-alerts",
       method: {
         windowDays: BRAIN_LEARNING_WINDOW_DAYS,
         priorAccuracy: BRAIN_LEARNING_PRIOR_ACCURACY,
@@ -5638,7 +5860,7 @@ app.listen(
   port,
   () => {
     console.log(
-      `FC Trading Intelligence v10.9 Signal Transition Alerts running on ${port}`
+      `FC Trading Intelligence v10.10 Trader Confluence Alerts running on ${port}`
     );
 
     startMonitoring();
