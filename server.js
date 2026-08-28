@@ -517,8 +517,47 @@ async function initDb() {
       category VARCHAR(50),
       market_confirmed BOOLEAN DEFAULT FALSE,
       confirmation_details TEXT,
+      target_ea_id BIGINT,
+      initial_reference_price INTEGER,
+      initial_reference_at TIMESTAMPTZ,
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     )
+  `);
+
+  // v10.6: bestehende Datenbanken ohne Datenverlust erweitern.
+  await pool.query(`
+    ALTER TABLE fc_discord_signals
+      ADD COLUMN IF NOT EXISTS target_ea_id BIGINT
+  `);
+
+  await pool.query(`
+    ALTER TABLE fc_discord_signals
+      ADD COLUMN IF NOT EXISTS initial_reference_price INTEGER
+  `);
+
+  await pool.query(`
+    ALTER TABLE fc_discord_signals
+      ADD COLUMN IF NOT EXISTS initial_reference_at TIMESTAMPTZ
+  `);
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS fc_trader_signal_outcomes (
+      signal_id VARCHAR(120) NOT NULL REFERENCES fc_discord_signals(id) ON DELETE CASCADE,
+      horizon_minutes SMALLINT NOT NULL,
+      initial_price INTEGER NOT NULL,
+      observed_price INTEGER NOT NULL,
+      gross_change_pct NUMERIC(10,4) NOT NULL,
+      net_roi_after_tax_pct NUMERIC(10,4) NOT NULL,
+      was_correct BOOLEAN NOT NULL,
+      evaluation_reason TEXT,
+      evaluated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      PRIMARY KEY (signal_id, horizon_minutes)
+    )
+  `);
+
+  await pool.query(`
+    CREATE INDEX IF NOT EXISTS idx_fc_trader_signal_outcomes_time
+    ON fc_trader_signal_outcomes (evaluated_at DESC)
   `);
 
   await pool.query(`
@@ -857,6 +896,27 @@ function parseTraderSignalMessage(message) {
   };
 }
 
+function currentReferenceForTraderSignal(signal) {
+  const target = String(signal?.playerOrRating || "").trim();
+  const rating = /^\d{2}$/.test(target) ? Number(target) : null;
+
+  if (Number.isFinite(rating) && rating >= 75 && rating <= 99) {
+    const prices = latestTradingRows
+      .filter(row => row.overall === rating && row.cardType === "Base Rare" && Number.isFinite(row.price))
+      .map(row => row.price);
+    return median(prices);
+  }
+
+  if (signal?.eaId != null) {
+    const row = latestTradingRows.find(item => String(item.eaId) === String(signal.eaId));
+    if (Number.isFinite(row?.price)) return row.price;
+  }
+
+  const lower = target.toLowerCase();
+  const exact = latestTradingRows.filter(row => String(row.name || "").toLowerCase() === lower && Number.isFinite(row.price));
+  return exact.length ? median(exact.map(row => row.price)) : null;
+}
+
 async function saveIncomingTraderSignal(signal) {
   if (!signal) return;
 
@@ -865,6 +925,8 @@ async function saveIncomingTraderSignal(signal) {
     if (memoryTraderSignals.length > 500) memoryTraderSignals.length = 500;
     return;
   }
+
+  const initialReferencePrice = currentReferenceForTraderSignal(signal);
 
   await pool.query(
     `
@@ -878,9 +940,12 @@ async function saveIncomingTraderSignal(signal) {
         expected_timeframe,
         source_reliability,
         category,
+        target_ea_id,
+        initial_reference_price,
+        initial_reference_at,
         created_at
       )
-      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,NOW())
+      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,NOW(),NOW())
       ON CONFLICT (id) DO NOTHING
     `,
     [
@@ -892,7 +957,9 @@ async function saveIncomingTraderSignal(signal) {
       signal.reason,
       signal.expectedTimeframe,
       signal.sourceReliability,
-      signal.category
+      signal.category,
+      signal.eaId ? String(signal.eaId) : null,
+      Number.isFinite(initialReferencePrice) ? Math.round(initialReferencePrice) : null
     ]
   );
 
@@ -1427,7 +1494,7 @@ async function sendDiscordStartupMessage() {
           { name: "Kaufalarm ab", value: `${DISCORD_MIN_BUY_CONFIDENCE}% KI-Sicherheit`, inline: true },
           { name: "Spam-Schutz", value: `${Math.round(DISCORD_ALERT_COOLDOWN_MS / 60_000)} Min. Cooldown`, inline: true }
         ],
-        footer: { text: "FC Trading Intelligence v10.5.1" },
+        footer: { text: "FC Trading Intelligence v10.6" },
         timestamp: new Date().toISOString()
       }]
     });
@@ -1468,6 +1535,7 @@ async function monitorOnce() {
     latestTradingRows = built.rows;
     latestRatingStats = built.ratingStats;
 
+    await evaluateTraderSignalReliability(latestTradingRows);
     await automaticTraderBrain(latestTradingRows, built.brainWork);
     await processDiscordAlerts(latestTradingRows, latestRatingStats);
     await evaluatePendingDecisions();
@@ -1824,6 +1892,9 @@ async function loadRecentDiscordSignals() {
       category,
       market_confirmed,
       confirmation_details,
+      target_ea_id,
+      initial_reference_price,
+      initial_reference_at,
       created_at
     FROM fc_discord_signals
     WHERE created_at >= NOW() - INTERVAL '6 hours'
@@ -1843,6 +1914,9 @@ async function loadRecentDiscordSignals() {
     category: row.category || "SHORT_TERM_FLIPS",
     marketConfirmed: row.confirmation_details ? row.market_confirmed === true : null,
     confirmationDetails: row.confirmation_details || "",
+    eaId: row.target_ea_id == null ? null : String(row.target_ea_id),
+    initialReferencePrice: row.initial_reference_price == null ? null : Number(row.initial_reference_price),
+    initialReferenceAt: row.initial_reference_at ? new Date(row.initial_reference_at).getTime() : null,
     timestamp: new Date(row.created_at).getTime()
   }));
 }
@@ -2205,6 +2279,244 @@ async function persistDiscordSignalMarketConfirmations(rows, brainWork) {
       [group.id, marketConfirmed, confirmationDetails]
     );
   }
+}
+
+const TRADER_RELIABILITY_HORIZONS = [5, 15, 60, 360, 1440];
+
+async function loadTraderSignalsForReliability() {
+  if (!dbEnabled) return [];
+
+  const result = await pool.query(`
+    SELECT
+      id,
+      source,
+      player_or_rating,
+      target_ea_id,
+      call,
+      category,
+      initial_reference_price,
+      initial_reference_at,
+      created_at
+    FROM fc_discord_signals
+    WHERE created_at >= NOW() - INTERVAL '30 hours'
+    ORDER BY created_at ASC
+  `);
+
+  return result.rows.map(row => ({
+    id: row.id,
+    source: row.source,
+    playerOrRating: row.player_or_rating,
+    eaId: row.target_ea_id == null ? null : String(row.target_ea_id),
+    call: row.call,
+    category: row.category || "SHORT_TERM_FLIPS",
+    initialReferencePrice: row.initial_reference_price == null ? null : Number(row.initial_reference_price),
+    initialReferenceAt: row.initial_reference_at ? new Date(row.initial_reference_at).getTime() : null,
+    createdAt: new Date(row.created_at).getTime()
+  }));
+}
+
+function traderSignalEaIds(signal, rows) {
+  const target = String(signal?.playerOrRating || "").trim();
+  const rating = /^\d{2}$/.test(target) ? Number(target) : null;
+
+  if (Number.isFinite(rating) && rating >= 75 && rating <= 99) {
+    return rows
+      .filter(row => row.overall === rating && row.cardType === "Base Rare" && Number.isFinite(row.eaId))
+      .map(row => String(row.eaId));
+  }
+
+  if (signal?.eaId) return [String(signal.eaId)];
+
+  const lower = target.toLowerCase();
+  return rows
+    .filter(row => String(row.name || "").toLowerCase() === lower && Number.isFinite(row.eaId))
+    .map(row => String(row.eaId));
+}
+
+async function traderSignalReferencePriceAt(signal, rows, atMs) {
+  const ids = [...new Set(traderSignalEaIds(signal, rows))];
+  if (!ids.length) return null;
+
+  const historical = await lookupDb(ids, atMs);
+  const prices = ids
+    .map(id => historical.get(String(id)))
+    .filter(Number.isFinite);
+
+  if (prices.length) return median(prices);
+
+  // Für sehr neue Signale darf der aktuelle Preis als Fallback dienen.
+  if (Math.abs(Date.now() - atMs) <= 2 * 60_000) {
+    const currentById = new Map(rows.map(row => [String(row.eaId), row.price]));
+    const currentPrices = ids.map(id => currentById.get(String(id))).filter(Number.isFinite);
+    if (currentPrices.length) return median(currentPrices);
+  }
+
+  return null;
+}
+
+function evaluateTraderCall(call, initialPrice, observedPrice) {
+  const grossChangePct = ((observedPrice - initialPrice) / initialPrice) * 100;
+  const netRoiAfterTaxPct = (((observedPrice * 0.95) - initialPrice) / initialPrice) * 100;
+  const normalizedCall = String(call || "").toUpperCase();
+
+  if (normalizedCall === "KAUFEN") {
+    const wasCorrect = netRoiAfterTaxPct > 0;
+    return {
+      wasCorrect,
+      grossChangePct,
+      netRoiAfterTaxPct,
+      reason: wasCorrect
+        ? `KAUFEN war nach 5% EA-Steuer profitabel (${netRoiAfterTaxPct.toFixed(2)}% Netto-ROI).`
+        : `KAUFEN war nach 5% EA-Steuer noch nicht profitabel (${netRoiAfterTaxPct.toFixed(2)}% Netto-ROI).`
+    };
+  }
+
+  if (normalizedCall === "VERKAUFEN") {
+    const wasCorrect = observedPrice < initialPrice;
+    return {
+      wasCorrect,
+      grossChangePct,
+      netRoiAfterTaxPct,
+      reason: wasCorrect
+        ? `VERKAUFEN war richtig: der Referenzpreis fiel danach um ${Math.abs(grossChangePct).toFixed(2)}%.`
+        : `VERKAUFEN war zu früh: der Referenzpreis stieg danach um ${Math.max(0, grossChangePct).toFixed(2)}%.`
+    };
+  }
+
+  // WARTEN wird daran gemessen, ob ein sofortiger Kauf bis zum Prüfzeitpunkt
+  // nach EA-Steuer keinen positiven Netto-ROI gebracht hätte.
+  const wasCorrect = netRoiAfterTaxPct <= 0;
+  return {
+    wasCorrect,
+    grossChangePct,
+    netRoiAfterTaxPct,
+    reason: wasCorrect
+      ? `WARTEN war sinnvoll: ein Sofortkauf wäre nach Steuer bei ${netRoiAfterTaxPct.toFixed(2)}% Netto-ROI.`
+      : `WARTEN verpasste einen profitablen Move von ${netRoiAfterTaxPct.toFixed(2)}% Netto-ROI nach Steuer.`
+  };
+}
+
+async function refreshTraderReliabilityProfiles() {
+  if (!dbEnabled) return;
+
+  const result = await pool.query(`
+    SELECT
+      s.source,
+      COUNT(*)::int AS evaluated_outcomes,
+      AVG(CASE WHEN o.was_correct THEN 100.0 ELSE 0.0 END) AS overall_accuracy,
+      AVG(CASE WHEN s.category = 'SBC_FODDER' THEN CASE WHEN o.was_correct THEN 100.0 ELSE 0.0 END END) AS sbc_accuracy,
+      AVG(CASE WHEN s.category = 'PROMO_CARDS' THEN CASE WHEN o.was_correct THEN 100.0 ELSE 0.0 END END) AS promo_accuracy,
+      AVG(CASE WHEN s.category = 'SHORT_TERM_FLIPS' THEN CASE WHEN o.was_correct THEN 100.0 ELSE 0.0 END END) AS short_accuracy,
+      AVG(CASE WHEN s.category = 'LEAKS_CONTENT' THEN CASE WHEN o.was_correct THEN 100.0 ELSE 0.0 END END) AS leaks_accuracy
+    FROM fc_trader_signal_outcomes o
+    JOIN fc_discord_signals s ON s.id = o.signal_id
+    GROUP BY s.source
+  `);
+
+  for (const row of result.rows) {
+    const evaluated = Number(row.evaluated_outcomes || 0);
+    const accuracy = Number(row.overall_accuracy || 50);
+    let badge = "Unbewiesen";
+
+    if (evaluated >= 25 && accuracy >= 80) badge = "Sehr stark";
+    else if (evaluated >= 10 && accuracy >= 70) badge = "Stark";
+    else if (evaluated >= 10 && accuracy < 40) badge = "Schwach";
+    else if (evaluated >= 10) badge = "Beobachten";
+
+    await pool.query(`
+      UPDATE fc_trader_profiles
+      SET
+        overall_accuracy = $2,
+        accuracy_sbc_fodder = COALESCE($3, accuracy_sbc_fodder),
+        accuracy_promo_cards = COALESCE($4, accuracy_promo_cards),
+        accuracy_short_flips = COALESCE($5, accuracy_short_flips),
+        accuracy_leaks = COALESCE($6, accuracy_leaks),
+        reputation_badge = $7,
+        updated_at = NOW()
+      WHERE source = $1
+    `, [
+      row.source,
+      accuracy,
+      row.sbc_accuracy == null ? null : Number(row.sbc_accuracy),
+      row.promo_accuracy == null ? null : Number(row.promo_accuracy),
+      row.short_accuracy == null ? null : Number(row.short_accuracy),
+      row.leaks_accuracy == null ? null : Number(row.leaks_accuracy),
+      badge
+    ]);
+  }
+}
+
+async function evaluateTraderSignalReliability(rows) {
+  if (!dbEnabled || !rows?.length) return 0;
+
+  const signals = await loadTraderSignalsForReliability();
+  if (!signals.length) return 0;
+
+  const existingResult = await pool.query(`
+    SELECT signal_id, horizon_minutes
+    FROM fc_trader_signal_outcomes
+    WHERE signal_id = ANY($1::varchar[])
+  `, [signals.map(signal => signal.id)]);
+
+  const existing = new Set(
+    existingResult.rows.map(row => `${row.signal_id}:${Number(row.horizon_minutes)}`)
+  );
+
+  let inserted = 0;
+  const now = Date.now();
+
+  for (const signal of signals) {
+    let initialPrice = signal.initialReferencePrice;
+    if (!Number.isFinite(initialPrice) || initialPrice <= 0) {
+      initialPrice = await traderSignalReferencePriceAt(signal, rows, signal.createdAt);
+    }
+    if (!Number.isFinite(initialPrice) || initialPrice <= 0) continue;
+
+    for (const horizonMinutes of TRADER_RELIABILITY_HORIZONS) {
+      const key = `${signal.id}:${horizonMinutes}`;
+      if (existing.has(key)) continue;
+
+      const targetAt = signal.createdAt + horizonMinutes * 60_000;
+      if (now < targetAt) continue;
+
+      const observedPrice = await traderSignalReferencePriceAt(signal, rows, targetAt);
+      if (!Number.isFinite(observedPrice) || observedPrice <= 0) continue;
+
+      const evaluation = evaluateTraderCall(signal.call, initialPrice, observedPrice);
+
+      const result = await pool.query(`
+        INSERT INTO fc_trader_signal_outcomes (
+          signal_id,
+          horizon_minutes,
+          initial_price,
+          observed_price,
+          gross_change_pct,
+          net_roi_after_tax_pct,
+          was_correct,
+          evaluation_reason,
+          evaluated_at
+        ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,NOW())
+        ON CONFLICT (signal_id, horizon_minutes) DO NOTHING
+      `, [
+        signal.id,
+        horizonMinutes,
+        Math.round(initialPrice),
+        Math.round(observedPrice),
+        Number(evaluation.grossChangePct.toFixed(4)),
+        Number(evaluation.netRoiAfterTaxPct.toFixed(4)),
+        evaluation.wasCorrect,
+        evaluation.reason
+      ]);
+
+      if (result.rowCount) {
+        inserted += 1;
+        existing.add(key);
+      }
+    }
+  }
+
+  if (inserted > 0) await refreshTraderReliabilityProfiles();
+  return inserted;
 }
 
 function baseDecisionFromQuant(quant, confluence) {
@@ -2824,6 +3136,7 @@ app.get("/", (req, res) => {
       traderBrainHistory: "GET /api/trader-brain/feedback/history",
       geminiHealth: "GET /api/gemini-health",
       discordStatus: "GET /api/discord/status",
+      traderReliabilityStatus: "GET /api/trader-reliability/status",
       health: "GET /health"
     }
   });
@@ -2881,6 +3194,89 @@ app.get("/api/trader-signals/status", async (req, res) => {
       lastSignalAt: lastTraderSignalAt,
       lastError: lastTraderSignalError,
       recentSignals: recent.slice(0, 25)
+    });
+  } catch (error) {
+    return res.status(500).json({ error: String(error) });
+  }
+});
+
+app.get("/api/trader-reliability/status", async (req, res) => {
+  try {
+    if (!dbEnabled) {
+      return res.json({ enabled: false, reason: "PostgreSQL ist nicht aktiv." });
+    }
+
+    const [profiles, outcomes] = await Promise.all([
+      pool.query(`
+        SELECT
+          source,
+          display_name,
+          overall_accuracy,
+          total_signals,
+          accuracy_sbc_fodder,
+          accuracy_promo_cards,
+          accuracy_short_flips,
+          accuracy_leaks,
+          reputation_badge,
+          updated_at
+        FROM fc_trader_profiles
+        ORDER BY overall_accuracy DESC, total_signals DESC
+        LIMIT 100
+      `),
+      pool.query(`
+        SELECT
+          o.signal_id,
+          s.source,
+          s.player_or_rating,
+          s.call,
+          s.category,
+          o.horizon_minutes,
+          o.initial_price,
+          o.observed_price,
+          o.gross_change_pct,
+          o.net_roi_after_tax_pct,
+          o.was_correct,
+          o.evaluation_reason,
+          o.evaluated_at
+        FROM fc_trader_signal_outcomes o
+        JOIN fc_discord_signals s ON s.id = o.signal_id
+        ORDER BY o.evaluated_at DESC
+        LIMIT 100
+      `)
+    ]);
+
+    return res.json({
+      enabled: true,
+      horizonsMinutes: TRADER_RELIABILITY_HORIZONS,
+      profiles: profiles.rows.map(row => ({
+        source: row.source,
+        displayName: row.display_name,
+        overallAccuracy: Number(row.overall_accuracy || 50),
+        totalSignals: Number(row.total_signals || 0),
+        categoryAccuracy: {
+          SBC_FODDER: Number(row.accuracy_sbc_fodder || 50),
+          PROMO_CARDS: Number(row.accuracy_promo_cards || 50),
+          SHORT_TERM_FLIPS: Number(row.accuracy_short_flips || 50),
+          LEAKS_CONTENT: Number(row.accuracy_leaks || 50)
+        },
+        reputationBadge: row.reputation_badge,
+        updatedAt: row.updated_at
+      })),
+      recentOutcomes: outcomes.rows.map(row => ({
+        signalId: row.signal_id,
+        source: row.source,
+        playerOrRating: row.player_or_rating,
+        call: row.call,
+        category: row.category,
+        horizonMinutes: Number(row.horizon_minutes),
+        initialPrice: Number(row.initial_price),
+        observedPrice: Number(row.observed_price),
+        grossChangePct: Number(row.gross_change_pct),
+        netRoiAfterTaxPct: Number(row.net_roi_after_tax_pct),
+        wasCorrect: row.was_correct,
+        reason: row.evaluation_reason,
+        evaluatedAt: row.evaluated_at
+      }))
     });
   } catch (error) {
     return res.status(500).json({ error: String(error) });
@@ -4161,7 +4557,7 @@ app.listen(
   port,
   () => {
     console.log(
-      `FC Trading Intelligence v10.5.1 Trader Market Confirmation running on ${port}`
+      `FC Trading Intelligence v10.6 Trader Reliability running on ${port}`
     );
 
     startMonitoring();
