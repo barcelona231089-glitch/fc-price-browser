@@ -58,6 +58,8 @@ const BRAIN_LEARNING_MAX_CONFIDENCE_ADJUSTMENT = 8;
 const BRAIN_LEARNING_WAIT_POSITIVE_CAP = 4;
 const BRAIN_LEARNING_EPISODE_MS = 6 * 60 * 60_000;
 const BRAIN_LEARNING_WINDOW_DAYS = Math.max(30, Number(process.env.BRAIN_LEARNING_WINDOW_DAYS || 90));
+const BRAIN_LEARNING_RECENCY_HALF_LIFE_DAYS = Math.max(3, Number(process.env.BRAIN_LEARNING_RECENCY_HALF_LIFE_DAYS || 14));
+const BRAIN_LEARNING_RECENCY_MIN_WEIGHT = Math.max(0.05, Math.min(0.5, Number(process.env.BRAIN_LEARNING_RECENCY_MIN_WEIGHT || 0.2)));
 const BRAIN_LEARNING_EXACT_MIN_SAMPLES = 4;
 const BRAIN_LEARNING_CARDTYPE_MIN_SAMPLES = 6;
 const BRAIN_LEARNING_ACTION_MIN_SAMPLES = 10;
@@ -2813,6 +2815,15 @@ function brainLearningQualityWeight(row) {
   return 1;
 }
 
+function brainLearningRecencyWeight(createdAt, now = Date.now()) {
+  const created = Number(createdAt);
+  if (!Number.isFinite(created) || created <= 0) return BRAIN_LEARNING_RECENCY_MIN_WEIGHT;
+
+  const ageDays = Math.max(0, (now - created) / (24 * 60 * 60_000));
+  const decay = Math.pow(0.5, ageDays / BRAIN_LEARNING_RECENCY_HALF_LIFE_DAYS);
+  return Math.max(BRAIN_LEARNING_RECENCY_MIN_WEIGHT, Math.min(1, decay));
+}
+
 function addBrainLearningSample(map, key, row, scope) {
   let group = map.get(key);
   if (!group) {
@@ -3017,7 +3028,9 @@ async function loadBrainLearningProfiles(force = false) {
       }
 
       rollingEpisodeLastSeen.set(seriesKey, row.createdAt);
-      row.learningWeight = brainLearningQualityWeight(row);
+      row.learningQualityWeight = brainLearningQualityWeight(row);
+      row.learningRecencyWeight = brainLearningRecencyWeight(row.createdAt, now);
+      row.learningWeight = row.learningQualityWeight * row.learningRecencyWeight;
       mature += 1;
 
       addBrainLearningSample(
@@ -3770,7 +3783,7 @@ app.get("/", (req, res) => {
   res.json({
     online: true,
     service: "FC Trading Intelligence",
-    version: "10.7.4-rolling-episode-guard",
+    version: "10.7.5-recency-decay",
     refreshSeconds: 60,
     storage:
       dbEnabled
@@ -3796,7 +3809,7 @@ app.get("/", (req, res) => {
 app.get("/health", (req, res) => {
   res.json({
     ok: true,
-    version: "10.7.4-rolling-episode-guard",
+    version: "10.7.5-recency-decay",
     monitoringStarted,
     monitoringBusy,
     lastMonitorAt,
@@ -3906,7 +3919,7 @@ app.get("/api/trader-reliability/status", async (req, res) => {
 
     return res.json({
       enabled: true,
-      version: "10.7.4-rolling-episode-guard",
+      version: "10.7.5-recency-decay",
       method: {
         priorAccuracy: TRADER_RELIABILITY_PRIOR_ACCURACY,
         priorStrength: TRADER_RELIABILITY_PRIOR_STRENGTH,
@@ -4159,14 +4172,14 @@ app.get("/api/ratings-intelligence", (req, res) => {
 app.get("/api/trader-brain/status", (req, res) => {
   res.json({
     ok: true,
-    version: "10.7.4-rolling-episode-guard",
+    version: "10.7.5-recency-decay",
     automatic: true,
     refreshSeconds: 60,
     lastBrainRunAt,
     lastBrainError,
     lastGeminiCandidate,
     learning: {
-      version: "10.7.4-rolling-episode-guard",
+      version: "10.7.5-recency-decay",
       totalMatureDecisions: brainLearningCache.totalMatureDecisions,
       rawMatureDecisions: brainLearningCache.rawMatureDecisions,
       uniqueLearningEpisodes: brainLearningCache.uniqueLearningEpisodes,
@@ -4187,7 +4200,7 @@ app.get("/api/trader-brain/learning/status", async (req, res) => {
     const cache = await loadBrainLearningProfiles(true);
     return res.json({
       enabled: true,
-      version: "10.7.4-rolling-episode-guard",
+      version: "10.7.5-recency-decay",
       method: {
         windowDays: BRAIN_LEARNING_WINDOW_DAYS,
         priorAccuracy: BRAIN_LEARNING_PRIOR_ACCURACY,
@@ -4195,13 +4208,15 @@ app.get("/api/trader-brain/learning/status", async (req, res) => {
         maxConfidenceAdjustment: BRAIN_LEARNING_MAX_CONFIDENCE_ADJUSTMENT,
         waitPositiveCap: BRAIN_LEARNING_WAIT_POSITIVE_CAP,
         episodeHours: Math.round(BRAIN_LEARNING_EPISODE_MS / 60 / 60_000),
+        recencyHalfLifeDays: BRAIN_LEARNING_RECENCY_HALF_LIFE_DAYS,
+        recencyMinWeight: BRAIN_LEARNING_RECENCY_MIN_WEIGHT,
         exactMinSamples: BRAIN_LEARNING_EXACT_MIN_SAMPLES,
         cardTypeMinSamples: BRAIN_LEARNING_CARDTYPE_MIN_SAMPLES,
         actionMinSamples: BRAIN_LEARNING_ACTION_MIN_SAMPLES,
         exactMinEffectiveSamples: BRAIN_LEARNING_EXACT_MIN_EFFECTIVE,
         cardTypeMinEffectiveSamples: BRAIN_LEARNING_CARDTYPE_MIN_EFFECTIVE,
         actionMinEffectiveSamples: BRAIN_LEARNING_ACTION_MIN_EFFECTIVE,
-        note: "Ähnliche Entscheidungen derselben Karte werden mit einem rollenden 6h-Abstand dedupliziert, damit Bucket-Grenzen keine Doppelzählung erzeugen. Flache WAIT-Märkte zählen nur schwach; BUY/AVOID/SELL fließen erst ab dem vollständigen 6h-Auswertungspunkt ins Lernen ein. Ein Lernprofil darf Confidence erst verändern, wenn zusätzlich genug effektive, qualitätsgewichtete Evidenz vorhanden ist."
+        note: "Ähnliche Entscheidungen derselben Karte werden mit einem rollenden 6h-Abstand dedupliziert. Zusätzlich werden ältere Marktphasen exponentiell schwächer gewichtet, damit aktuelle FC-Marktbedingungen mehr Einfluss haben. Flache WAIT-Märkte zählen nur schwach; BUY/AVOID/SELL fließen erst ab dem vollständigen 6h-Auswertungspunkt ins Lernen ein. Confidence ändert sich nur bei genug effektiver Evidenz."
       },
       totalMatureDecisions: cache.totalMatureDecisions,
       rawMatureDecisions: cache.rawMatureDecisions,
@@ -5280,7 +5295,7 @@ app.listen(
   port,
   () => {
     console.log(
-      `FC Trading Intelligence v10.7.4 Rolling Episode Guard running on ${port}`
+      `FC Trading Intelligence v10.7.5 Recency Decay running on ${port}`
     );
 
     startMonitoring();
