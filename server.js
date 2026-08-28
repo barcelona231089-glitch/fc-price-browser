@@ -67,6 +67,7 @@ const SOURCE_HEALTH_DEGRADED_COVERAGE = Math.max(
   Math.min(0.9, Number(process.env.SOURCE_HEALTH_DEGRADED_COVERAGE || 0.30))
 );
 const SOURCE_HEALTH_STALE_MS = Math.max(2, Number(process.env.SOURCE_HEALTH_STALE_MIN || 3)) * 60_000;
+const SOURCE_RECOVERY_REQUIRED_CYCLES = Math.max(2, Math.min(10, Number(process.env.SOURCE_RECOVERY_REQUIRED_CYCLES || 3)));
 
 // FUTBIN is optional and must only be connected through an authorized/licensed
 // JSON feed. We intentionally do not scrape futbin.com directly.
@@ -124,6 +125,8 @@ let latestSourceHealth = {
 };
 let previousSourceHealthStatus = "STARTING";
 let lastSourceHealthDiscordAlertAt = 0;
+let sourceRecoveryPending = false;
+let sourceRecoveryHealthyCycles = 0;
 let futbinFeedCache = null;
 let futbinFeedInflight = null;
 let latestFutbinFallbackRows = [];
@@ -660,7 +663,7 @@ async function loadAuthorizedFutbinFeed(force = false) {
     try {
       const headers = {
         accept: "application/json",
-        "user-agent": "FC-Trader-Brain/10.20"
+        "user-agent": "FC-Trader-Brain/10.21"
       };
       if (FUTBIN_AUTHORIZED_FEED_TOKEN) {
         headers.authorization = `Bearer ${FUTBIN_AUTHORIZED_FEED_TOKEN}`;
@@ -904,14 +907,29 @@ function sourceHealthSnapshot() {
 
   snapshot.staleForSeconds = staleForMs == null ? null : Math.round(staleForMs / 1000);
   snapshot.staleAfterSeconds = Math.round(SOURCE_HEALTH_STALE_MS / 1000);
+  snapshot.baseStatus = snapshot.status;
+  snapshot.recoveryPending = sourceRecoveryPending;
+  snapshot.recoveryHealthyCycles = sourceRecoveryHealthyCycles;
+  snapshot.recoveryRequiredCycles = SOURCE_RECOVERY_REQUIRED_CYCLES;
 
   if (lastSuccessMs && staleForMs > SOURCE_HEALTH_STALE_MS) {
     snapshot.status = "UNHEALTHY";
+    snapshot.baseStatus = "UNHEALTHY";
     snapshot.healthy = false;
     snapshot.usable = false;
     snapshot.reason = `FUT.GG-Daten sind seit ${Math.round(staleForMs / 1000)} Sekunden nicht erfolgreich aktualisiert worden.`;
+    sourceRecoveryPending = true;
+    sourceRecoveryHealthyCycles = 0;
+    snapshot.recoveryPending = true;
+    snapshot.recoveryHealthyCycles = 0;
+  } else if (sourceRecoveryPending && snapshot.status !== "UNHEALTHY") {
+    snapshot.status = "RECOVERING";
+    snapshot.healthy = false;
+    snapshot.usable = false;
+    snapshot.reason = `FUT.GG antwortet wieder. Sicherheits-Quarantäne: ${sourceRecoveryHealthyCycles}/${SOURCE_RECOVERY_REQUIRED_CYCLES} aufeinanderfolgende gesunde Marktchecks bestätigt.`;
   }
 
+  snapshot.tradingAllowed = snapshot.usable === true && !sourceRecoveryPending;
   return snapshot;
 }
 
@@ -931,6 +949,21 @@ function updateSourceHealthSuccess(cards, bulk, pricedRows) {
   } else if (coverage < SOURCE_HEALTH_DEGRADED_COVERAGE) {
     status = "DEGRADED";
     reason = `FUT.GG-Abdeckung ist reduziert: ${pricedCards}/${universeCards} Karten (${coveragePct}%).`;
+  }
+
+  if (status === "UNHEALTHY") {
+    sourceRecoveryPending = true;
+    sourceRecoveryHealthyCycles = 0;
+  } else if (sourceRecoveryPending) {
+    if (status === "HEALTHY") {
+      sourceRecoveryHealthyCycles += 1;
+      if (sourceRecoveryHealthyCycles >= SOURCE_RECOVERY_REQUIRED_CYCLES) {
+        sourceRecoveryPending = false;
+        sourceRecoveryHealthyCycles = SOURCE_RECOVERY_REQUIRED_CYCLES;
+      }
+    } else {
+      sourceRecoveryHealthyCycles = 0;
+    }
   }
 
   latestSourceHealth = {
@@ -963,6 +996,11 @@ function updateSourceHealthFailure(error) {
   const previousSuccess = latestSourceHealth.lastSuccessAt || null;
   const status = failures >= 2 || !previousSuccess ? "UNHEALTHY" : "DEGRADED";
 
+  if (status === "UNHEALTHY") {
+    sourceRecoveryPending = true;
+    sourceRecoveryHealthyCycles = 0;
+  }
+
   latestSourceHealth = {
     ...latestSourceHealth,
     status,
@@ -979,7 +1017,7 @@ function updateSourceHealthFailure(error) {
 }
 
 function sourceHealthAllowsTradingCycle() {
-  return sourceHealthSnapshot().usable === true;
+  return sourceHealthSnapshot().tradingAllowed === true;
 }
 
 async function notifySourceHealthTransition(snapshot) {
@@ -991,7 +1029,7 @@ async function notifySourceHealthTransition(snapshot) {
 
   const now = Date.now();
   const becameUnhealthy = current === "UNHEALTHY";
-  const recovered = previous === "UNHEALTHY" && current !== "UNHEALTHY";
+  const recovered = ["UNHEALTHY", "RECOVERING"].includes(previous) && current === "HEALTHY";
 
   if (!becameUnhealthy && !recovered) return;
   if (becameUnhealthy && now - lastSourceHealthDiscordAlertAt < 30 * 60_000) return;
@@ -2857,7 +2895,7 @@ async function sendDiscordStartupMessage() {
           { name: "Kaufalarm ab", value: `${DISCORD_MIN_BUY_CONFIDENCE}% KI-Sicherheit`, inline: true },
           { name: "Spam-Schutz", value: `${Math.round(DISCORD_ALERT_COOLDOWN_MS / 60_000)} Min. Cooldown`, inline: true }
         ],
-        footer: { text: "FC Trading Intelligence v10.20" },
+        footer: { text: "FC Trading Intelligence v10.21" },
         timestamp: new Date().toISOString()
       }]
     });
@@ -5400,7 +5438,7 @@ app.get("/", (req, res) => {
   res.json({
     online: true,
     service: "FC Trading Intelligence",
-    version: "10.20-futbin-trust-guard",
+    version: "10.21-source-recovery-quarantine",
     gameYear: GAME_YEAR,
     marketProfile: marketProfile(),
     refreshSeconds: 60,
@@ -5433,7 +5471,7 @@ app.get("/", (req, res) => {
 app.get("/health", (req, res) => {
   res.json({
     ok: true,
-    version: "10.20-futbin-trust-guard",
+    version: "10.21-source-recovery-quarantine",
     gameYear: GAME_YEAR,
     marketProfile: marketProfile(),
     marketContext: latestMarketContext,
@@ -5553,7 +5591,7 @@ app.get("/api/trader-reliability/status", async (req, res) => {
 
     return res.json({
       enabled: true,
-      version: "10.20-futbin-trust-guard",
+      version: "10.21-source-recovery-quarantine",
       gameYear: GAME_YEAR,
       method: {
         priorAccuracy: TRADER_RELIABILITY_PRIOR_ACCURACY,
@@ -5612,7 +5650,7 @@ app.get("/api/trader-reliability/status", async (req, res) => {
 app.get("/api/trader-confluence/status", (req, res) => {
   res.json({
     enabled: DISCORD_CONFIGURED && dbEnabled,
-    version: "10.20-futbin-trust-guard",
+    version: "10.21-source-recovery-quarantine",
     minCardConfidence: DISCORD_TRADER_CONFLUENCE_MIN_CONFIDENCE,
     minRatingConfidence: DISCORD_TRADER_CONFLUENCE_MIN_RATING_CONFIDENCE,
     minTraderReliability: DISCORD_TRADER_CONFLUENCE_MIN_RELIABILITY,
@@ -5835,7 +5873,7 @@ app.get("/api/trading", async (req, res) => {
 
     res.json({
       ok: true,
-      version: "10.20-futbin-trust-guard",
+      version: "10.21-source-recovery-quarantine",
       refreshSeconds: 60,
       dbEnabled,
       sourceHealth: health,
@@ -5914,7 +5952,7 @@ app.get("/api/source-health", (req, res) => {
   const health = sourceHealthSnapshot();
   res.status(health.status === "UNHEALTHY" ? 503 : 200).json({
     ok: health.status !== "UNHEALTHY",
-    version: "10.20-futbin-trust-guard",
+    version: "10.21-source-recovery-quarantine",
     gameYear: GAME_YEAR,
     refreshSeconds: 60,
     source: "FUT.GG PS5 bulk prices",
@@ -5934,7 +5972,7 @@ app.get("/api/futbin/status", (req, res) => {
 
   res.json({
     ok: true,
-    version: "10.20-futbin-trust-guard",
+    version: "10.21-source-recovery-quarantine",
     gameYear: GAME_YEAR,
     configured: Boolean(FUTBIN_AUTHORIZED_FEED_URL),
     status: latestFutbinStatus,
@@ -5963,7 +6001,7 @@ app.get("/api/futbin/status", (req, res) => {
 app.get("/api/market-context", (req, res) => {
   res.json({
     ok: true,
-    version: "10.20-futbin-trust-guard",
+    version: "10.21-source-recovery-quarantine",
     gameYear: GAME_YEAR,
     refreshSeconds: 60,
     context: latestMarketContext,
@@ -5974,7 +6012,7 @@ app.get("/api/market-context", (req, res) => {
 app.get("/api/trader-brain/status", (req, res) => {
   res.json({
     ok: true,
-    version: "10.20-futbin-trust-guard",
+    version: "10.21-source-recovery-quarantine",
     gameYear: GAME_YEAR,
     marketProfile: marketProfile(),
     marketContext: latestMarketContext,
@@ -5984,7 +6022,7 @@ app.get("/api/trader-brain/status", (req, res) => {
     lastBrainError,
     lastGeminiCandidate,
     learning: {
-      version: "10.20-futbin-trust-guard",
+      version: "10.21-source-recovery-quarantine",
       totalMatureDecisions: brainLearningCache.totalMatureDecisions,
       rawMatureDecisions: brainLearningCache.rawMatureDecisions,
       uniqueLearningEpisodes: brainLearningCache.uniqueLearningEpisodes,
@@ -6005,7 +6043,7 @@ app.get("/api/trader-brain/learning/status", async (req, res) => {
     const cache = await loadBrainLearningProfiles(true);
     return res.json({
       enabled: true,
-      version: "10.20-futbin-trust-guard",
+      version: "10.21-source-recovery-quarantine",
       method: {
         windowDays: BRAIN_LEARNING_WINDOW_DAYS,
         priorAccuracy: BRAIN_LEARNING_PRIOR_ACCURACY,
@@ -7124,7 +7162,7 @@ app.listen(
   port,
   () => {
     console.log(
-      `FC Trading Intelligence v10.20 FUTBIN Trust Guard (FC${GAME_YEAR}) running on ${port}`
+      `FC Trading Intelligence v10.21 Source Recovery Quarantine (FC${GAME_YEAR}) running on ${port}`
     );
 
     startMonitoring();
