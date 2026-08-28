@@ -524,7 +524,7 @@ async function initDb() {
     )
   `);
 
-  // v10.6/v10.6.1: bestehende Datenbanken ohne Datenverlust erweitern.
+  // v10.6-v10.6.2: bestehende Datenbanken ohne Datenverlust erweitern.
   await pool.query(`
     ALTER TABLE fc_discord_signals
       ADD COLUMN IF NOT EXISTS target_ea_id BIGINT
@@ -945,7 +945,11 @@ async function saveIncomingTraderSignal(signal) {
         initial_reference_at,
         created_at
       )
-      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,NOW(),NOW())
+      VALUES (
+        $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,
+        CASE WHEN $11::integer IS NULL THEN NULL ELSE NOW() END,
+        NOW()
+      )
       ON CONFLICT (id) DO NOTHING
     `,
     [
@@ -1494,7 +1498,7 @@ async function sendDiscordStartupMessage() {
           { name: "Kaufalarm ab", value: `${DISCORD_MIN_BUY_CONFIDENCE}% KI-Sicherheit`, inline: true },
           { name: "Spam-Schutz", value: `${Math.round(DISCORD_ALERT_COOLDOWN_MS / 60_000)} Min. Cooldown`, inline: true }
         ],
-        footer: { text: "FC Trading Intelligence v10.6.1" },
+        footer: { text: "FC Trading Intelligence v10.6.2" },
         timestamp: new Date().toISOString()
       }]
     });
@@ -2435,6 +2439,103 @@ async function traderSignalReferencePriceAt(signal, rows, atMs) {
   return null;
 }
 
+async function ensureFrozenTraderSignalReference(signal, rows) {
+  if (!dbEnabled || !signal?.id) return null;
+
+  if (Number.isFinite(signal.initialReferencePrice) && signal.initialReferencePrice > 0) {
+    return Math.round(signal.initialReferencePrice);
+  }
+
+  // Migration für Signale, die vor dem eingefrorenen Einstiegspreis angelegt wurden:
+  // Falls bereits ein Outcome existiert, nehmen wir dessen allerersten Einstiegspreis.
+  // Dadurch bleiben 5m, 15m, 1h, 6h und 24h garantiert auf derselben Basis.
+  const previousOutcome = await pool.query(`
+    SELECT initial_price
+    FROM fc_trader_signal_outcomes
+    WHERE signal_id = $1
+    ORDER BY horizon_minutes ASC, evaluated_at ASC
+    LIMIT 1
+  `, [signal.id]);
+
+  let frozenPrice = previousOutcome.rowCount
+    ? Number(previousOutcome.rows[0].initial_price)
+    : null;
+
+  if (!Number.isFinite(frozenPrice) || frozenPrice <= 0) {
+    frozenPrice = await traderSignalReferencePriceAt(signal, rows, signal.createdAt);
+  }
+
+  if (!Number.isFinite(frozenPrice) || frozenPrice <= 0) return null;
+
+  frozenPrice = Math.round(frozenPrice);
+  const frozenAt = new Date(signal.createdAt).toISOString();
+
+  await pool.query(`
+    UPDATE fc_discord_signals
+    SET
+      initial_reference_price = COALESCE(initial_reference_price, $2),
+      initial_reference_at = COALESCE(initial_reference_at, $3)
+    WHERE id = $1
+  `, [signal.id, frozenPrice, frozenAt]);
+
+  signal.initialReferencePrice = frozenPrice;
+  signal.initialReferenceAt = signal.createdAt;
+  return frozenPrice;
+}
+
+async function normalizeTraderSignalOutcomesToFrozenReference(signal, frozenPrice) {
+  if (!dbEnabled || !signal?.id || !Number.isFinite(frozenPrice) || frozenPrice <= 0) return 0;
+
+  const result = await pool.query(`
+    SELECT horizon_minutes, observed_price, initial_price
+    FROM fc_trader_signal_outcomes
+    WHERE signal_id = $1
+  `, [signal.id]);
+
+  let corrected = 0;
+
+  for (const row of result.rows) {
+    const observedPrice = Number(row.observed_price);
+    if (!Number.isFinite(observedPrice) || observedPrice <= 0) continue;
+
+    const evaluation = evaluateTraderCall(signal.call, frozenPrice, observedPrice);
+    const oldInitial = Number(row.initial_price);
+
+    // Auch bestehende v10.6/v10.6.1-Outcomes werden auf denselben Einstiegspreis
+    // zurückgerechnet, damit die Lernhistorie nicht mit wechselnden Basen arbeitet.
+    const update = await pool.query(`
+      UPDATE fc_trader_signal_outcomes
+      SET
+        initial_price = $3,
+        gross_change_pct = $4,
+        net_roi_after_tax_pct = $5,
+        was_correct = $6,
+        evaluation_reason = $7
+      WHERE signal_id = $1
+        AND horizon_minutes = $2
+        AND (
+          initial_price IS DISTINCT FROM $3
+          OR gross_change_pct IS DISTINCT FROM $4
+          OR net_roi_after_tax_pct IS DISTINCT FROM $5
+          OR was_correct IS DISTINCT FROM $6
+          OR evaluation_reason IS DISTINCT FROM $7
+        )
+    `, [
+      signal.id,
+      Number(row.horizon_minutes),
+      frozenPrice,
+      Number(evaluation.grossChangePct.toFixed(4)),
+      Number(evaluation.netRoiAfterTaxPct.toFixed(4)),
+      evaluation.wasCorrect,
+      evaluation.reason
+    ]);
+
+    if (update.rowCount && oldInitial !== frozenPrice) corrected += 1;
+  }
+
+  return corrected;
+}
+
 function evaluateTraderCall(call, initialPrice, observedPrice) {
   const grossChangePct = ((observedPrice - initialPrice) / initialPrice) * 100;
   const netRoiAfterTaxPct = (((observedPrice * 0.95) - initialPrice) / initialPrice) * 100;
@@ -2559,7 +2660,7 @@ async function refreshTraderReliabilityProfiles() {
       categoryAccuracy("SHORT_TERM_FLIPS"),
       categoryAccuracy("LEAKS_CONTENT"),
       badge,
-      `v10.6.1 gewichtete Reliability: ${evaluatedOutcomes} Outcomes, effektives Gewicht ${effectiveWeight.toFixed(2)}, Bayes-Startbasis 50%.`
+      `v10.6.2 gewichtete Reliability: ${evaluatedOutcomes} Outcomes, effektives Gewicht ${effectiveWeight.toFixed(2)}, Bayes-Startbasis 50%.`
     ]);
   }
 }
@@ -2584,11 +2685,10 @@ async function evaluateTraderSignalReliability(rows) {
   const now = Date.now();
 
   for (const signal of signals) {
-    let initialPrice = signal.initialReferencePrice;
-    if (!Number.isFinite(initialPrice) || initialPrice <= 0) {
-      initialPrice = await traderSignalReferencePriceAt(signal, rows, signal.createdAt);
-    }
+    const initialPrice = await ensureFrozenTraderSignalReference(signal, rows);
     if (!Number.isFinite(initialPrice) || initialPrice <= 0) continue;
+
+    await normalizeTraderSignalOutcomesToFrozenReference(signal, initialPrice);
 
     for (const horizonMinutes of TRADER_RELIABILITY_HORIZONS) {
       const key = `${signal.id}:${horizonMinutes}`;
@@ -2633,7 +2733,7 @@ async function evaluateTraderSignalReliability(rows) {
     }
   }
 
-  // v10.6.1: Profile in jedem Zyklus neu berechnen.
+  // v10.6.2: Profile in jedem Zyklus neu berechnen.
   // Dadurch werden auch bereits vorhandene v10.6-Outcomes sofort
   // mit Zeitfenster-Gewichtung und 50%-Startbasis korrigiert.
   await refreshTraderReliabilityProfiles();
@@ -3241,7 +3341,7 @@ app.get("/", (req, res) => {
   res.json({
     online: true,
     service: "FC Trading Intelligence",
-    version: "10.6.1-intelligent-reliability",
+    version: "10.6.2-frozen-signal-entry",
     refreshSeconds: 60,
     storage:
       dbEnabled
@@ -3266,7 +3366,7 @@ app.get("/", (req, res) => {
 app.get("/health", (req, res) => {
   res.json({
     ok: true,
-    version: "10.6.1-intelligent-reliability",
+    version: "10.6.2-frozen-signal-entry",
     monitoringStarted,
     monitoringBusy,
     lastMonitorAt,
@@ -3369,12 +3469,12 @@ app.get("/api/trader-reliability/status", async (req, res) => {
 
     return res.json({
       enabled: true,
-      version: "10.6.1-intelligent-reliability",
+      version: "10.6.2-frozen-signal-entry",
       method: {
         priorAccuracy: TRADER_RELIABILITY_PRIOR_ACCURACY,
         priorStrength: TRADER_RELIABILITY_PRIOR_STRENGTH,
         categoryPriorStrength: TRADER_RELIABILITY_CATEGORY_PRIOR_STRENGTH,
-        note: "Zeitfenster werden passend zu Erwartung/Kategorie gewichtet; frühe Fern-Horizonte zählen deutlich weniger."
+        note: "Zeitfenster werden passend zu Erwartung/Kategorie gewichtet; der Einstiegspreis wird pro Signal einmal eingefroren und für 5m/15m/1h/6h/24h identisch verwendet."
       },
       horizonsMinutes: TRADER_RELIABILITY_HORIZONS,
       profiles: profiles.rows.map(row => ({
@@ -3622,7 +3722,7 @@ app.get("/api/ratings-intelligence", (req, res) => {
 app.get("/api/trader-brain/status", (req, res) => {
   res.json({
     ok: true,
-    version: "10.6.1-intelligent-reliability",
+    version: "10.6.2-frozen-signal-entry",
     automatic: true,
     refreshSeconds: 60,
     lastBrainRunAt,
@@ -4698,7 +4798,7 @@ app.listen(
   port,
   () => {
     console.log(
-      `FC Trading Intelligence v10.6.1 Intelligent Trader Reliability running on ${port}`
+      `FC Trading Intelligence v10.6.2 Frozen Signal Entry running on ${port}`
     );
 
     startMonitoring();
