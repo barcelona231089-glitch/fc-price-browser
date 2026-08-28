@@ -68,6 +68,18 @@ const SOURCE_HEALTH_DEGRADED_COVERAGE = Math.max(
 );
 const SOURCE_HEALTH_STALE_MS = Math.max(2, Number(process.env.SOURCE_HEALTH_STALE_MIN || 3)) * 60_000;
 
+// FUTBIN is optional and must only be connected through an authorized/licensed
+// JSON feed. We intentionally do not scrape futbin.com directly.
+const FUTBIN_AUTHORIZED_FEED_URL = String(process.env.FUTBIN_AUTHORIZED_FEED_URL || "").trim();
+const FUTBIN_AUTHORIZED_FEED_TOKEN = String(process.env.FUTBIN_AUTHORIZED_FEED_TOKEN || "").trim();
+const FUTBIN_REFRESH_MS = Math.max(5, Number(process.env.FUTBIN_REFRESH_MIN || 15)) * 60_000;
+const FUTBIN_MAX_DIFF_PCT = Math.max(3, Math.min(35, Number(process.env.FUTBIN_MAX_DIFF_PCT || 12)));
+const FUTBIN_OUTLIER_DIFF_PCT = Math.max(
+  FUTBIN_MAX_DIFF_PCT + 3,
+  Math.min(60, Number(process.env.FUTBIN_OUTLIER_DIFF_PCT || 25))
+);
+const FUTBIN_FALLBACK_MIN_MATCHES = Math.max(10, Number(process.env.FUTBIN_FALLBACK_MIN_MATCHES || 50));
+
 const cardCache = new Map();
 const cardInflight = new Map();
 
@@ -108,6 +120,22 @@ let latestSourceHealth = {
 };
 let previousSourceHealthStatus = "STARTING";
 let lastSourceHealthDiscordAlertAt = 0;
+let futbinFeedCache = null;
+let futbinFeedInflight = null;
+let latestFutbinFallbackRows = [];
+let latestFutbinStatus = {
+  configured: Boolean(FUTBIN_AUTHORIZED_FEED_URL),
+  status: FUTBIN_AUTHORIZED_FEED_URL ? "STARTING" : "NOT_CONFIGURED",
+  usable: false,
+  reason: FUTBIN_AUTHORIZED_FEED_URL
+    ? "Autorisierter FUTBIN-Feed ist konfiguriert, aber noch nicht geladen."
+    : "Kein autorisierter FUTBIN-Feed konfiguriert. Direkter FUTBIN-Web-Scraper bleibt deaktiviert.",
+  values: 0,
+  lastSuccessAt: null,
+  lastFailureAt: null,
+  lastError: null,
+  updatedAt: null
+};
 let lastBrainRunAt = null;
 let lastBrainError = null;
 let lastGeminiCandidate = null;
@@ -530,6 +558,226 @@ function currentPricedCards(cards, bulk) {
     });
   }
 
+  return rows;
+}
+
+function normalizeAuthorizedFutbinFeed(payload) {
+  const map = new Map();
+  let rows = [];
+
+  if (Array.isArray(payload)) {
+    rows = payload;
+  } else if (Array.isArray(payload?.prices)) {
+    rows = payload.prices;
+  } else if (Array.isArray(payload?.items)) {
+    rows = payload.items;
+  } else if (Array.isArray(payload?.data)) {
+    rows = payload.data;
+  } else if (payload?.prices && typeof payload.prices === "object") {
+    rows = Object.entries(payload.prices).map(([eaId, value]) => {
+      if (value && typeof value === "object") return { eaId, ...value };
+      return { eaId, price: value };
+    });
+  } else if (payload?.data && typeof payload.data === "object") {
+    rows = Object.entries(payload.data).map(([eaId, value]) => {
+      if (value && typeof value === "object") return { eaId, ...value };
+      return { eaId, price: value };
+    });
+  }
+
+  for (const item of rows) {
+    const eaId = Number(item?.eaId ?? item?.ea_id ?? item?.resourceId ?? item?.resource_id);
+    const price = Number(
+      item?.price ??
+      item?.currentPrice ??
+      item?.current_price ??
+      item?.consolePrice ??
+      item?.console_price ??
+      item?.psPrice ??
+      item?.ps_price
+    );
+
+    if (!Number.isFinite(eaId) || eaId <= 0) continue;
+    if (!Number.isFinite(price) || price <= 0) continue;
+
+    map.set(eaId, {
+      price: Math.round(price),
+      updatedAt: item?.updatedAt ?? item?.updated_at ?? payload?.updatedAt ?? payload?.updated_at ?? null
+    });
+  }
+
+  return map;
+}
+
+async function loadAuthorizedFutbinFeed(force = false) {
+  if (!FUTBIN_AUTHORIZED_FEED_URL) {
+    latestFutbinStatus = {
+      ...latestFutbinStatus,
+      configured: false,
+      status: "NOT_CONFIGURED",
+      usable: false,
+      reason: "Kein autorisierter FUTBIN-Feed konfiguriert. Direkter FUTBIN-Web-Scraper bleibt deaktiviert.",
+      updatedAt: new Date().toISOString()
+    };
+    return null;
+  }
+
+  if (
+    !force &&
+    futbinFeedCache &&
+    Date.now() - futbinFeedCache.savedAt < FUTBIN_REFRESH_MS
+  ) {
+    return futbinFeedCache;
+  }
+
+  if (futbinFeedInflight) return futbinFeedInflight;
+
+  futbinFeedInflight = (async () => {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
+
+    try {
+      const headers = {
+        accept: "application/json",
+        "user-agent": "FC-Trader-Brain/10.19"
+      };
+      if (FUTBIN_AUTHORIZED_FEED_TOKEN) {
+        headers.authorization = `Bearer ${FUTBIN_AUTHORIZED_FEED_TOKEN}`;
+      }
+
+      const response = await fetch(FUTBIN_AUTHORIZED_FEED_URL, {
+        signal: controller.signal,
+        headers
+      });
+
+      if (!response.ok) {
+        throw new Error(`Authorized FUTBIN feed -> HTTP ${response.status}`);
+      }
+
+      const payload = await response.json();
+      const map = normalizeAuthorizedFutbinFeed(payload);
+      if (!map.size) throw new Error("Authorized FUTBIN feed enthält keine eaId/price-Werte");
+
+      futbinFeedCache = {
+        savedAt: Date.now(),
+        map,
+        values: map.size,
+        sourceUrl: FUTBIN_AUTHORIZED_FEED_URL
+      };
+
+      latestFutbinStatus = {
+        configured: true,
+        status: "READY",
+        usable: true,
+        reason: `${map.size} autorisierte FUTBIN-Preiswerte geladen.`,
+        values: map.size,
+        lastSuccessAt: new Date().toISOString(),
+        lastFailureAt: latestFutbinStatus.lastFailureAt || null,
+        lastError: null,
+        updatedAt: new Date().toISOString()
+      };
+
+      return futbinFeedCache;
+    } catch (error) {
+      latestFutbinStatus = {
+        ...latestFutbinStatus,
+        configured: true,
+        status: "ERROR",
+        usable: false,
+        reason: "Autorisierter FUTBIN-Feed konnte nicht geladen werden.",
+        lastFailureAt: new Date().toISOString(),
+        lastError: String(error?.message || error),
+        updatedAt: new Date().toISOString()
+      };
+      throw error;
+    } finally {
+      clearTimeout(timer);
+    }
+  })();
+
+  try {
+    return await futbinFeedInflight;
+  } finally {
+    futbinFeedInflight = null;
+  }
+}
+
+async function loadAuthorizedFutbinFeedSafe(force = false) {
+  try {
+    return await loadAuthorizedFutbinFeed(force);
+  } catch (error) {
+    console.warn("FUTBIN authorized feed error:", error?.message || error);
+    return null;
+  }
+}
+
+function futbinCrossCheckFields(eaId, futggPrice, feed) {
+  const item = feed?.map?.get(Number(eaId));
+  if (!item || !Number.isFinite(item.price) || !Number.isFinite(futggPrice) || futggPrice <= 0) {
+    return {
+      futbinPrice: null,
+      futbinDiffPct: null,
+      futbinCrossCheck: "NO_DATA"
+    };
+  }
+
+  const diffPct = Number((((item.price - futggPrice) / futggPrice) * 100).toFixed(2));
+  const absDiff = Math.abs(diffPct);
+  const status = absDiff >= FUTBIN_OUTLIER_DIFF_PCT
+    ? "OUTLIER"
+    : absDiff >= FUTBIN_MAX_DIFF_PCT
+    ? "DIVERGENCE"
+    : "MATCH";
+
+  return {
+    futbinPrice: item.price,
+    futbinDiffPct: diffPct,
+    futbinCrossCheck: status
+  };
+}
+
+function buildFutbinFallbackRows(safeRows, feed) {
+  if (!Array.isArray(safeRows) || !safeRows.length || !feed?.map?.size) return [];
+
+  let matches = 0;
+  const rows = safeRows.map(row => {
+    const item = feed.map.get(Number(row.eaId));
+    if (!item || !Number.isFinite(item.price)) {
+      return {
+        ...row,
+        dataSource: "FUT.GG_LAST_SAFE",
+        fallbackDisplayOnly: true,
+        futbinPrice: null,
+        futbinCrossCheck: "NO_DATA"
+      };
+    }
+
+    matches++;
+    const previousSafePrice = row.price;
+    const copy = {
+      ...row,
+      price: item.price,
+      dataSource: "FUTBIN_AUTHORIZED_FALLBACK",
+      fallbackDisplayOnly: true,
+      futggLastSafePrice: previousSafePrice,
+      futbinPrice: item.price,
+      futbinDiffPct: Number((((item.price - previousSafePrice) / previousSafePrice) * 100).toFixed(2)),
+      futbinCrossCheck: "FALLBACK",
+      aiAction: "BEOBACHTEN",
+      aiConfidence: 0,
+      aiReason: "FUTBIN-Fallback zeigt nur den aktuellen autorisierten Ersatzpreis. Brain, Historie, Lernen und Trading-Alerts bleiben bis zur stabilen FUT.GG-Rückkehr blockiert.",
+      aiModelUsed: "Fallback Display Only"
+    };
+
+    Object.assign(copy, profitInfo(item.price, row.buyPrice ? {
+      buyPrice: row.buyPrice,
+      quantity: row.quantity || 1
+    } : null));
+
+    return copy;
+  });
+
+  if (matches < FUTBIN_FALLBACK_MIN_MATCHES) return [];
   return rows;
 }
 
@@ -1571,6 +1819,11 @@ function discordAlertShouldSend(state, action, price, confidence, fingerprint) {
 }
 
 function cardDiscordAlertCandidate(row) {
+  // Bei starkem Preis-Widerspruch der autorisierten Zweitquelle kein neuer Kaufalarm.
+  if (row?.aiAction === "JETZT KAUFEN" && row?.futbinCrossCheck === "OUTLIER") {
+    return null;
+  }
+
   // FC27 Low-Watch: 75-81 werden weiter analysiert, erzeugen aber nur bei
   // ungewöhnlich starken Bewegungen überhaupt individuelle Alerts.
   if (isLowWatchRating(row?.overall) && !lowRatingCardUnusualMove(row)) {
@@ -1618,6 +1871,14 @@ function buildCardDiscordPayload(row, type) {
       value:
         `Kauf ${discordNumber(row.buyPrice)} × ${discordNumber(row.quantity || 1)} | ` +
         `Netto ${discordNumber(row.netProfitTotal)} Coins | ${discordPct(row.profitPercent)}`,
+      inline: false
+    });
+  }
+
+  if (Number.isFinite(row.futbinPrice)) {
+    fields.push({
+      name: "FUTBIN Cross-Check",
+      value: `${discordNumber(row.futbinPrice)} Coins • ${row.futbinCrossCheck} • ${discordPct(row.futbinDiffPct)}`,
       inline: false
     });
   }
@@ -2475,7 +2736,7 @@ async function sendDiscordStartupMessage() {
           { name: "Kaufalarm ab", value: `${DISCORD_MIN_BUY_CONFIDENCE}% KI-Sicherheit`, inline: true },
           { name: "Spam-Schutz", value: `${Math.round(DISCORD_ALERT_COOLDOWN_MS / 60_000)} Min. Cooldown`, inline: true }
         ],
-        footer: { text: "FC Trading Intelligence v10.18" },
+        footer: { text: "FC Trading Intelligence v10.19" },
         timestamp: new Date().toISOString()
       }]
     });
@@ -2498,9 +2759,10 @@ async function monitorOnce() {
   monitoringBusy = true;
 
   try {
-    const [cards, bulk] = await Promise.all([
+    const [cards, bulk, futbinFeed] = await Promise.all([
       ensureUniverse(false),
-      loadBulkPs5Prices(true)
+      loadBulkPs5Prices(true),
+      loadAuthorizedFutbinFeedSafe(false)
     ]);
 
     const currentRows = currentPricedCards(cards, bulk);
@@ -2522,8 +2784,9 @@ async function monitorOnce() {
       await recordDb(currentRows, at);
     }
 
-    const built = await buildTradingRows();
+    const built = await buildTradingRows(futbinFeed);
     latestTradingRows = built.rows;
+    latestFutbinFallbackRows = [];
     latestRatingStats = built.ratingStats;
 
     await evaluateTraderSignalReliability(latestTradingRows);
@@ -2538,6 +2801,10 @@ async function monitorOnce() {
   } catch (error) {
     const sourceHealth = updateSourceHealthFailure(error);
     await notifySourceHealthTransition(sourceHealth);
+
+    const futbinFeed = await loadAuthorizedFutbinFeedSafe(false);
+    latestFutbinFallbackRows = buildFutbinFallbackRows(latestTradingRows, futbinFeed);
+
     lastMonitorError = String(error);
     console.error("monitor error:", error);
   } finally {
@@ -4502,7 +4769,7 @@ function normalizeDecisionForPosition(row, decision) {
   };
 }
 
-async function buildTradingRows() {
+async function buildTradingRows(futbinFeedOverride = null) {
   const [cards, bulk, positions, allSignals, traderProfiles, brainLearning] = await Promise.all([
     ensureUniverse(false),
     loadBulkPs5Prices(false),
@@ -4512,6 +4779,7 @@ async function buildTradingRows() {
     loadBrainLearningProfiles(false)
   ]);
 
+  const futbinFeed = futbinFeedOverride || await loadAuthorizedFutbinFeedSafe(false);
   const current = currentPricedCards(cards, bulk);
   const ids = current.map(row => row.eaId);
   const now = Date.now();
@@ -4589,6 +4857,8 @@ async function buildTradingRows() {
 
     Object.assign(row, signalFor(row));
     Object.assign(row, profitInfo(card.price, positions.get(key)));
+    Object.assign(row, futbinCrossCheckFields(card.eaId, card.price, futbinFeed));
+    row.dataSource = "FUT.GG";
     return row;
   });
 
@@ -5003,7 +5273,7 @@ app.get("/", (req, res) => {
   res.json({
     online: true,
     service: "FC Trading Intelligence",
-    version: "10.18-safe-stale-mode",
+    version: "10.19-futbin-authorized-crosscheck",
     gameYear: GAME_YEAR,
     marketProfile: marketProfile(),
     refreshSeconds: 60,
@@ -5026,6 +5296,7 @@ app.get("/", (req, res) => {
       traderReliabilityStatus: "GET /api/trader-reliability/status",
       marketContext: "GET /api/market-context",
       sourceHealth: "GET /api/source-health",
+      futbinStatus: "GET /api/futbin/status",
       safeStaleMode: "GET /api/trading",
       health: "GET /health"
     }
@@ -5035,11 +5306,12 @@ app.get("/", (req, res) => {
 app.get("/health", (req, res) => {
   res.json({
     ok: true,
-    version: "10.18-safe-stale-mode",
+    version: "10.19-futbin-authorized-crosscheck",
     gameYear: GAME_YEAR,
     marketProfile: marketProfile(),
     marketContext: latestMarketContext,
     sourceHealth: sourceHealthSnapshot(),
+    futbin: latestFutbinStatus,
     monitoringStarted,
     monitoringBusy,
     lastMonitorAt,
@@ -5154,7 +5426,7 @@ app.get("/api/trader-reliability/status", async (req, res) => {
 
     return res.json({
       enabled: true,
-      version: "10.18-safe-stale-mode",
+      version: "10.19-futbin-authorized-crosscheck",
       gameYear: GAME_YEAR,
       method: {
         priorAccuracy: TRADER_RELIABILITY_PRIOR_ACCURACY,
@@ -5213,7 +5485,7 @@ app.get("/api/trader-reliability/status", async (req, res) => {
 app.get("/api/trader-confluence/status", (req, res) => {
   res.json({
     enabled: DISCORD_CONFIGURED && dbEnabled,
-    version: "10.18-safe-stale-mode",
+    version: "10.19-futbin-authorized-crosscheck",
     minCardConfidence: DISCORD_TRADER_CONFLUENCE_MIN_CONFIDENCE,
     minRatingConfidence: DISCORD_TRADER_CONFLUENCE_MIN_RATING_CONFIDENCE,
     minTraderReliability: DISCORD_TRADER_CONFLUENCE_MIN_RELIABILITY,
@@ -5367,6 +5639,7 @@ app.delete("/api/position/:eaId", async (req, res) => {
 function tradingDataMode() {
   const health = sourceHealthSnapshot();
   const hasSafeSnapshot = latestTradingRows.length > 0;
+  const hasFutbinFallback = latestFutbinFallbackRows.length > 0;
   const safeSnapshotAt = lastMonitorAt || health.lastSuccessAt || null;
 
   if (health.status === "HEALTHY" || health.status === "DEGRADED") {
@@ -5377,6 +5650,18 @@ function tradingDataMode() {
       hasSafeSnapshot,
       safeSnapshotAt,
       reason: health.reason
+    };
+  }
+
+  if (hasFutbinFallback) {
+    return {
+      mode: "FUTBIN_FALLBACK_SAFE",
+      live: false,
+      stale: true,
+      hasSafeSnapshot: true,
+      safeSnapshotAt: latestFutbinStatus.lastSuccessAt || safeSnapshotAt,
+      reason:
+        "FUT.GG ist aktuell nicht sicher. Ein autorisierter FUTBIN-Feed liefert Ersatzpreise nur zur Anzeige. Historie, Brain, Lernen und Trading-Alerts bleiben blockiert."
     };
   }
 
@@ -5407,7 +5692,9 @@ app.get("/api/trading", async (req, res) => {
   try {
     const health = sourceHealthSnapshot();
     let mode = tradingDataMode();
-    let rows = latestTradingRows;
+    let rows = mode.mode === "FUTBIN_FALLBACK_SAFE"
+      ? latestFutbinFallbackRows
+      : latestTradingRows;
 
     // Wichtig: Der HTTP-Endpunkt darf den Source-Health-Guard nicht umgehen.
     // Nur bei verwendbarer FUT.GG-Quelle darf ein initialer Snapshot aufgebaut werden.
@@ -5421,10 +5708,11 @@ app.get("/api/trading", async (req, res) => {
 
     res.json({
       ok: true,
-      version: "10.18-safe-stale-mode",
+      version: "10.19-futbin-authorized-crosscheck",
       refreshSeconds: 60,
       dbEnabled,
       sourceHealth: health,
+      futbin: latestFutbinStatus,
       dataMode: mode,
       historyNote:
         dbEnabled
@@ -5499,7 +5787,7 @@ app.get("/api/source-health", (req, res) => {
   const health = sourceHealthSnapshot();
   res.status(health.status === "UNHEALTHY" ? 503 : 200).json({
     ok: health.status !== "UNHEALTHY",
-    version: "10.18-safe-stale-mode",
+    version: "10.19-futbin-authorized-crosscheck",
     gameYear: GAME_YEAR,
     refreshSeconds: 60,
     source: "FUT.GG PS5 bulk prices",
@@ -5508,7 +5796,34 @@ app.get("/api/source-health", (req, res) => {
       blocksHistoryWriteWhenUnhealthy: true,
       blocksBrainCycleWhenUnhealthy: true,
       blocksTradingAlertsWhenUnhealthy: true,
-      note: "Bei klar unvollständigen oder ausgefallenen FUT.GG-Daten wird der aktive Trading-Zyklus gestoppt. Die API darf dann nur den letzten bereits geprüften Snapshot als STALE_SAFE anzeigen und erzeugt daraus keine neue Historie, Lernwerte oder Discord-Alerts."
+      note: "Bei klar unvollständigen oder ausgefallenen FUT.GG-Daten wird der aktive Trading-Zyklus gestoppt. Ohne autorisierten FUTBIN-Feed zeigt die API nur den letzten geprüften STALE_SAFE-Snapshot. Mit autorisiertem Feed darf sie aktuelle Ersatzpreise im FUTBIN_FALLBACK_SAFE-Modus anzeigen; Historie, Lernen und Trading-Alerts bleiben dabei blockiert."
+    }
+  });
+});
+
+app.get("/api/futbin/status", (req, res) => {
+  const matched = latestTradingRows.filter(row => Number.isFinite(row.futbinPrice)).length;
+  const divergent = latestTradingRows.filter(row => ["DIVERGENCE", "OUTLIER"].includes(row.futbinCrossCheck)).length;
+
+  res.json({
+    ok: true,
+    version: "10.19-futbin-authorized-crosscheck",
+    gameYear: GAME_YEAR,
+    configured: Boolean(FUTBIN_AUTHORIZED_FEED_URL),
+    status: latestFutbinStatus,
+    policy: {
+      directWebScraping: false,
+      authorizedFeedOnly: true,
+      refreshMinutes: Math.round(FUTBIN_REFRESH_MS / 60_000),
+      divergencePct: FUTBIN_MAX_DIFF_PCT,
+      outlierPct: FUTBIN_OUTLIER_DIFF_PCT,
+      fallbackMinMatches: FUTBIN_FALLBACK_MIN_MATCHES,
+      note: "FUT.GG bleibt Hauptquelle. FUTBIN wird nur über einen autorisierten/lizenzierten JSON-Feed als Cross-Check und sichere Anzeige-Fallbackquelle verwendet. Bei Fallback werden keine Historie, Lernwerte oder Trading-Alerts erzeugt."
+    },
+    currentCrossCheck: {
+      matchedCards: matched,
+      divergentCards: divergent,
+      fallbackRows: latestFutbinFallbackRows.length
     }
   });
 });
@@ -5516,7 +5831,7 @@ app.get("/api/source-health", (req, res) => {
 app.get("/api/market-context", (req, res) => {
   res.json({
     ok: true,
-    version: "10.18-safe-stale-mode",
+    version: "10.19-futbin-authorized-crosscheck",
     gameYear: GAME_YEAR,
     refreshSeconds: 60,
     context: latestMarketContext,
@@ -5527,7 +5842,7 @@ app.get("/api/market-context", (req, res) => {
 app.get("/api/trader-brain/status", (req, res) => {
   res.json({
     ok: true,
-    version: "10.18-safe-stale-mode",
+    version: "10.19-futbin-authorized-crosscheck",
     gameYear: GAME_YEAR,
     marketProfile: marketProfile(),
     marketContext: latestMarketContext,
@@ -5537,7 +5852,7 @@ app.get("/api/trader-brain/status", (req, res) => {
     lastBrainError,
     lastGeminiCandidate,
     learning: {
-      version: "10.18-safe-stale-mode",
+      version: "10.19-futbin-authorized-crosscheck",
       totalMatureDecisions: brainLearningCache.totalMatureDecisions,
       rawMatureDecisions: brainLearningCache.rawMatureDecisions,
       uniqueLearningEpisodes: brainLearningCache.uniqueLearningEpisodes,
@@ -5558,7 +5873,7 @@ app.get("/api/trader-brain/learning/status", async (req, res) => {
     const cache = await loadBrainLearningProfiles(true);
     return res.json({
       enabled: true,
-      version: "10.18-safe-stale-mode",
+      version: "10.19-futbin-authorized-crosscheck",
       method: {
         windowDays: BRAIN_LEARNING_WINDOW_DAYS,
         priorAccuracy: BRAIN_LEARNING_PRIOR_ACCURACY,
@@ -6535,6 +6850,8 @@ async function load() {
     status.textContent =
       dataMode === "LIVE"
         ? "LIVE • FUT.GG " + sourceStatus
+        : dataMode === "FUTBIN_FALLBACK_SAFE"
+        ? "🟡 FUTBIN FALLBACK SAFE • Anzeige-only • Brain/Alerts pausiert"
         : dataMode === "STALE_SAFE"
         ? "⚠ STALE SAFE • letzte geprüfte Daten • FUT.GG " + sourceStatus
         : "Warte auf sicheren FUT.GG-Markt-Snapshot…";
@@ -6675,7 +6992,7 @@ app.listen(
   port,
   () => {
     console.log(
-      `FC Trading Intelligence v10.18 Safe Stale Mode (FC${GAME_YEAR}) running on ${port}`
+      `FC Trading Intelligence v10.19 FUTBIN Authorized Cross-Check (FC${GAME_YEAR}) running on ${port}`
     );
 
     startMonitoring();
