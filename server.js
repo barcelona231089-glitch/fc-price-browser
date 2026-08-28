@@ -2475,7 +2475,7 @@ async function sendDiscordStartupMessage() {
           { name: "Kaufalarm ab", value: `${DISCORD_MIN_BUY_CONFIDENCE}% KI-Sicherheit`, inline: true },
           { name: "Spam-Schutz", value: `${Math.round(DISCORD_ALERT_COOLDOWN_MS / 60_000)} Min. Cooldown`, inline: true }
         ],
-        footer: { text: "FC Trading Intelligence v10.17" },
+        footer: { text: "FC Trading Intelligence v10.18" },
         timestamp: new Date().toISOString()
       }]
     });
@@ -5003,7 +5003,7 @@ app.get("/", (req, res) => {
   res.json({
     online: true,
     service: "FC Trading Intelligence",
-    version: "10.17-source-health-guard",
+    version: "10.18-safe-stale-mode",
     gameYear: GAME_YEAR,
     marketProfile: marketProfile(),
     refreshSeconds: 60,
@@ -5026,6 +5026,7 @@ app.get("/", (req, res) => {
       traderReliabilityStatus: "GET /api/trader-reliability/status",
       marketContext: "GET /api/market-context",
       sourceHealth: "GET /api/source-health",
+      safeStaleMode: "GET /api/trading",
       health: "GET /health"
     }
   });
@@ -5034,7 +5035,7 @@ app.get("/", (req, res) => {
 app.get("/health", (req, res) => {
   res.json({
     ok: true,
-    version: "10.17-source-health-guard",
+    version: "10.18-safe-stale-mode",
     gameYear: GAME_YEAR,
     marketProfile: marketProfile(),
     marketContext: latestMarketContext,
@@ -5153,7 +5154,7 @@ app.get("/api/trader-reliability/status", async (req, res) => {
 
     return res.json({
       enabled: true,
-      version: "10.17-source-health-guard",
+      version: "10.18-safe-stale-mode",
       gameYear: GAME_YEAR,
       method: {
         priorAccuracy: TRADER_RELIABILITY_PRIOR_ACCURACY,
@@ -5212,7 +5213,7 @@ app.get("/api/trader-reliability/status", async (req, res) => {
 app.get("/api/trader-confluence/status", (req, res) => {
   res.json({
     enabled: DISCORD_CONFIGURED && dbEnabled,
-    version: "10.17-source-health-guard",
+    version: "10.18-safe-stale-mode",
     minCardConfidence: DISCORD_TRADER_CONFLUENCE_MIN_CONFIDENCE,
     minRatingConfidence: DISCORD_TRADER_CONFLUENCE_MIN_RATING_CONFIDENCE,
     minTraderReliability: DISCORD_TRADER_CONFLUENCE_MIN_RELIABILITY,
@@ -5362,21 +5363,69 @@ app.delete("/api/position/:eaId", async (req, res) => {
   }
 });
 
+
+function tradingDataMode() {
+  const health = sourceHealthSnapshot();
+  const hasSafeSnapshot = latestTradingRows.length > 0;
+  const safeSnapshotAt = lastMonitorAt || health.lastSuccessAt || null;
+
+  if (health.status === "HEALTHY" || health.status === "DEGRADED") {
+    return {
+      mode: "LIVE",
+      live: true,
+      stale: false,
+      hasSafeSnapshot,
+      safeSnapshotAt,
+      reason: health.reason
+    };
+  }
+
+  if (hasSafeSnapshot) {
+    return {
+      mode: "STALE_SAFE",
+      live: false,
+      stale: true,
+      hasSafeSnapshot: true,
+      safeSnapshotAt,
+      reason:
+        "FUT.GG ist aktuell nicht sicher. Es werden nur die letzten bereits geprüften Marktdaten angezeigt. Historie, Lernen und Trading-Alerts bleiben blockiert, bis die Quelle wieder stabil ist."
+    };
+  }
+
+  return {
+    mode: "STARTING",
+    live: false,
+    stale: true,
+    hasSafeSnapshot: false,
+    safeSnapshotAt: null,
+    reason:
+      "Noch kein sicherer Markt-Snapshot verfügbar. Das System wartet auf einen erfolgreichen FUT.GG-Marktcheck."
+  };
+}
+
 app.get("/api/trading", async (req, res) => {
   try {
+    const health = sourceHealthSnapshot();
+    let mode = tradingDataMode();
     let rows = latestTradingRows;
 
-    if (!rows.length && !monitoringBusy) {
+    // Wichtig: Der HTTP-Endpunkt darf den Source-Health-Guard nicht umgehen.
+    // Nur bei verwendbarer FUT.GG-Quelle darf ein initialer Snapshot aufgebaut werden.
+    if (!rows.length && !monitoringBusy && health.usable === true) {
       const built = await buildTradingRows();
       rows = built.rows;
       latestTradingRows = rows;
       latestRatingStats = built.ratingStats;
+      mode = tradingDataMode();
     }
 
     res.json({
       ok: true,
+      version: "10.18-safe-stale-mode",
       refreshSeconds: 60,
       dbEnabled,
+      sourceHealth: health,
+      dataMode: mode,
       historyNote:
         dbEnabled
           ? "Dauerhafte Historie + Trader-Brain-Lernspeicher aktiv"
@@ -5404,7 +5453,7 @@ app.get("/api/trading", async (req, res) => {
       lastBrainError,
       lastGeminiCandidate,
       rows,
-      updatedAt: lastMonitorAt || new Date().toISOString()
+      updatedAt: mode.safeSnapshotAt || lastMonitorAt || new Date().toISOString()
     });
   } catch (error) {
     res.status(500).json({
@@ -5450,7 +5499,7 @@ app.get("/api/source-health", (req, res) => {
   const health = sourceHealthSnapshot();
   res.status(health.status === "UNHEALTHY" ? 503 : 200).json({
     ok: health.status !== "UNHEALTHY",
-    version: "10.17-source-health-guard",
+    version: "10.18-safe-stale-mode",
     gameYear: GAME_YEAR,
     refreshSeconds: 60,
     source: "FUT.GG PS5 bulk prices",
@@ -5459,7 +5508,7 @@ app.get("/api/source-health", (req, res) => {
       blocksHistoryWriteWhenUnhealthy: true,
       blocksBrainCycleWhenUnhealthy: true,
       blocksTradingAlertsWhenUnhealthy: true,
-      note: "Bei klar unvollständigen oder ausgefallenen FUT.GG-Daten wird der komplette Trading-Zyklus gestoppt, damit keine kaputten Preise in Historie, Lernen oder Discord-Alerts gelangen."
+      note: "Bei klar unvollständigen oder ausgefallenen FUT.GG-Daten wird der aktive Trading-Zyklus gestoppt. Die API darf dann nur den letzten bereits geprüften Snapshot als STALE_SAFE anzeigen und erzeugt daraus keine neue Historie, Lernwerte oder Discord-Alerts."
     }
   });
 });
@@ -5467,7 +5516,7 @@ app.get("/api/source-health", (req, res) => {
 app.get("/api/market-context", (req, res) => {
   res.json({
     ok: true,
-    version: "10.17-source-health-guard",
+    version: "10.18-safe-stale-mode",
     gameYear: GAME_YEAR,
     refreshSeconds: 60,
     context: latestMarketContext,
@@ -5478,7 +5527,7 @@ app.get("/api/market-context", (req, res) => {
 app.get("/api/trader-brain/status", (req, res) => {
   res.json({
     ok: true,
-    version: "10.17-source-health-guard",
+    version: "10.18-safe-stale-mode",
     gameYear: GAME_YEAR,
     marketProfile: marketProfile(),
     marketContext: latestMarketContext,
@@ -5488,7 +5537,7 @@ app.get("/api/trader-brain/status", (req, res) => {
     lastBrainError,
     lastGeminiCandidate,
     learning: {
-      version: "10.17-source-health-guard",
+      version: "10.18-safe-stale-mode",
       totalMatureDecisions: brainLearningCache.totalMatureDecisions,
       rawMatureDecisions: brainLearningCache.rawMatureDecisions,
       uniqueLearningEpisodes: brainLearningCache.uniqueLearningEpisodes,
@@ -5509,7 +5558,7 @@ app.get("/api/trader-brain/learning/status", async (req, res) => {
     const cache = await loadBrainLearningProfiles(true);
     return res.json({
       enabled: true,
-      version: "10.17-source-health-guard",
+      version: "10.18-safe-stale-mode",
       method: {
         windowDays: BRAIN_LEARNING_WINDOW_DAYS,
         priorAccuracy: BRAIN_LEARNING_PRIOR_ACCURACY,
@@ -6477,6 +6526,19 @@ async function load() {
     allRatingRows =
       json.ratingIntelligence || [];
 
+    const dataMode =
+      json.dataMode?.mode || "LIVE";
+
+    const sourceStatus =
+      json.sourceHealth?.status || "UNKNOWN";
+
+    status.textContent =
+      dataMode === "LIVE"
+        ? "LIVE • FUT.GG " + sourceStatus
+        : dataMode === "STALE_SAFE"
+        ? "⚠ STALE SAFE • letzte geprüfte Daten • FUT.GG " + sourceStatus
+        : "Warte auf sicheren FUT.GG-Markt-Snapshot…";
+
     document
       .getElementById("storage")
       .textContent =
@@ -6485,6 +6547,10 @@ async function load() {
             ? "Dauerhafte Historie: AN"
             : "Dauerhafte Historie: AUS"
         ) +
+        " • Datenmodus: " +
+        dataMode +
+        " • FUT.GG: " +
+        sourceStatus +
         " • " +
         json.historyNote +
         " • Eigene Käufe: " +
@@ -6609,7 +6675,7 @@ app.listen(
   port,
   () => {
     console.log(
-      `FC Trading Intelligence v10.17 FUT.GG Source Health Guard (FC${GAME_YEAR}) running on ${port}`
+      `FC Trading Intelligence v10.18 Safe Stale Mode (FC${GAME_YEAR}) running on ${port}`
     );
 
     startMonitoring();
