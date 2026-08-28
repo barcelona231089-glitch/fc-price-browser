@@ -1427,7 +1427,7 @@ async function sendDiscordStartupMessage() {
           { name: "Kaufalarm ab", value: `${DISCORD_MIN_BUY_CONFIDENCE}% KI-Sicherheit`, inline: true },
           { name: "Spam-Schutz", value: `${Math.round(DISCORD_ALERT_COOLDOWN_MS / 60_000)} Min. Cooldown`, inline: true }
         ],
-        footer: { text: "FC Trading Intelligence v10.5" },
+        footer: { text: "FC Trading Intelligence v10.5.1" },
         timestamp: new Date().toISOString()
       }]
     });
@@ -1436,7 +1436,7 @@ async function sendDiscordStartupMessage() {
       alertKey,
       alertType: "system",
       action: "CONNECTED",
-      fingerprint: "v10.5"
+      fingerprint: "v10.5.1"
     });
   } catch (error) {
     lastDiscordError = String(error);
@@ -1822,6 +1822,8 @@ async function loadRecentDiscordSignals() {
       expected_timeframe,
       source_reliability,
       category,
+      market_confirmed,
+      confirmation_details,
       created_at
     FROM fc_discord_signals
     WHERE created_at >= NOW() - INTERVAL '6 hours'
@@ -1839,6 +1841,8 @@ async function loadRecentDiscordSignals() {
     expectedTimeframe: row.expected_timeframe || "",
     sourceReliability: Number(row.source_reliability || 50),
     category: row.category || "SHORT_TERM_FLIPS",
+    marketConfirmed: row.confirmation_details ? row.market_confirmed === true : null,
+    confirmationDetails: row.confirmation_details || "",
     timestamp: new Date(row.created_at).getTime()
   }));
 }
@@ -2112,6 +2116,97 @@ function matchingSignalsForRow(row, allSignals) {
   });
 }
 
+async function persistDiscordSignalMarketConfirmations(rows, brainWork) {
+  if (!dbEnabled || !rows?.length || !brainWork?.size) return;
+
+  const grouped = new Map();
+
+  for (const row of rows) {
+    const work = brainWork.get(String(row.eaId));
+    const processedSignals = work?.confluence?.processedSignals || [];
+
+    if (!processedSignals.length) continue;
+
+    const hasMarketHistory = [
+      row.change1m,
+      row.change5m,
+      row.change15m,
+      row.change1h
+    ].some(Number.isFinite);
+
+    // Noch keine echte Historie vorhanden: Signal nicht voreilig als falsch speichern.
+    if (!hasMarketHistory) continue;
+
+    for (const signal of processedSignals) {
+      if (!signal?.id) continue;
+
+      const target = String(signal.playerOrRating || "").trim();
+      const rating = /^\d{2}$/.test(target) ? Number(target) : null;
+      const isRatingSignal = Number.isFinite(rating) && rating >= 75 && rating <= 99;
+
+      // Rating-Signale wie "89er Fodder" nur mit Base-Rare-Karten
+      // desselben Ratings prüfen. Specials und Commons verfälschen sonst den Fodder-Markt.
+      if (isRatingSignal) {
+        if (row.cardType !== "Base Rare" || row.overall !== rating) continue;
+      }
+
+      let group = grouped.get(signal.id);
+      if (!group) {
+        group = {
+          id: signal.id,
+          target,
+          rating,
+          isRatingSignal,
+          checked: 0,
+          confirmed: 0,
+          details: new Set()
+        };
+        grouped.set(signal.id, group);
+      }
+
+      group.checked += 1;
+      if (signal.marketConfirmation === true) group.confirmed += 1;
+      if (signal.confirmationDetails) {
+        group.details.add(String(signal.confirmationDetails));
+      }
+    }
+  }
+
+  for (const group of grouped.values()) {
+    if (!group.checked) continue;
+
+    const confirmationRatio = group.confirmed / group.checked;
+    const marketConfirmed = confirmationRatio >= 0.5;
+    const percent = Math.round(confirmationRatio * 100);
+
+    const prefix = group.isRatingSignal
+      ? `FUT.GG Rating-Check ${group.rating}er Base Rare`
+      : `FUT.GG Spieler-Check ${group.target}`;
+
+    const extraDetails = Array.from(group.details).slice(0, 3).join(" | ");
+    const confirmationDetails = (
+      `${prefix}: ${group.confirmed}/${group.checked} Marktprüfungen ` +
+      `bestätigen das Trader-Signal (${percent}%).` +
+      (extraDetails ? ` ${extraDetails}` : "")
+    ).slice(0, 2000);
+
+    await pool.query(
+      `
+        UPDATE fc_discord_signals
+        SET
+          market_confirmed = $2,
+          confirmation_details = $3
+        WHERE id = $1
+          AND (
+            market_confirmed IS DISTINCT FROM $2
+            OR confirmation_details IS DISTINCT FROM $3
+          )
+      `,
+      [group.id, marketConfirmed, confirmationDetails]
+    );
+  }
+}
+
 function baseDecisionFromQuant(quant, confluence) {
   return {
     action: quant.suggestedAction,
@@ -2377,6 +2472,8 @@ async function buildTradingRows() {
 
     brainWork.set(String(row.eaId), { input, quant, confluence });
   }
+
+  await persistDiscordSignalMarketConfirmations(rows, brainWork);
 
   const aiPriority = {
     "JETZT KAUFEN": 6,
@@ -2711,7 +2808,7 @@ app.get("/", (req, res) => {
   res.json({
     online: true,
     service: "FC Trading Intelligence",
-    version: "10.5-trader-signal-ingest",
+    version: "10.5.1-trader-market-confirmation",
     refreshSeconds: 60,
     storage:
       dbEnabled
@@ -2735,7 +2832,7 @@ app.get("/", (req, res) => {
 app.get("/health", (req, res) => {
   res.json({
     ok: true,
-    version: "10.5-trader-signal-ingest",
+    version: "10.5.1-trader-market-confirmation",
     monitoringStarted,
     monitoringBusy,
     lastMonitorAt,
@@ -2988,7 +3085,7 @@ app.get("/api/ratings-intelligence", (req, res) => {
 app.get("/api/trader-brain/status", (req, res) => {
   res.json({
     ok: true,
-    version: "10.5-trader-signal-ingest",
+    version: "10.5.1-trader-market-confirmation",
     automatic: true,
     refreshSeconds: 60,
     lastBrainRunAt,
@@ -4064,7 +4161,7 @@ app.listen(
   port,
   () => {
     console.log(
-      `FC Trading Intelligence v10.5 Trader Signal Ingest running on ${port}`
+      `FC Trading Intelligence v10.5.1 Trader Market Confirmation running on ${port}`
     );
 
     startMonitoring();
