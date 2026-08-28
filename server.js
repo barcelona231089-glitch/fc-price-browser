@@ -18,6 +18,9 @@ app.use(express.json());
 
 const port = process.env.PORT || 3000;
 
+const RAW_GAME_YEAR = String(process.env.GAME_YEAR || "26").trim();
+const GAME_YEAR = /^\d{2}$/.test(RAW_GAME_YEAR) ? RAW_GAME_YEAR : "26";
+
 const RATING_MIN = 75;
 const RATING_MAX = 99;
 
@@ -238,7 +241,7 @@ async function collectAllCardsForRating(rating, force = false) {
       const pagePart = pageNumber === 1 ? "" : `&page=${pageNumber}`;
 
       const url =
-        `https://www.fut.gg/api/fut/players/v2/26/` +
+        `https://www.fut.gg/api/fut/players/v2/${GAME_YEAR}/` +
         `?overall__gte=${rating}&overall__lte=${rating}` +
         `&sorts=current_price${pagePart}`;
 
@@ -393,7 +396,7 @@ async function loadBulkPs5Prices(force = false) {
   }
 
   bulkPriceInflight = (async () => {
-    const manifest = await fetchJson("https://r2.fut.gg/26/manifest.json");
+    const manifest = await fetchJson(`https://r2.fut.gg/${GAME_YEAR}/manifest.json`);
     const hash = manifest["player-prices-ps5"];
 
     if (!hash) {
@@ -401,7 +404,7 @@ async function loadBulkPs5Prices(force = false) {
     }
 
     const url =
-      `https://r2.fut.gg/26/player-prices-ps5.v1.${hash}.json`;
+      `https://r2.fut.gg/${GAME_YEAR}/player-prices-ps5.v1.${hash}.json`;
 
     const data = await fetchJson(url);
 
@@ -2214,7 +2217,7 @@ async function sendDiscordStartupMessage() {
           { name: "Kaufalarm ab", value: `${DISCORD_MIN_BUY_CONFIDENCE}% KI-Sicherheit`, inline: true },
           { name: "Spam-Schutz", value: `${Math.round(DISCORD_ALERT_COOLDOWN_MS / 60_000)} Min. Cooldown`, inline: true }
         ],
-        footer: { text: "FC Trading Intelligence v10.13" },
+        footer: { text: "FC Trading Intelligence v10.14" },
         timestamp: new Date().toISOString()
       }]
     });
@@ -4604,7 +4607,8 @@ app.get("/", (req, res) => {
   res.json({
     online: true,
     service: "FC Trading Intelligence",
-    version: "10.13-long-horizon-lifecycle",
+    version: "10.14-dynamic-game-year",
+    gameYear: GAME_YEAR,
     refreshSeconds: 60,
     storage:
       dbEnabled
@@ -4631,7 +4635,8 @@ app.get("/", (req, res) => {
 app.get("/health", (req, res) => {
   res.json({
     ok: true,
-    version: "10.13-long-horizon-lifecycle",
+    version: "10.14-dynamic-game-year",
+    gameYear: GAME_YEAR,
     monitoringStarted,
     monitoringBusy,
     lastMonitorAt,
@@ -4746,7 +4751,8 @@ app.get("/api/trader-reliability/status", async (req, res) => {
 
     return res.json({
       enabled: true,
-      version: "10.13-long-horizon-lifecycle",
+      version: "10.14-dynamic-game-year",
+      gameYear: GAME_YEAR,
       method: {
         priorAccuracy: TRADER_RELIABILITY_PRIOR_ACCURACY,
         priorStrength: TRADER_RELIABILITY_PRIOR_STRENGTH,
@@ -4804,7 +4810,7 @@ app.get("/api/trader-reliability/status", async (req, res) => {
 app.get("/api/trader-confluence/status", (req, res) => {
   res.json({
     enabled: DISCORD_CONFIGURED && dbEnabled,
-    version: "10.13-long-horizon-lifecycle",
+    version: "10.14-dynamic-game-year",
     minCardConfidence: DISCORD_TRADER_CONFLUENCE_MIN_CONFIDENCE,
     minRatingConfidence: DISCORD_TRADER_CONFLUENCE_MIN_RATING_CONFIDENCE,
     minTraderReliability: DISCORD_TRADER_CONFLUENCE_MIN_RELIABILITY,
@@ -5030,7 +5036,8 @@ app.get("/api/ratings-intelligence", (req, res) => {
   res.json({
     ok: true,
     refreshSeconds: 60,
-    source: "FUT.GG Base Rare",
+    source: `FUT.GG FC${GAME_YEAR} Base Rare`,
+    gameYear: GAME_YEAR,
     ratings,
     updatedAt: lastMonitorAt || new Date().toISOString()
   });
@@ -5039,14 +5046,15 @@ app.get("/api/ratings-intelligence", (req, res) => {
 app.get("/api/trader-brain/status", (req, res) => {
   res.json({
     ok: true,
-    version: "10.13-long-horizon-lifecycle",
+    version: "10.14-dynamic-game-year",
+    gameYear: GAME_YEAR,
     automatic: true,
     refreshSeconds: 60,
     lastBrainRunAt,
     lastBrainError,
     lastGeminiCandidate,
     learning: {
-      version: "10.13-long-horizon-lifecycle",
+      version: "10.14-dynamic-game-year",
       totalMatureDecisions: brainLearningCache.totalMatureDecisions,
       rawMatureDecisions: brainLearningCache.rawMatureDecisions,
       uniqueLearningEpisodes: brainLearningCache.uniqueLearningEpisodes,
@@ -5067,7 +5075,7 @@ app.get("/api/trader-brain/learning/status", async (req, res) => {
     const cache = await loadBrainLearningProfiles(true);
     return res.json({
       enabled: true,
-      version: "10.13-long-horizon-lifecycle",
+      version: "10.14-dynamic-game-year",
       method: {
         windowDays: BRAIN_LEARNING_WINDOW_DAYS,
         priorAccuracy: BRAIN_LEARNING_PRIOR_ACCURACY,
@@ -6167,7 +6175,7 @@ app.listen(
   port,
   () => {
     console.log(
-      `FC Trading Intelligence v10.13 Long Horizon Lifecycle running on ${port}`
+      `FC Trading Intelligence v10.14 Dynamic Game Year (FC${GAME_YEAR}) running on ${port}`
     );
 
     startMonitoring();
