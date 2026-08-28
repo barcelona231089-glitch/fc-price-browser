@@ -2908,12 +2908,17 @@ function finalizeBrainLearningGroup(group) {
 function brainLearningDecisionIsMature(row) {
   const action = String(row.action || "");
 
+  // WAIT ist eine kurzfristige Entscheidung. Nach 15 Minuten ist genug
+  // Information vorhanden, um sie als abgeschlossene Lernepisode zu werten.
   if (action === "NOCH WARTEN") {
     return row.priceAfter15m != null;
   }
 
+  // BUY / AVOID / SELL dürfen nicht schon nach 1h als endgültiger Lernerfolg
+  // gelten. Die Bewertungslogik betrachtet bei diesen Aktionen ein längeres
+  // Fenster; deshalb lernen wir erst, sobald der 6h-Punkt vorhanden ist.
   if (["JETZT KAUFEN", "NICHT KAUFEN", "VERKAUF PRÜFEN"].includes(action)) {
-    return row.priceAfter1h != null || row.priceAfter6h != null || row.priceAfter24h != null;
+    return row.priceAfter6h != null;
   }
 
   return false;
@@ -3733,7 +3738,7 @@ app.get("/", (req, res) => {
   res.json({
     online: true,
     service: "FC Trading Intelligence",
-    version: "10.7.1-learning-quality-guard",
+    version: "10.7.2-mature-outcome-guard",
     refreshSeconds: 60,
     storage:
       dbEnabled
@@ -3759,7 +3764,7 @@ app.get("/", (req, res) => {
 app.get("/health", (req, res) => {
   res.json({
     ok: true,
-    version: "10.7.1-learning-quality-guard",
+    version: "10.7.2-mature-outcome-guard",
     monitoringStarted,
     monitoringBusy,
     lastMonitorAt,
@@ -3869,7 +3874,7 @@ app.get("/api/trader-reliability/status", async (req, res) => {
 
     return res.json({
       enabled: true,
-      version: "10.7.1-learning-quality-guard",
+      version: "10.7.2-mature-outcome-guard",
       method: {
         priorAccuracy: TRADER_RELIABILITY_PRIOR_ACCURACY,
         priorStrength: TRADER_RELIABILITY_PRIOR_STRENGTH,
@@ -4122,14 +4127,14 @@ app.get("/api/ratings-intelligence", (req, res) => {
 app.get("/api/trader-brain/status", (req, res) => {
   res.json({
     ok: true,
-    version: "10.7.1-learning-quality-guard",
+    version: "10.7.2-mature-outcome-guard",
     automatic: true,
     refreshSeconds: 60,
     lastBrainRunAt,
     lastBrainError,
     lastGeminiCandidate,
     learning: {
-      version: "10.7.1-learning-quality-guard",
+      version: "10.7.2-mature-outcome-guard",
       totalMatureDecisions: brainLearningCache.totalMatureDecisions,
       rawMatureDecisions: brainLearningCache.rawMatureDecisions,
       uniqueLearningEpisodes: brainLearningCache.uniqueLearningEpisodes,
@@ -4150,7 +4155,7 @@ app.get("/api/trader-brain/learning/status", async (req, res) => {
     const cache = await loadBrainLearningProfiles(true);
     return res.json({
       enabled: true,
-      version: "10.7.1-learning-quality-guard",
+      version: "10.7.2-mature-outcome-guard",
       method: {
         windowDays: BRAIN_LEARNING_WINDOW_DAYS,
         priorAccuracy: BRAIN_LEARNING_PRIOR_ACCURACY,
@@ -4161,7 +4166,7 @@ app.get("/api/trader-brain/learning/status", async (req, res) => {
         exactMinSamples: 4,
         cardTypeMinSamples: 6,
         actionMinSamples: 10,
-        note: "Ähnliche Entscheidungen derselben Karte werden je 6h-Marktphase dedupliziert. Flache WAIT-Märkte zählen nur schwach; positive WAIT-Verstärkung ist gedeckelt."
+        note: "Ähnliche Entscheidungen derselben Karte werden je 6h-Marktphase dedupliziert. Flache WAIT-Märkte zählen nur schwach; BUY/AVOID/SELL fließen erst ab dem vollständigen 6h-Auswertungspunkt ins Lernen ein."
       },
       totalMatureDecisions: cache.totalMatureDecisions,
       rawMatureDecisions: cache.rawMatureDecisions,
@@ -5240,7 +5245,7 @@ app.listen(
   port,
   () => {
     console.log(
-      `FC Trading Intelligence v10.7.1 Learning Quality Guard running on ${port}`
+      `FC Trading Intelligence v10.7.2 Mature Outcome Guard running on ${port}`
     );
 
     startMonitoring();
