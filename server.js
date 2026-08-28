@@ -60,9 +60,11 @@ const BRAIN_LEARNING_EPISODE_MS = 6 * 60 * 60_000;
 const BRAIN_LEARNING_WINDOW_DAYS = Math.max(30, Number(process.env.BRAIN_LEARNING_WINDOW_DAYS || 90));
 const BRAIN_LEARNING_RECENCY_HALF_LIFE_DAYS = Math.max(3, Number(process.env.BRAIN_LEARNING_RECENCY_HALF_LIFE_DAYS || 14));
 const BRAIN_LEARNING_RECENCY_MIN_WEIGHT = Math.max(0.05, Math.min(0.5, Number(process.env.BRAIN_LEARNING_RECENCY_MIN_WEIGHT || 0.2)));
+const BRAIN_LEARNING_REGIME_MIN_SAMPLES = 4;
 const BRAIN_LEARNING_EXACT_MIN_SAMPLES = 4;
 const BRAIN_LEARNING_CARDTYPE_MIN_SAMPLES = 6;
 const BRAIN_LEARNING_ACTION_MIN_SAMPLES = 10;
+const BRAIN_LEARNING_REGIME_MIN_EFFECTIVE = 3;
 const BRAIN_LEARNING_EXACT_MIN_EFFECTIVE = 3;
 const BRAIN_LEARNING_CARDTYPE_MIN_EFFECTIVE = 5;
 const BRAIN_LEARNING_ACTION_MIN_EFFECTIVE = 8;
@@ -73,6 +75,7 @@ let brainLearningCache = {
   totalMatureDecisions: 0,
   rawMatureDecisions: 0,
   uniqueLearningEpisodes: 0,
+  regimeExact: new Map(),
   exact: new Map(),
   cardType: new Map(),
   action: new Map(),
@@ -2784,6 +2787,77 @@ function brainLearningGroupKey(action, cardType = "*", ratingBand = "*") {
   return `${String(action || "UNKNOWN")}|${String(cardType || "*")}|${String(ratingBand || "*")}`;
 }
 
+function brainLearningRegimeKey(action, cardType, ratingBand, marketRegime) {
+  return `${brainLearningGroupKey(action, cardType, ratingBand)}|${String(marketRegime || "NORMAL")}`;
+}
+
+function brainLearningMarketRegime(input) {
+  let data = input || {};
+
+  if (typeof data === "string") {
+    try {
+      data = JSON.parse(data);
+    } catch {
+      data = {};
+    }
+  }
+
+  const num = value => {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : 0;
+  };
+
+  const c5 = num(data.change5m);
+  const c15 = num(data.change15m);
+  const c1h = num(data.change1h);
+  const c24 = num(data.change24h);
+  const distanceLow = Math.max(0, num(data.distanceTo24hLow));
+  const rising = Math.max(0, num(data.ratingMarketRisingPct));
+  const falling = Math.max(0, num(data.ratingMarketFallingPct));
+
+  // Nicht jede rote Kerze ist ein Crash. Erst starke Einzelkartenbewegung
+  // oder klarer Rating-Markt-Abverkauf erzeugt ein eigenes Regime.
+  if (
+    c5 <= -8 ||
+    c15 <= -12 ||
+    c1h <= -15 ||
+    (falling >= 75 && c5 <= -3)
+  ) {
+    return "CRASH";
+  }
+
+  if (
+    c5 >= 8 ||
+    c15 >= 12 ||
+    c1h >= 15 ||
+    (rising >= 75 && c5 >= 3)
+  ) {
+    return "PUMP";
+  }
+
+  // Rebound nahe dem 24h-Tief: vorheriger Abverkauf, kurzfristig dreht
+  // Momentum sichtbar nach oben.
+  if (
+    distanceLow <= 5 &&
+    (
+      (c5 >= 1 && c15 >= 1.5) ||
+      (c1h >= 2 && c24 < 0)
+    )
+  ) {
+    return "RECOVERY";
+  }
+
+  if (
+    Math.abs(c5) <= 1 &&
+    Math.abs(c15) <= 2 &&
+    Math.abs(c1h) <= 3
+  ) {
+    return "FLAT";
+  }
+
+  return "NORMAL";
+}
+
 function brainLearningMovePct(initialPrice, prices) {
   const initial = Number(initialPrice);
   if (!Number.isFinite(initial) || initial <= 0) return null;
@@ -2832,7 +2906,8 @@ function addBrainLearningSample(map, key, row, scope) {
       key,
       action: row.action,
       cardType: scope === "action" ? "*" : row.cardType,
-      ratingBand: scope === "exact" ? row.ratingBand : "*",
+      ratingBand: ["exact", "regimeExact"].includes(scope) ? row.ratingBand : "*",
+      marketRegime: scope === "regimeExact" ? row.marketRegime : "*",
       samples: 0,
       wins: 0,
       effectiveSamples: 0,
@@ -2910,6 +2985,7 @@ function finalizeBrainLearningGroup(group) {
     action: group.action,
     cardType: group.cardType,
     ratingBand: group.ratingBand,
+    marketRegime: group.marketRegime || "*",
     samples,
     effectiveSamples: Number(effectiveSamples.toFixed(2)),
     wins,
@@ -2962,6 +3038,7 @@ async function loadBrainLearningProfiles(force = false) {
         d.action,
         d.card_type,
         d.rating,
+        d.input_snapshot,
         e.was_correct,
         e.outcome_score,
         e.max_roi,
@@ -2979,6 +3056,7 @@ async function loadBrainLearningProfiles(force = false) {
       LIMIT 5000
     `, [BRAIN_LEARNING_WINDOW_DAYS]);
 
+    const regimeRaw = new Map();
     const exactRaw = new Map();
     const cardTypeRaw = new Map();
     const actionRaw = new Map();
@@ -2994,6 +3072,7 @@ async function loadBrainLearningProfiles(force = false) {
         action: String(dbRow.action || ""),
         cardType: String(dbRow.card_type || "Unknown"),
         ratingBand: brainLearningRatingBand(Number(dbRow.rating)),
+        marketRegime: brainLearningMarketRegime(dbRow.input_snapshot),
         wasCorrect: dbRow.was_correct,
         outcomeScore: dbRow.outcome_score == null ? null : Number(dbRow.outcome_score),
         maxRoi: dbRow.max_roi == null ? null : Number(dbRow.max_roi),
@@ -3009,9 +3088,6 @@ async function loadBrainLearningProfiles(force = false) {
 
       // Mehrere fast identische Entscheidungen derselben Karte im selben
       // Marktfenster sind ein Ereignis, nicht mehrere unabhängige Beweise.
-      // v10.7.4 nutzt ein rollendes 6h-Fenster statt starrer Uhrzeit-Buckets.
-      // Dadurch können zwei Entscheidungen, die nur wenige Minuten auseinander
-      // liegen, nicht nur wegen einer Bucket-Grenze doppelt gezählt werden.
       const seriesKey = `${row.eaId}|${row.action}`;
       const lastSeenAt = rollingEpisodeLastSeen.get(seriesKey);
 
@@ -3019,9 +3095,6 @@ async function loadBrainLearningProfiles(force = false) {
         const gapMs = lastSeenAt - row.createdAt;
 
         if (gapMs >= 0 && gapMs < BRAIN_LEARNING_EPISODE_MS) {
-          // Für eine zusammenhängende Entscheidungsserie die Kette weiterführen.
-          // Erst wenn zwischen zwei Entscheidungen wirklich mindestens 6h liegen,
-          // beginnt eine neue unabhängige Lernepisode.
           rollingEpisodeLastSeen.set(seriesKey, row.createdAt);
           continue;
         }
@@ -3033,6 +3106,15 @@ async function loadBrainLearningProfiles(force = false) {
       row.learningWeight = row.learningQualityWeight * row.learningRecencyWeight;
       mature += 1;
 
+      // v10.8: Wenn genügend Evidenz vorhanden ist, lernt der Brain zuerst
+      // aus derselben Marktlage. Ein Crash wird damit nicht mehr mit einem
+      // flachen oder bereits gepumpten Markt in einen Topf geworfen.
+      addBrainLearningSample(
+        regimeRaw,
+        brainLearningRegimeKey(row.action, row.cardType, row.ratingBand, row.marketRegime),
+        row,
+        "regimeExact"
+      );
       addBrainLearningSample(
         exactRaw,
         brainLearningGroupKey(row.action, row.cardType, row.ratingBand),
@@ -3053,11 +3135,13 @@ async function loadBrainLearningProfiles(force = false) {
       );
     }
 
+    const regimeExact = new Map([...regimeRaw.entries()].map(([key, value]) => [key, finalizeBrainLearningGroup(value)]));
     const exact = new Map([...exactRaw.entries()].map(([key, value]) => [key, finalizeBrainLearningGroup(value)]));
     const cardType = new Map([...cardTypeRaw.entries()].map(([key, value]) => [key, finalizeBrainLearningGroup(value)]));
     const action = new Map([...actionRaw.entries()].map(([key, value]) => [key, finalizeBrainLearningGroup(value)]));
 
     const profiles = [
+      ...regimeExact.values(),
       ...exact.values(),
       ...cardType.values(),
       ...action.values()
@@ -3069,6 +3153,7 @@ async function loadBrainLearningProfiles(force = false) {
       totalMatureDecisions: mature,
       rawMatureDecisions: rawMature,
       uniqueLearningEpisodes: mature,
+      regimeExact,
       exact,
       cardType,
       action,
@@ -3084,10 +3169,21 @@ async function loadBrainLearningProfiles(force = false) {
   }
 }
 
-function selectBrainLearningProfile(cache, action, cardType, rating) {
+function selectBrainLearningProfile(cache, action, cardType, rating, input = null) {
   if (!cache) return null;
 
   const ratingBand = brainLearningRatingBand(rating);
+  const marketRegime = brainLearningMarketRegime(input);
+
+  const byRegime = cache.regimeExact?.get(
+    brainLearningRegimeKey(action, cardType, ratingBand, marketRegime)
+  );
+  if (
+    byRegime &&
+    byRegime.samples >= BRAIN_LEARNING_REGIME_MIN_SAMPLES &&
+    byRegime.effectiveSamples >= BRAIN_LEARNING_REGIME_MIN_EFFECTIVE
+  ) return byRegime;
+
   const exact = cache.exact?.get(brainLearningGroupKey(action, cardType, ratingBand));
   if (
     exact &&
@@ -3132,7 +3228,11 @@ function applyBrainLearningToDecision(decision, profile) {
   const effectiveText = Number.isFinite(profile.effectiveSamples)
     ? ` (${profile.effectiveSamples.toFixed(1)} effektiv)`
     : "";
-  const learningFactor = `Historie: ${profile.samples} unabhängige Fälle${effectiveText}, ${profile.smoothedAccuracy.toFixed(1)}% geglättete Trefferquote, Confidence ${signed}.`;
+  const regimeText =
+    profile.marketRegime && profile.marketRegime !== "*"
+      ? `, Marktlage ${profile.marketRegime}`
+      : "";
+  const learningFactor = `Historie: ${profile.samples} unabhängige Fälle${effectiveText}${regimeText}, ${profile.smoothedAccuracy.toFixed(1)}% geglättete Trefferquote, Confidence ${signed}.`;
 
   return {
     ...decision,
@@ -3147,6 +3247,7 @@ function applyBrainLearningToDecision(decision, profile) {
     historical_learning: {
       applied: true,
       scope: profile.scope,
+      marketRegime: profile.marketRegime || "*",
       samples: profile.samples,
       effectiveSamples: profile.effectiveSamples,
       wins: profile.wins,
@@ -3428,7 +3529,8 @@ async function buildTradingRows() {
       brainLearning,
       normalizedDecision?.action,
       row.cardType,
-      row.overall
+      row.overall,
+      input
     );
     const decision = applyBrainLearningToDecision(normalizedDecision, learningProfile);
     applyDecisionToRow(row, decision);
@@ -3584,7 +3686,8 @@ async function automaticTraderBrain(rows, brainWork) {
         brainLearningCache,
         normalizedDecision?.action,
         geminiCandidate.row.cardType,
-        geminiCandidate.row.overall
+        geminiCandidate.row.overall,
+        geminiCandidate.work.input
       );
       const decision = applyBrainLearningToDecision(normalizedDecision, learningProfile);
       applyDecisionToRow(geminiCandidate.row, decision);
@@ -3783,7 +3886,7 @@ app.get("/", (req, res) => {
   res.json({
     online: true,
     service: "FC Trading Intelligence",
-    version: "10.7.5-recency-decay",
+    version: "10.8-market-regime-learning",
     refreshSeconds: 60,
     storage:
       dbEnabled
@@ -3809,7 +3912,7 @@ app.get("/", (req, res) => {
 app.get("/health", (req, res) => {
   res.json({
     ok: true,
-    version: "10.7.5-recency-decay",
+    version: "10.8-market-regime-learning",
     monitoringStarted,
     monitoringBusy,
     lastMonitorAt,
@@ -3919,7 +4022,7 @@ app.get("/api/trader-reliability/status", async (req, res) => {
 
     return res.json({
       enabled: true,
-      version: "10.7.5-recency-decay",
+      version: "10.8-market-regime-learning",
       method: {
         priorAccuracy: TRADER_RELIABILITY_PRIOR_ACCURACY,
         priorStrength: TRADER_RELIABILITY_PRIOR_STRENGTH,
@@ -4172,14 +4275,14 @@ app.get("/api/ratings-intelligence", (req, res) => {
 app.get("/api/trader-brain/status", (req, res) => {
   res.json({
     ok: true,
-    version: "10.7.5-recency-decay",
+    version: "10.8-market-regime-learning",
     automatic: true,
     refreshSeconds: 60,
     lastBrainRunAt,
     lastBrainError,
     lastGeminiCandidate,
     learning: {
-      version: "10.7.5-recency-decay",
+      version: "10.8-market-regime-learning",
       totalMatureDecisions: brainLearningCache.totalMatureDecisions,
       rawMatureDecisions: brainLearningCache.rawMatureDecisions,
       uniqueLearningEpisodes: brainLearningCache.uniqueLearningEpisodes,
@@ -4200,7 +4303,7 @@ app.get("/api/trader-brain/learning/status", async (req, res) => {
     const cache = await loadBrainLearningProfiles(true);
     return res.json({
       enabled: true,
-      version: "10.7.5-recency-decay",
+      version: "10.8-market-regime-learning",
       method: {
         windowDays: BRAIN_LEARNING_WINDOW_DAYS,
         priorAccuracy: BRAIN_LEARNING_PRIOR_ACCURACY,
@@ -4210,13 +4313,16 @@ app.get("/api/trader-brain/learning/status", async (req, res) => {
         episodeHours: Math.round(BRAIN_LEARNING_EPISODE_MS / 60 / 60_000),
         recencyHalfLifeDays: BRAIN_LEARNING_RECENCY_HALF_LIFE_DAYS,
         recencyMinWeight: BRAIN_LEARNING_RECENCY_MIN_WEIGHT,
+        regimeMinSamples: BRAIN_LEARNING_REGIME_MIN_SAMPLES,
         exactMinSamples: BRAIN_LEARNING_EXACT_MIN_SAMPLES,
         cardTypeMinSamples: BRAIN_LEARNING_CARDTYPE_MIN_SAMPLES,
         actionMinSamples: BRAIN_LEARNING_ACTION_MIN_SAMPLES,
+        regimeMinEffectiveSamples: BRAIN_LEARNING_REGIME_MIN_EFFECTIVE,
         exactMinEffectiveSamples: BRAIN_LEARNING_EXACT_MIN_EFFECTIVE,
         cardTypeMinEffectiveSamples: BRAIN_LEARNING_CARDTYPE_MIN_EFFECTIVE,
         actionMinEffectiveSamples: BRAIN_LEARNING_ACTION_MIN_EFFECTIVE,
-        note: "Ähnliche Entscheidungen derselben Karte werden mit einem rollenden 6h-Abstand dedupliziert. Zusätzlich werden ältere Marktphasen exponentiell schwächer gewichtet, damit aktuelle FC-Marktbedingungen mehr Einfluss haben. Flache WAIT-Märkte zählen nur schwach; BUY/AVOID/SELL fließen erst ab dem vollständigen 6h-Auswertungspunkt ins Lernen ein. Confidence ändert sich nur bei genug effektiver Evidenz."
+        marketRegimes: ["CRASH", "PUMP", "RECOVERY", "FLAT", "NORMAL"],
+        note: "v10.8 lernt zuerst aus derselben Marktlage: Crash, Pump, Recovery, Flat oder Normal. Nur wenn dafür nicht genug Evidenz existiert, fällt das System auf Rating/Kartentyp/Aktion zurück. Ähnliche Entscheidungen derselben Karte werden mit rollendem 6h-Abstand dedupliziert; ältere Marktphasen werden schwächer gewichtet. Confidence ändert sich weiterhin nur konservativ und Aktionen werden nicht blind umgedreht."
       },
       totalMatureDecisions: cache.totalMatureDecisions,
       rawMatureDecisions: cache.rawMatureDecisions,
@@ -5295,7 +5401,7 @@ app.listen(
   port,
   () => {
     console.log(
-      `FC Trading Intelligence v10.7.5 Recency Decay running on ${port}`
+      `FC Trading Intelligence v10.8 Market Regime Learning running on ${port}`
     );
 
     startMonitoring();
