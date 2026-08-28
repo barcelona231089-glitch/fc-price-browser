@@ -23,6 +23,36 @@ const GAME_YEAR = /^\d{2}$/.test(RAW_GAME_YEAR) ? RAW_GAME_YEAR : "26";
 
 const RATING_MIN = 75;
 const RATING_MAX = 99;
+const GAME_YEAR_NUMBER = Number(GAME_YEAR);
+const DEFAULT_MAIN_RATING_MIN = GAME_YEAR_NUMBER >= 27 ? 82 : RATING_MIN;
+const MAIN_RATING_MIN = Math.max(
+  RATING_MIN,
+  Math.min(RATING_MAX, Number(process.env.MAIN_RATING_MIN || DEFAULT_MAIN_RATING_MIN))
+);
+const LOW_RATING_ALERT_MOVE_PCT = Math.max(
+  5,
+  Math.min(40, Number(process.env.LOW_RATING_ALERT_MOVE_PCT || 15))
+);
+
+function isLowWatchRating(rating) {
+  return GAME_YEAR_NUMBER >= 27 && Number(rating) < MAIN_RATING_MIN;
+}
+
+function marketProfile() {
+  return {
+    gameYear: GAME_YEAR,
+    monitoredRatings: [RATING_MIN, RATING_MAX],
+    mainRatingMin: MAIN_RATING_MIN,
+    mainRatingMax: RATING_MAX,
+    lowWatchMin: GAME_YEAR_NUMBER >= 27 ? RATING_MIN : null,
+    lowWatchMax: GAME_YEAR_NUMBER >= 27 ? MAIN_RATING_MIN - 1 : null,
+    lowRatingAlertMovePct: LOW_RATING_ALERT_MOVE_PCT,
+    mode: GAME_YEAR_NUMBER >= 27 ? "FC27_PROFILE" : "FC26_PROFILE",
+    note: GAME_YEAR_NUMBER >= 27
+      ? `Ratings ${MAIN_RATING_MIN}-${RATING_MAX} sind Hauptmarkt. ${RATING_MIN}-${MAIN_RATING_MIN - 1} bleiben vollständig überwacht, erzeugen aber nur bei ungewöhnlich starken Bewegungen ab ${LOW_RATING_ALERT_MOVE_PCT}% besondere Alerts.`
+      : `FC26-Profil: Ratings ${RATING_MIN}-${RATING_MAX} werden normal überwacht und bewertet.`
+  };
+}
 
 const PRICE_REFRESH_MS = 60_000;
 const META_REFRESH_MS = 30 * 60_000;
@@ -1387,6 +1417,12 @@ function discordAlertShouldSend(state, action, price, confidence, fingerprint) {
 }
 
 function cardDiscordAlertCandidate(row) {
+  // FC27 Low-Watch: 75-81 werden weiter analysiert, erzeugen aber nur bei
+  // ungewöhnlich starken Bewegungen überhaupt individuelle Alerts.
+  if (isLowWatchRating(row?.overall) && !lowRatingCardUnusualMove(row)) {
+    return null;
+  }
+
   if (row.aiAction === "JETZT KAUFEN" && row.aiConfidence >= DISCORD_MIN_BUY_CONFIDENCE) {
     return { type: "buy", priority: 100 + row.aiConfidence };
   }
@@ -1454,26 +1490,88 @@ function buildCardDiscordPayload(row, type) {
   };
 }
 
+function ratingUnusualMoveValue(stat) {
+  if (!stat) return 0;
+  const values = [stat.change5m, stat.change15m, stat.change1h]
+    .map(value => Number(value))
+    .filter(Number.isFinite);
+  if (!values.length) return 0;
+  return values.reduce((strongest, value) =>
+    Math.abs(value) > Math.abs(strongest) ? value : strongest
+  , values[0]);
+}
+
+function ratingUnusualMoveMagnitude(stat) {
+  return Math.abs(ratingUnusualMoveValue(stat));
+}
+
+function lowRatingUnusualMove(stat) {
+  return Boolean(
+    stat &&
+    isLowWatchRating(stat.rating) &&
+    ratingUnusualMoveMagnitude(stat) >= LOW_RATING_ALERT_MOVE_PCT
+  );
+}
+
+function lowRatingCardUnusualMove(row) {
+  if (!row || !isLowWatchRating(row.overall)) return false;
+  const magnitude = Math.max(
+    Math.abs(Number(row.change5m || 0)),
+    Math.abs(Number(row.change15m || 0)),
+    Math.abs(Number(row.change1h || 0))
+  );
+  return magnitude >= LOW_RATING_ALERT_MOVE_PCT;
+}
+
 function ratingDiscordAlertCandidate(stat) {
-  if (!stat || stat.confidence < DISCORD_MIN_RATING_CONFIDENCE) return false;
+  if (!stat) return false;
+
+  // FC27: 75-81 bleiben im Monitoring, aber normale Rating-Alarme werden unterdrückt.
+  // Nur wirklich ungewöhnliche Bewegungen dürfen als Low-Watch-Alarm aufs Handy.
+  if (isLowWatchRating(stat.rating)) {
+    return lowRatingUnusualMove(stat) && Number(stat.measuredCards || 0) >= 5;
+  }
+
+  if (stat.confidence < DISCORD_MIN_RATING_CONFIDENCE) return false;
   return ["KAUFZONE", "STARK STEIGEND", "STARK FALLEND"].includes(stat.marketSignal);
 }
 
 function buildRatingDiscordPayload(stat) {
-  const emoji = stat.marketSignal === "KAUFZONE" ? "🟢" : stat.marketSignal === "STARK FALLEND" ? "🔻" : "🚀";
+  const lowWatch = isLowWatchRating(stat.rating);
+  const unusualMove = ratingUnusualMoveValue(stat);
+  const unusualMagnitude = Math.abs(unusualMove);
+  const emoji = lowWatch
+    ? "⚡"
+    : stat.marketSignal === "KAUFZONE"
+      ? "🟢"
+      : stat.marketSignal === "STARK FALLEND"
+        ? "🔻"
+        : "🚀";
+
   return {
     embeds: [{
-      title: `${emoji} ${stat.rating}ER MARKT: ${stat.marketSignal}`,
-      description: String(stat.reason || "Rating-Markt-Signal erkannt."),
+      title: lowWatch
+        ? `${emoji} ${stat.rating}ER LOW-WATCH: ${discordPct(unusualMove)}`
+        : `${emoji} ${stat.rating}ER MARKT: ${stat.marketSignal}`,
+      description: lowWatch
+        ? `FC${GAME_YEAR} Low-Rating-Watch: ungewöhnlich starke Bewegung erkannt. Normale Bewegungen unter ${MAIN_RATING_MIN} werden nicht alarmiert.`
+        : String(stat.reason || "Rating-Markt-Signal erkannt."),
       fields: [
         { name: "Rating-Aktion", value: String(stat.marketAdvice), inline: true },
         { name: "Sicherheit", value: `${stat.confidence}%`, inline: true },
         { name: "Median", value: `${discordNumber(stat.medianPrice)} Coins`, inline: true },
         { name: "5m / 15m / 1h", value: `${discordPct(stat.change5m)} / ${discordPct(stat.change15m)} / ${discordPct(stat.change1h)}`, inline: false },
         { name: "Steigen / Fallen (5m)", value: `${Number(stat.risingPct5m || 0).toFixed(1)}% / ${Number(stat.fallingPct5m || 0).toFixed(1)}%`, inline: true },
-        { name: "Nahe 24h-Tief", value: `${Number(stat.near24hLowPct || 0).toFixed(1)}%`, inline: true }
+        { name: "Nahe 24h-Tief", value: `${Number(stat.near24hLowPct || 0).toFixed(1)}%`, inline: true },
+        ...(lowWatch
+          ? [{
+              name: "FC27 Low-Watch-Regel",
+              value: `Alarm erst ab ${LOW_RATING_ALERT_MOVE_PCT}% Bewegung • Hauptmarkt ab ${MAIN_RATING_MIN}`,
+              inline: false
+            }]
+          : [])
       ],
-      footer: { text: "FC Trader Brain • Rating-Markt Intelligence" },
+      footer: { text: `FC Trader Brain • Rating-Markt Intelligence • FC${GAME_YEAR}` },
       timestamp: new Date().toISOString()
     }]
   };
@@ -1550,6 +1648,11 @@ function traderSignalBrainAgreement(signal, rows, ratingStats, brainWork, gate =
   if (rating != null) {
     const stat = ratingStats?.[rating] || null;
     if (!stat || !Number.isFinite(stat.confidence)) return null;
+
+    // FC27 Low-Watch-Ratings dürfen auch bei einem Trader-Call nicht durch
+    // normale Bewegung zur mobilen Konfluenz werden. Erst der ungewöhnliche
+    // Move schaltet diese Ratings für einen Alarm frei.
+    if (isLowWatchRating(rating) && !lowRatingUnusualMove(stat)) return null;
 
     let agrees = false;
     if (call === "KAUFEN") {
@@ -2217,7 +2320,7 @@ async function sendDiscordStartupMessage() {
           { name: "Kaufalarm ab", value: `${DISCORD_MIN_BUY_CONFIDENCE}% KI-Sicherheit`, inline: true },
           { name: "Spam-Schutz", value: `${Math.round(DISCORD_ALERT_COOLDOWN_MS / 60_000)} Min. Cooldown`, inline: true }
         ],
-        footer: { text: "FC Trading Intelligence v10.14" },
+        footer: { text: "FC Trading Intelligence v10.15" },
         timestamp: new Date().toISOString()
       }]
     });
@@ -2895,7 +2998,25 @@ function buildRatingStats(rows) {
       marketSignal,
       marketAdvice,
       confidence,
-      reason
+      reason,
+      marketTier: isLowWatchRating(rating) ? "LOW_WATCH" : "MAIN",
+      unusualMovePct: Math.max(
+        Math.abs(Number(w5m.medianMove || 0)),
+        Math.abs(Number(w15m.medianMove || 0)),
+        Math.abs(Number(w1h.medianMove || 0))
+      ),
+      unusualMoveSignedPct: [w5m.medianMove, w15m.medianMove, w1h.medianMove]
+        .map(value => Number(value || 0))
+        .reduce((strongest, value) =>
+          Math.abs(value) > Math.abs(strongest) ? value : strongest
+        , Number(w5m.medianMove || 0)),
+      lowWatchAlertEligible: isLowWatchRating(rating)
+        ? Math.max(
+            Math.abs(Number(w5m.medianMove || 0)),
+            Math.abs(Number(w15m.medianMove || 0)),
+            Math.abs(Number(w1h.medianMove || 0))
+          ) >= LOW_RATING_ALERT_MOVE_PCT
+        : null
     };
   }
 
@@ -4607,8 +4728,9 @@ app.get("/", (req, res) => {
   res.json({
     online: true,
     service: "FC Trading Intelligence",
-    version: "10.14-dynamic-game-year",
+    version: "10.15-fc27-market-profile",
     gameYear: GAME_YEAR,
+    marketProfile: marketProfile(),
     refreshSeconds: 60,
     storage:
       dbEnabled
@@ -4635,8 +4757,9 @@ app.get("/", (req, res) => {
 app.get("/health", (req, res) => {
   res.json({
     ok: true,
-    version: "10.14-dynamic-game-year",
+    version: "10.15-fc27-market-profile",
     gameYear: GAME_YEAR,
+    marketProfile: marketProfile(),
     monitoringStarted,
     monitoringBusy,
     lastMonitorAt,
@@ -4751,7 +4874,7 @@ app.get("/api/trader-reliability/status", async (req, res) => {
 
     return res.json({
       enabled: true,
-      version: "10.14-dynamic-game-year",
+      version: "10.15-fc27-market-profile",
       gameYear: GAME_YEAR,
       method: {
         priorAccuracy: TRADER_RELIABILITY_PRIOR_ACCURACY,
@@ -4810,7 +4933,7 @@ app.get("/api/trader-reliability/status", async (req, res) => {
 app.get("/api/trader-confluence/status", (req, res) => {
   res.json({
     enabled: DISCORD_CONFIGURED && dbEnabled,
-    version: "10.14-dynamic-game-year",
+    version: "10.15-fc27-market-profile",
     minCardConfidence: DISCORD_TRADER_CONFLUENCE_MIN_CONFIDENCE,
     minRatingConfidence: DISCORD_TRADER_CONFLUENCE_MIN_RATING_CONFIDENCE,
     minTraderReliability: DISCORD_TRADER_CONFLUENCE_MIN_RELIABILITY,
@@ -5038,6 +5161,7 @@ app.get("/api/ratings-intelligence", (req, res) => {
     refreshSeconds: 60,
     source: `FUT.GG FC${GAME_YEAR} Base Rare`,
     gameYear: GAME_YEAR,
+    marketProfile: marketProfile(),
     ratings,
     updatedAt: lastMonitorAt || new Date().toISOString()
   });
@@ -5046,15 +5170,16 @@ app.get("/api/ratings-intelligence", (req, res) => {
 app.get("/api/trader-brain/status", (req, res) => {
   res.json({
     ok: true,
-    version: "10.14-dynamic-game-year",
+    version: "10.15-fc27-market-profile",
     gameYear: GAME_YEAR,
+    marketProfile: marketProfile(),
     automatic: true,
     refreshSeconds: 60,
     lastBrainRunAt,
     lastBrainError,
     lastGeminiCandidate,
     learning: {
-      version: "10.14-dynamic-game-year",
+      version: "10.15-fc27-market-profile",
       totalMatureDecisions: brainLearningCache.totalMatureDecisions,
       rawMatureDecisions: brainLearningCache.rawMatureDecisions,
       uniqueLearningEpisodes: brainLearningCache.uniqueLearningEpisodes,
@@ -5075,7 +5200,7 @@ app.get("/api/trader-brain/learning/status", async (req, res) => {
     const cache = await loadBrainLearningProfiles(true);
     return res.json({
       enabled: true,
-      version: "10.14-dynamic-game-year",
+      version: "10.15-fc27-market-profile",
       method: {
         windowDays: BRAIN_LEARNING_WINDOW_DAYS,
         priorAccuracy: BRAIN_LEARNING_PRIOR_ACCURACY,
@@ -5388,7 +5513,7 @@ app.get("/trading", (req, res) => {
       )
         .map(
           rating =>
-            `<option value="${rating}">${rating}+</option>`
+            `<option value="${rating}"${rating === MAIN_RATING_MIN ? " selected" : ""}>${rating}+</option>`
         )
         .join("")}
     </select>
@@ -6175,7 +6300,7 @@ app.listen(
   port,
   () => {
     console.log(
-      `FC Trading Intelligence v10.14 Dynamic Game Year (FC${GAME_YEAR}) running on ${port}`
+      `FC Trading Intelligence v10.15 FC27 Market Profile (FC${GAME_YEAR}) running on ${port}`
     );
 
     startMonitoring();
