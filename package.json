@@ -1,6 +1,6 @@
 {
   "name": "fc-trading-intelligence",
-  "version": "10.4.1",
+  "version": "10.5.0",
   "private": true,
   "type": "module",
   "scripts": {

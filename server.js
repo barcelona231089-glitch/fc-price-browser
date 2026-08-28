@@ -1,6 +1,6 @@
 import express from "express";
 import pg from "pg";
-import { Client, GatewayIntentBits } from "discord.js";
+import { Client, GatewayIntentBits, Events } from "discord.js";
 import {
   analyzeMarketPatterns,
   evaluateDiscordSignals,
@@ -54,6 +54,7 @@ const GEMINI_CARD_COOLDOWN_MS = Math.max(30, Number(process.env.GEMINI_CARD_COOL
 
 const DISCORD_BOT_TOKEN = String(process.env.DISCORD_BOT_TOKEN || "").trim();
 const DISCORD_ALERT_CHANNEL_ID = String(process.env.DISCORD_ALERT_CHANNEL_ID || "").trim();
+const TRADER_SIGNAL_CHANNEL_ID = String(process.env.TRADER_SIGNAL_CHANNEL_ID || "").trim();
 const DISCORD_CONFIGURED = Boolean(DISCORD_BOT_TOKEN);
 const DISCORD_ALERT_COOLDOWN_MS = Math.max(5, Number(process.env.DISCORD_ALERT_COOLDOWN_MIN || 30)) * 60_000;
 const DISCORD_MAX_ALERTS_PER_CYCLE = Math.max(1, Math.min(10, Number(process.env.DISCORD_MAX_ALERTS_PER_CYCLE || 5)));
@@ -67,11 +68,19 @@ let discordAlertsSent = 0;
 let discordClientReady = false;
 let discordResolvedChannelId = null;
 let discordResolvedChannelName = null;
+let traderSignalResolvedChannelId = null;
+let traderSignalResolvedChannelName = null;
+let traderSignalsReceived = 0;
+let traderSignalsAccepted = 0;
+let traderSignalsIgnored = 0;
+let lastTraderSignalAt = null;
+let lastTraderSignalError = null;
 let discordBotTag = null;
 let discordGuildCount = 0;
 let discordClient = null;
 let discordLoginPromise = null;
 const memoryDiscordAlertState = new Map();
+const memoryTraderSignals = [];
 
 const memoryHistory = new Map();
 const lastMemoryPrice = new Map();
@@ -661,6 +670,331 @@ function discordPct(value) {
   return `${sign}${Number(value).toFixed(2)}%`;
 }
 
+
+function compactWhitespace(value) {
+  return String(value || "").replace(/\s+/g, " ").trim();
+}
+
+function collectDiscordText(message) {
+  const parts = [];
+
+  if (message?.content) parts.push(message.content);
+
+  for (const embed of message?.embeds || []) {
+    if (embed?.title) parts.push(embed.title);
+    if (embed?.description) parts.push(embed.description);
+    for (const field of embed?.fields || []) {
+      if (field?.name) parts.push(field.name);
+      if (field?.value) parts.push(field.value);
+    }
+  }
+
+  // Discord Forwarded Messages / Message Snapshots, wenn vom Client unterstützt.
+  try {
+    const snapshots = message?.messageSnapshots;
+    const values = snapshots?.values ? Array.from(snapshots.values()) : [];
+    for (const snapshot of values) {
+      if (snapshot?.content) parts.push(snapshot.content);
+      for (const embed of snapshot?.embeds || []) {
+        if (embed?.title) parts.push(embed.title);
+        if (embed?.description) parts.push(embed.description);
+        for (const field of embed?.fields || []) {
+          if (field?.name) parts.push(field.name);
+          if (field?.value) parts.push(field.value);
+        }
+      }
+    }
+  } catch {
+    // Snapshot-Unterstützung ist optional. Normale Nachrichten funktionieren weiterhin.
+  }
+
+  return compactWhitespace(parts.join("\n"));
+}
+
+function detectTraderCall(text) {
+  const lower = String(text || "").toLowerCase();
+
+  const waitPatterns = [
+    /\bwait\b/, /\bwarten\b/, /\bnoch warten\b/, /\bavoid\b/,
+    /\bdon['’]?t buy\b/, /\bdo not buy\b/, /\bno buy\b/,
+    /\bnicht kaufen\b/, /\bhold off\b/, /\bstand by\b/
+  ];
+  if (waitPatterns.some(pattern => pattern.test(lower))) return "WARTEN";
+
+  const sellPatterns = [
+    /\bsell\b/, /\bverkaufen\b/, /\bverkauf\b/, /\btake profit\b/,
+    /\bprofit take\b/, /\bcash out\b/, /\bexit\b/, /\bdump\b/,
+    /\bwill fall\b/, /\bgoing down\b/, /\bcrash incoming\b/
+  ];
+  if (sellPatterns.some(pattern => pattern.test(lower))) return "VERKAUFEN";
+
+  const buyPatterns = [
+    /\bbuy\b/, /\bkaufen\b/, /\binvest\b/, /\binvestment\b/,
+    /\bsnipe\b/, /\baccumulate\b/, /\bstock up\b/, /\bload up\b/,
+    /\bwill rise\b/, /\bgoing up\b/, /\bwill go up\b/, /\bsteigen\b/,
+    /\brise soon\b/, /\bboom soon\b/
+  ];
+  if (buyPatterns.some(pattern => pattern.test(lower))) return "KAUFEN";
+
+  return null;
+}
+
+function detectTraderCategory(text) {
+  const lower = String(text || "").toLowerCase();
+  if (/\bsbc\b|fodder|icon upgrade|upgrade sbc|potm|squad building/.test(lower)) return "SBC_FODDER";
+  if (/leak|leaked|tomorrow content|content leak|evo leak|evolution leak/.test(lower)) return "LEAKS_CONTENT";
+  if (/promo|toty|tots|futties|trailblazer|road to|rttf|future stars|team of the week|totw/.test(lower)) return "PROMO_CARDS";
+  return "SHORT_TERM_FLIPS";
+}
+
+function detectExpectedTimeframe(text) {
+  const raw = String(text || "");
+  const patterns = [
+    /\b(?:in\s+)?\d{1,2}\s*(?:min|mins|minute|minutes|m)\b/i,
+    /\b(?:in\s+)?\d{1,2}\s*(?:h|hr|hrs|hour|hours|stunde|stunden)\b/i,
+    /\b(?:today|heute|tonight|heute abend|tomorrow|morgen)\b/i,
+    /\b(?:at\s*)?\d{1,2}(?::\d{2})?\s*(?:pm|am)?\b/i
+  ];
+  for (const pattern of patterns) {
+    const match = raw.match(pattern);
+    if (match) return compactWhitespace(match[0]);
+  }
+  return "nicht angegeben";
+}
+
+function detectSignalSource(message, text) {
+  const explicit = String(text || "").match(/(?:source|quelle|trader)\s*[:\-]\s*@?([a-z0-9_.\-]{2,50})/i);
+  if (explicit) return explicit[1];
+
+  const atName = String(text || "").match(/@([a-z0-9_.\-]{3,50})/i);
+  if (atName) return atName[1];
+
+  return message?.author?.username || message?.author?.tag || "discord_signal";
+}
+
+function detectSignalTarget(text) {
+  const raw = compactWhitespace(text);
+  const lower = raw.toLowerCase();
+
+  // Spieler aus unserer aktuell geladenen FUT.GG-Kartenliste erkennen.
+  const candidates = latestTradingRows
+    .filter(row => row?.name)
+    .map(row => ({
+      name: String(row.name),
+      lower: String(row.name).toLowerCase(),
+      eaId: String(row.eaId)
+    }))
+    .sort((a, b) => b.lower.length - a.lower.length);
+
+  for (const card of candidates) {
+    if (card.lower.length >= 4 && lower.includes(card.lower)) {
+      return { target: card.name, eaId: card.eaId, kind: "player" };
+    }
+  }
+
+  // Wenn nur der Nachname genannt wird, nur eindeutige Treffer akzeptieren.
+  const surnameMatches = new Map();
+  for (const card of candidates) {
+    const tokens = card.lower.split(/[^a-zà-ÿ0-9]+/i).filter(Boolean);
+    const surname = tokens.at(-1);
+    if (!surname || surname.length < 4 || !lower.match(new RegExp(`\\b${surname.replace(/[.*+?^${}()|[\\]\\]/g, "\\$&")}\\b`, "i"))) continue;
+    if (!surnameMatches.has(surname)) surnameMatches.set(surname, []);
+    surnameMatches.get(surname).push(card);
+  }
+  for (const matches of surnameMatches.values()) {
+    if (matches.length === 1) {
+      return { target: matches[0].name, eaId: matches[0].eaId, kind: "player" };
+    }
+  }
+
+  // Rating-Signale, z.B. "83er", "88s" oder "88 fodder".
+  const ratingMatch = lower.match(/\b(7[5-9]|8\d|9\d)(?:er|s)?\b/);
+  if (ratingMatch) {
+    const rating = Number(ratingMatch[1]);
+    if (rating >= 75 && rating <= 99) {
+      return { target: String(rating), rating, kind: "rating" };
+    }
+  }
+
+  return null;
+}
+
+function parseTraderSignalMessage(message) {
+  const text = collectDiscordText(message);
+  if (!text || text.length < 3) {
+    return { ok: false, reason: "Keine auswertbare Nachricht" };
+  }
+
+  const call = detectTraderCall(text);
+  if (!call) {
+    return { ok: false, reason: "Keine klare Aktion KAUFEN / VERKAUFEN / WARTEN erkannt" };
+  }
+
+  const targetInfo = detectSignalTarget(text);
+  if (!targetInfo) {
+    return { ok: false, reason: "Kein eindeutiger FUT.GG-Spieler oder Rating erkannt" };
+  }
+
+  const source = detectSignalSource(message, text);
+  const category = detectTraderCategory(text);
+  const expectedTimeframe = detectExpectedTimeframe(text);
+
+  return {
+    ok: true,
+    signal: {
+      id: `discord_${message.id}`,
+      source,
+      message: text.slice(0, 3000),
+      playerOrRating: targetInfo.target,
+      eaId: targetInfo.eaId || null,
+      call,
+      reason: text.slice(0, 1200),
+      expectedTimeframe,
+      sourceReliability: 50,
+      category,
+      timestamp: Date.now()
+    }
+  };
+}
+
+async function saveIncomingTraderSignal(signal) {
+  if (!signal) return;
+
+  if (!dbEnabled) {
+    memoryTraderSignals.unshift(signal);
+    if (memoryTraderSignals.length > 500) memoryTraderSignals.length = 500;
+    return;
+  }
+
+  await pool.query(
+    `
+      INSERT INTO fc_discord_signals (
+        id,
+        source,
+        message,
+        player_or_rating,
+        call,
+        reason,
+        expected_timeframe,
+        source_reliability,
+        category,
+        created_at
+      )
+      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,NOW())
+      ON CONFLICT (id) DO NOTHING
+    `,
+    [
+      signal.id,
+      signal.source,
+      signal.message,
+      signal.playerOrRating,
+      signal.call,
+      signal.reason,
+      signal.expectedTimeframe,
+      signal.sourceReliability,
+      signal.category
+    ]
+  );
+
+  const profileId = `trader_${String(signal.source).toLowerCase().replace(/[^a-z0-9]+/g, "_").slice(0, 80)}`;
+  await pool.query(
+    `
+      INSERT INTO fc_trader_profiles (
+        id, source, display_name, overall_accuracy, total_signals,
+        reputation_badge, notes, updated_at
+      )
+      VALUES ($1,$2,$3,50,1,'Unbewiesen','Automatisch aus #trader-signals angelegt',NOW())
+      ON CONFLICT (source)
+      DO UPDATE SET
+        total_signals = fc_trader_profiles.total_signals + 1,
+        updated_at = NOW()
+    `,
+    [profileId, signal.source, signal.source]
+  );
+}
+
+async function resolveTraderSignalChannel() {
+  if (!discordClientReady || !discordClient?.isReady()) return null;
+
+  if (TRADER_SIGNAL_CHANNEL_ID) {
+    try {
+      const configured = await discordClient.channels.fetch(TRADER_SIGNAL_CHANNEL_ID);
+      if (configured?.isTextBased?.()) {
+        traderSignalResolvedChannelId = configured.id;
+        traderSignalResolvedChannelName = configured.name || "trader-signals";
+        return configured;
+      }
+    } catch (error) {
+      console.warn(
+        `Trader-Signal Channel-ID ${TRADER_SIGNAL_CHANNEL_ID} nicht direkt erreichbar. Suche automatisch nach #trader-signals...`,
+        error?.message || error
+      );
+    }
+  }
+
+  for (const guild of discordClient.guilds.cache.values()) {
+    try {
+      const channels = await guild.channels.fetch();
+      const found = channels.find(channel =>
+        channel && channel.name === "trader-signals" && channel.isTextBased?.()
+      );
+      if (found) {
+        traderSignalResolvedChannelId = found.id;
+        traderSignalResolvedChannelName = found.name;
+        console.log(
+          `Trader-Signal-Kanal automatisch gefunden: Guild "${guild.name}", #${found.name}, ID ${found.id}`
+        );
+        return found;
+      }
+    } catch (error) {
+      console.warn(`Trader-Signal-Kanalsuche in "${guild.name}" fehlgeschlagen:`, error?.message || error);
+    }
+  }
+
+  lastTraderSignalError = "#trader-signals wurde nicht gefunden oder ist für den Bot nicht sichtbar.";
+  return null;
+}
+
+async function handleTraderSignalMessage(message) {
+  try {
+    if (!message || message.author?.bot) return;
+
+    const channelId = String(message.channelId || "");
+    const targetChannel = traderSignalResolvedChannelId || TRADER_SIGNAL_CHANNEL_ID;
+    if (!targetChannel || channelId !== String(targetChannel)) return;
+
+    traderSignalsReceived++;
+    lastTraderSignalAt = new Date().toISOString();
+
+    const parsed = parseTraderSignalMessage(message);
+    if (!parsed.ok) {
+      traderSignalsIgnored++;
+      lastTraderSignalError = parsed.reason;
+      await message.reply({
+        content: `⚪ Signal nicht übernommen: ${parsed.reason}. Schreibe z. B. **"BUY Harry Kane, 89er Fodder steigt wegen SBC morgen"**.`,
+        allowedMentions: { repliedUser: false, parse: [] }
+      }).catch(() => {});
+      return;
+    }
+
+    await saveIncomingTraderSignal(parsed.signal);
+    traderSignalsAccepted++;
+    lastTraderSignalError = null;
+
+    await message.reply({
+      content:
+        `📥 **Trader-Signal gespeichert** | ${parsed.signal.call} | ` +
+        `**${parsed.signal.playerOrRating}** | Quelle: **${parsed.signal.source}** | ` +
+        `Kategorie: ${parsed.signal.category}. Wird ab dem nächsten 60-Sekunden-Marktcheck gegen FUT.GG geprüft.`,
+      allowedMentions: { repliedUser: false, parse: [] }
+    }).catch(() => {});
+  } catch (error) {
+    traderSignalsIgnored++;
+    lastTraderSignalError = String(error);
+    console.error("Trader signal ingest error:", error);
+  }
+}
+
 async function initDiscordBot() {
   if (!DISCORD_CONFIGURED) {
     lastDiscordError = "DISCORD_BOT_TOKEN fehlt";
@@ -692,6 +1026,13 @@ async function initDiscordBot() {
     console.warn("Discord client warning:", warning);
   });
 
+  discordClient.on(Events.MessageCreate, message => {
+    handleTraderSignalMessage(message).catch(error => {
+      lastTraderSignalError = String(error);
+      console.error("Trader signal message handler error:", error);
+    });
+  });
+
   discordLoginPromise = new Promise(async resolve => {
     const timeout = setTimeout(() => {
       lastDiscordError = "Discord Gateway Login Timeout";
@@ -699,7 +1040,7 @@ async function initDiscordBot() {
       resolve(false);
     }, 25_000);
 
-    discordClient.once("ready", async () => {
+    discordClient.once(Events.ClientReady, async () => {
       clearTimeout(timeout);
       discordClientReady = true;
       discordBotTag = discordClient.user?.tag || discordClient.user?.username || "Bot";
@@ -714,6 +1055,13 @@ async function initDiscordBot() {
       if (channel) {
         console.log(
           `Discord Alert-Kanal gefunden: #${discordResolvedChannelName} (${discordResolvedChannelId})`
+        );
+      }
+
+      const traderChannel = await resolveTraderSignalChannel();
+      if (traderChannel) {
+        console.log(
+          `Discord Trader-Signal-Kanal gefunden: #${traderSignalResolvedChannelName} (${traderSignalResolvedChannelId})`
         );
       }
 
@@ -1079,7 +1427,7 @@ async function sendDiscordStartupMessage() {
           { name: "Kaufalarm ab", value: `${DISCORD_MIN_BUY_CONFIDENCE}% KI-Sicherheit`, inline: true },
           { name: "Spam-Schutz", value: `${Math.round(DISCORD_ALERT_COOLDOWN_MS / 60_000)} Min. Cooldown`, inline: true }
         ],
-        footer: { text: "FC Trading Intelligence v10.4.1" },
+        footer: { text: "FC Trading Intelligence v10.5" },
         timestamp: new Date().toISOString()
       }]
     });
@@ -1088,7 +1436,7 @@ async function sendDiscordStartupMessage() {
       alertKey,
       alertType: "system",
       action: "CONNECTED",
-      fingerprint: "v10.4.1"
+      fingerprint: "v10.5"
     });
   } catch (error) {
     lastDiscordError = String(error);
@@ -1461,7 +1809,7 @@ function profitInfo(currentPrice, position) {
 }
 
 async function loadRecentDiscordSignals() {
-  if (!dbEnabled) return [];
+  if (!dbEnabled) return memoryTraderSignals.filter(signal => Date.now() - Number(signal.timestamp || 0) <= 6 * 60 * 60_000);
 
   const result = await pool.query(`
     SELECT
@@ -2363,7 +2711,7 @@ app.get("/", (req, res) => {
   res.json({
     online: true,
     service: "FC Trading Intelligence",
-    version: "10.4.1-discord-gateway-fix",
+    version: "10.5-trader-signal-ingest",
     refreshSeconds: 60,
     storage:
       dbEnabled
@@ -2387,7 +2735,7 @@ app.get("/", (req, res) => {
 app.get("/health", (req, res) => {
   res.json({
     ok: true,
-    version: "10.4.1-discord-gateway-fix",
+    version: "10.5-trader-signal-ingest",
     monitoringStarted,
     monitoringBusy,
     lastMonitorAt,
@@ -2407,12 +2755,39 @@ app.get("/health", (req, res) => {
       guildCount: discordGuildCount,
       resolvedChannelId: discordResolvedChannelId,
       resolvedChannelName: discordResolvedChannelName,
+      traderSignalChannelConfigured: Boolean(TRADER_SIGNAL_CHANNEL_ID),
+      traderSignalChannelId: traderSignalResolvedChannelId,
+      traderSignalChannelName: traderSignalResolvedChannelName,
+      traderSignalsReceived,
+      traderSignalsAccepted,
+      traderSignalsIgnored,
+      lastTraderSignalAt,
+      lastTraderSignalError,
       alertsSent: discordAlertsSent,
       lastSendAt: lastDiscordSendAt,
       lastError: lastDiscordError
     },
     now: new Date().toISOString()
   });
+});
+
+app.get("/api/trader-signals/status", async (req, res) => {
+  try {
+    const recent = await loadRecentDiscordSignals();
+    return res.json({
+      configured: Boolean(TRADER_SIGNAL_CHANNEL_ID),
+      channelId: traderSignalResolvedChannelId || TRADER_SIGNAL_CHANNEL_ID || null,
+      channelName: traderSignalResolvedChannelName,
+      received: traderSignalsReceived,
+      accepted: traderSignalsAccepted,
+      ignored: traderSignalsIgnored,
+      lastSignalAt: lastTraderSignalAt,
+      lastError: lastTraderSignalError,
+      recentSignals: recent.slice(0, 25)
+    });
+  } catch (error) {
+    return res.status(500).json({ error: String(error) });
+  }
 });
 
 app.get("/api/discord/status", (req, res) => {
@@ -2425,6 +2800,14 @@ app.get("/api/discord/status", (req, res) => {
     guildCount: discordGuildCount,
     resolvedChannelId: discordResolvedChannelId,
     resolvedChannelName: discordResolvedChannelName,
+    traderSignalChannelConfigured: Boolean(TRADER_SIGNAL_CHANNEL_ID),
+    traderSignalChannelId: traderSignalResolvedChannelId,
+    traderSignalChannelName: traderSignalResolvedChannelName,
+    traderSignalsReceived,
+    traderSignalsAccepted,
+    traderSignalsIgnored,
+    lastTraderSignalAt,
+    lastTraderSignalError,
     alertsSent: discordAlertsSent,
     lastSendAt: lastDiscordSendAt,
     lastError: lastDiscordError,
@@ -2605,7 +2988,7 @@ app.get("/api/ratings-intelligence", (req, res) => {
 app.get("/api/trader-brain/status", (req, res) => {
   res.json({
     ok: true,
-    version: "10.4.1-discord-gateway-fix",
+    version: "10.5-trader-signal-ingest",
     automatic: true,
     refreshSeconds: 60,
     lastBrainRunAt,
@@ -3681,7 +4064,7 @@ app.listen(
   port,
   () => {
     console.log(
-      `FC Trading Intelligence v10.4.1 Discord Gateway Fix running on ${port}`
+      `FC Trading Intelligence v10.5 Trader Signal Ingest running on ${port}`
     );
 
     startMonitoring();
