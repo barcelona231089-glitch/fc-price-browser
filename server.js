@@ -524,7 +524,7 @@ async function initDb() {
     )
   `);
 
-  // v10.6: bestehende Datenbanken ohne Datenverlust erweitern.
+  // v10.6/v10.6.1: bestehende Datenbanken ohne Datenverlust erweitern.
   await pool.query(`
     ALTER TABLE fc_discord_signals
       ADD COLUMN IF NOT EXISTS target_ea_id BIGINT
@@ -1494,7 +1494,7 @@ async function sendDiscordStartupMessage() {
           { name: "Kaufalarm ab", value: `${DISCORD_MIN_BUY_CONFIDENCE}% KI-Sicherheit`, inline: true },
           { name: "Spam-Schutz", value: `${Math.round(DISCORD_ALERT_COOLDOWN_MS / 60_000)} Min. Cooldown`, inline: true }
         ],
-        footer: { text: "FC Trading Intelligence v10.6" },
+        footer: { text: "FC Trading Intelligence v10.6.1" },
         timestamp: new Date().toISOString()
       }]
     });
@@ -2282,6 +2282,87 @@ async function persistDiscordSignalMarketConfirmations(rows, brainWork) {
 }
 
 const TRADER_RELIABILITY_HORIZONS = [5, 15, 60, 360, 1440];
+const TRADER_RELIABILITY_PRIOR_ACCURACY = 50;
+const TRADER_RELIABILITY_PRIOR_STRENGTH = 8;
+const TRADER_RELIABILITY_CATEGORY_PRIOR_STRENGTH = 5;
+
+function nearestTraderReliabilityHorizon(minutes) {
+  if (!Number.isFinite(minutes) || minutes <= 0) return 60;
+
+  return TRADER_RELIABILITY_HORIZONS.reduce((best, candidate) => {
+    const bestDistance = Math.abs(Math.log(best / minutes));
+    const candidateDistance = Math.abs(Math.log(candidate / minutes));
+    return candidateDistance < bestDistance ? candidate : best;
+  }, TRADER_RELIABILITY_HORIZONS[0]);
+}
+
+function preferredTraderSignalHorizon(signal) {
+  const timeframe = String(signal?.expectedTimeframe || "").toLowerCase().trim();
+
+  if (/(morgen|tomorrow)/.test(timeframe)) return 1440;
+  if (/(heute abend|tonight)/.test(timeframe)) return 360;
+  if (/\b(heute|today)\b/.test(timeframe)) return 360;
+
+  const minuteMatch = timeframe.match(/\b(\d{1,4})\s*(?:m|min|mins|minute|minutes)\b/i);
+  if (minuteMatch) {
+    return nearestTraderReliabilityHorizon(Number(minuteMatch[1]));
+  }
+
+  const hourMatch = timeframe.match(/\b(\d{1,3})\s*(?:h|hr|hrs|hour|hours|stunde|stunden)\b/i);
+  if (hourMatch) {
+    return nearestTraderReliabilityHorizon(Number(hourMatch[1]) * 60);
+  }
+
+  switch (String(signal?.category || "").toUpperCase()) {
+    case "SBC_FODDER":
+      return 360;
+    case "PROMO_CARDS":
+      return 360;
+    case "LEAKS_CONTENT":
+      return 1440;
+    case "SHORT_TERM_FLIPS":
+    default:
+      return 60;
+  }
+}
+
+function traderReliabilityOutcomeWeight(signal, horizonMinutes) {
+  const preferred = preferredTraderSignalHorizon(signal);
+  const preferredIndex = TRADER_RELIABILITY_HORIZONS.indexOf(preferred);
+  const horizonIndex = TRADER_RELIABILITY_HORIZONS.indexOf(Number(horizonMinutes));
+
+  if (preferredIndex < 0 || horizonIndex < 0) return 0.25;
+
+  const distance = Math.abs(preferredIndex - horizonIndex);
+
+  if (distance === 0) return 1.0;
+  if (distance === 1) return 0.6;
+  if (distance === 2) return 0.3;
+  return 0.1;
+}
+
+function smoothedTraderAccuracy(outcomes, priorStrength) {
+  const clean = (outcomes || []).filter(item =>
+    Number.isFinite(item.weight) &&
+    item.weight > 0 &&
+    typeof item.wasCorrect === "boolean"
+  );
+
+  const totalWeight = clean.reduce((sum, item) => sum + item.weight, 0);
+  const weightedCorrect = clean.reduce(
+    (sum, item) => sum + (item.wasCorrect ? item.weight : 0),
+    0
+  );
+
+  const score =
+    (
+      TRADER_RELIABILITY_PRIOR_ACCURACY * priorStrength +
+      weightedCorrect * 100
+    ) /
+    (priorStrength + totalWeight);
+
+  return Number(score.toFixed(2));
+}
 
 async function loadTraderSignalsForReliability() {
   if (!dbEnabled) return [];
@@ -2402,26 +2483,61 @@ async function refreshTraderReliabilityProfiles() {
   const result = await pool.query(`
     SELECT
       s.source,
-      COUNT(*)::int AS evaluated_outcomes,
-      AVG(CASE WHEN o.was_correct THEN 100.0 ELSE 0.0 END) AS overall_accuracy,
-      AVG(CASE WHEN s.category = 'SBC_FODDER' THEN CASE WHEN o.was_correct THEN 100.0 ELSE 0.0 END END) AS sbc_accuracy,
-      AVG(CASE WHEN s.category = 'PROMO_CARDS' THEN CASE WHEN o.was_correct THEN 100.0 ELSE 0.0 END END) AS promo_accuracy,
-      AVG(CASE WHEN s.category = 'SHORT_TERM_FLIPS' THEN CASE WHEN o.was_correct THEN 100.0 ELSE 0.0 END END) AS short_accuracy,
-      AVG(CASE WHEN s.category = 'LEAKS_CONTENT' THEN CASE WHEN o.was_correct THEN 100.0 ELSE 0.0 END END) AS leaks_accuracy
+      s.category,
+      s.expected_timeframe,
+      o.horizon_minutes,
+      o.was_correct
     FROM fc_trader_signal_outcomes o
     JOIN fc_discord_signals s ON s.id = o.signal_id
-    GROUP BY s.source
+    ORDER BY s.source, o.evaluated_at ASC
   `);
 
-  for (const row of result.rows) {
-    const evaluated = Number(row.evaluated_outcomes || 0);
-    const accuracy = Number(row.overall_accuracy || 50);
-    let badge = "Unbewiesen";
+  const bySource = new Map();
 
-    if (evaluated >= 25 && accuracy >= 80) badge = "Sehr stark";
-    else if (evaluated >= 10 && accuracy >= 70) badge = "Stark";
-    else if (evaluated >= 10 && accuracy < 40) badge = "Schwach";
-    else if (evaluated >= 10) badge = "Beobachten";
+  for (const row of result.rows) {
+    const source = String(row.source || "");
+    if (!source) continue;
+
+    if (!bySource.has(source)) {
+      bySource.set(source, []);
+    }
+
+    const signalLike = {
+      category: row.category || "SHORT_TERM_FLIPS",
+      expectedTimeframe: row.expected_timeframe || ""
+    };
+
+    bySource.get(source).push({
+      category: signalLike.category,
+      horizonMinutes: Number(row.horizon_minutes),
+      wasCorrect: row.was_correct === true,
+      weight: traderReliabilityOutcomeWeight(signalLike, Number(row.horizon_minutes))
+    });
+  }
+
+  for (const [source, outcomes] of bySource.entries()) {
+    const overallAccuracy = smoothedTraderAccuracy(
+      outcomes,
+      TRADER_RELIABILITY_PRIOR_STRENGTH
+    );
+
+    const categoryAccuracy = category => {
+      const selected = outcomes.filter(item => item.category === category);
+      if (!selected.length) return null;
+      return smoothedTraderAccuracy(
+        selected,
+        TRADER_RELIABILITY_CATEGORY_PRIOR_STRENGTH
+      );
+    };
+
+    const evaluatedOutcomes = outcomes.length;
+    const effectiveWeight = outcomes.reduce((sum, item) => sum + item.weight, 0);
+
+    let badge = "Unbewiesen";
+    if (effectiveWeight >= 15 && overallAccuracy >= 80) badge = "Sehr stark";
+    else if (effectiveWeight >= 8 && overallAccuracy >= 70) badge = "Stark";
+    else if (effectiveWeight >= 8 && overallAccuracy < 40) badge = "Schwach";
+    else if (effectiveWeight >= 8) badge = "Beobachten";
 
     await pool.query(`
       UPDATE fc_trader_profiles
@@ -2432,16 +2548,18 @@ async function refreshTraderReliabilityProfiles() {
         accuracy_short_flips = COALESCE($5, accuracy_short_flips),
         accuracy_leaks = COALESCE($6, accuracy_leaks),
         reputation_badge = $7,
+        notes = $8,
         updated_at = NOW()
       WHERE source = $1
     `, [
-      row.source,
-      accuracy,
-      row.sbc_accuracy == null ? null : Number(row.sbc_accuracy),
-      row.promo_accuracy == null ? null : Number(row.promo_accuracy),
-      row.short_accuracy == null ? null : Number(row.short_accuracy),
-      row.leaks_accuracy == null ? null : Number(row.leaks_accuracy),
-      badge
+      source,
+      overallAccuracy,
+      categoryAccuracy("SBC_FODDER"),
+      categoryAccuracy("PROMO_CARDS"),
+      categoryAccuracy("SHORT_TERM_FLIPS"),
+      categoryAccuracy("LEAKS_CONTENT"),
+      badge,
+      `v10.6.1 gewichtete Reliability: ${evaluatedOutcomes} Outcomes, effektives Gewicht ${effectiveWeight.toFixed(2)}, Bayes-Startbasis 50%.`
     ]);
   }
 }
@@ -2515,7 +2633,10 @@ async function evaluateTraderSignalReliability(rows) {
     }
   }
 
-  if (inserted > 0) await refreshTraderReliabilityProfiles();
+  // v10.6.1: Profile in jedem Zyklus neu berechnen.
+  // Dadurch werden auch bereits vorhandene v10.6-Outcomes sofort
+  // mit Zeitfenster-Gewichtung und 50%-Startbasis korrigiert.
+  await refreshTraderReliabilityProfiles();
   return inserted;
 }
 
@@ -3120,7 +3241,7 @@ app.get("/", (req, res) => {
   res.json({
     online: true,
     service: "FC Trading Intelligence",
-    version: "10.5.1-trader-market-confirmation",
+    version: "10.6.1-intelligent-reliability",
     refreshSeconds: 60,
     storage:
       dbEnabled
@@ -3145,7 +3266,7 @@ app.get("/", (req, res) => {
 app.get("/health", (req, res) => {
   res.json({
     ok: true,
-    version: "10.5.1-trader-market-confirmation",
+    version: "10.6.1-intelligent-reliability",
     monitoringStarted,
     monitoringBusy,
     lastMonitorAt,
@@ -3230,6 +3351,7 @@ app.get("/api/trader-reliability/status", async (req, res) => {
           s.player_or_rating,
           s.call,
           s.category,
+          s.expected_timeframe,
           o.horizon_minutes,
           o.initial_price,
           o.observed_price,
@@ -3247,6 +3369,13 @@ app.get("/api/trader-reliability/status", async (req, res) => {
 
     return res.json({
       enabled: true,
+      version: "10.6.1-intelligent-reliability",
+      method: {
+        priorAccuracy: TRADER_RELIABILITY_PRIOR_ACCURACY,
+        priorStrength: TRADER_RELIABILITY_PRIOR_STRENGTH,
+        categoryPriorStrength: TRADER_RELIABILITY_CATEGORY_PRIOR_STRENGTH,
+        note: "Zeitfenster werden passend zu Erwartung/Kategorie gewichtet; frühe Fern-Horizonte zählen deutlich weniger."
+      },
       horizonsMinutes: TRADER_RELIABILITY_HORIZONS,
       profiles: profiles.rows.map(row => ({
         source: row.source,
@@ -3268,7 +3397,19 @@ app.get("/api/trader-reliability/status", async (req, res) => {
         playerOrRating: row.player_or_rating,
         call: row.call,
         category: row.category,
+        expectedTimeframe: row.expected_timeframe || "",
+        preferredHorizonMinutes: preferredTraderSignalHorizon({
+          category: row.category,
+          expectedTimeframe: row.expected_timeframe
+        }),
         horizonMinutes: Number(row.horizon_minutes),
+        reliabilityWeight: traderReliabilityOutcomeWeight(
+          {
+            category: row.category,
+            expectedTimeframe: row.expected_timeframe
+          },
+          Number(row.horizon_minutes)
+        ),
         initialPrice: Number(row.initial_price),
         observedPrice: Number(row.observed_price),
         grossChangePct: Number(row.gross_change_pct),
@@ -3481,7 +3622,7 @@ app.get("/api/ratings-intelligence", (req, res) => {
 app.get("/api/trader-brain/status", (req, res) => {
   res.json({
     ok: true,
-    version: "10.5.1-trader-market-confirmation",
+    version: "10.6.1-intelligent-reliability",
     automatic: true,
     refreshSeconds: 60,
     lastBrainRunAt,
@@ -4557,7 +4698,7 @@ app.listen(
   port,
   () => {
     console.log(
-      `FC Trading Intelligence v10.6 Trader Reliability running on ${port}`
+      `FC Trading Intelligence v10.6.1 Intelligent Trader Reliability running on ${port}`
     );
 
     startMonitoring();
