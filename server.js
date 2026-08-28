@@ -2760,12 +2760,17 @@ async function processBrainStateChangeAlerts(rows) {
   }
 
   candidates.sort((a, b) => b.row.aiConfidence - a.row.aiConfidence);
-  const failedIds = new Set();
+  const retryIds = new Set();
   let sent = 0;
 
   if (DISCORD_CONFIGURED) {
     for (const item of candidates) {
-      if (sent >= DISCORD_MAX_ALERTS_PER_CYCLE) break;
+      if (sent >= DISCORD_MAX_ALERTS_PER_CYCLE) {
+        // Nicht verwerfen: Übergänge oberhalb des Zyklus-Limits bleiben für den
+        // nächsten 60-Sekunden-Lauf offen, statt durch den Brain-State verloren zu gehen.
+        retryIds.add(String(item.row.eaId));
+        continue;
+      }
 
       const { row, previous, kind } = item;
       const transitionAction = `${previous.action}->${row.aiAction}`;
@@ -2801,15 +2806,16 @@ async function processBrainStateChangeAlerts(rows) {
 
         sent += 1;
       } catch (error) {
-        failedIds.add(String(row.eaId));
+        retryIds.add(String(row.eaId));
         lastDiscordError = String(error);
         console.error("Discord transition alert error:", error);
       }
     }
   }
 
-  // Ein fehlgeschlagener Discord-Versand wird im nächsten Zyklus erneut versucht.
-  await saveBrainStates(rows, failedIds);
+  // Fehlgeschlagene oder wegen des Zyklus-Limits noch nicht gesendete Übergänge
+  // bleiben offen und werden im nächsten Zyklus erneut geprüft.
+  await saveBrainStates(rows, retryIds);
 }
 
 async function processDiscordAlerts(rows, ratingStats) {
@@ -2895,7 +2901,7 @@ async function sendDiscordStartupMessage() {
           { name: "Kaufalarm ab", value: `${DISCORD_MIN_BUY_CONFIDENCE}% KI-Sicherheit`, inline: true },
           { name: "Spam-Schutz", value: `${Math.round(DISCORD_ALERT_COOLDOWN_MS / 60_000)} Min. Cooldown`, inline: true }
         ],
-        footer: { text: "FC Trading Intelligence v10.21" },
+        footer: { text: "FC Trading Intelligence v10.22" },
         timestamp: new Date().toISOString()
       }]
     });
@@ -5438,7 +5444,7 @@ app.get("/", (req, res) => {
   res.json({
     online: true,
     service: "FC Trading Intelligence",
-    version: "10.21-source-recovery-quarantine",
+    version: "10.22-transition-queue-guard",
     gameYear: GAME_YEAR,
     marketProfile: marketProfile(),
     refreshSeconds: 60,
@@ -5471,7 +5477,7 @@ app.get("/", (req, res) => {
 app.get("/health", (req, res) => {
   res.json({
     ok: true,
-    version: "10.21-source-recovery-quarantine",
+    version: "10.22-transition-queue-guard",
     gameYear: GAME_YEAR,
     marketProfile: marketProfile(),
     marketContext: latestMarketContext,
@@ -5591,7 +5597,7 @@ app.get("/api/trader-reliability/status", async (req, res) => {
 
     return res.json({
       enabled: true,
-      version: "10.21-source-recovery-quarantine",
+      version: "10.22-transition-queue-guard",
       gameYear: GAME_YEAR,
       method: {
         priorAccuracy: TRADER_RELIABILITY_PRIOR_ACCURACY,
@@ -5650,7 +5656,7 @@ app.get("/api/trader-reliability/status", async (req, res) => {
 app.get("/api/trader-confluence/status", (req, res) => {
   res.json({
     enabled: DISCORD_CONFIGURED && dbEnabled,
-    version: "10.21-source-recovery-quarantine",
+    version: "10.22-transition-queue-guard",
     minCardConfidence: DISCORD_TRADER_CONFLUENCE_MIN_CONFIDENCE,
     minRatingConfidence: DISCORD_TRADER_CONFLUENCE_MIN_RATING_CONFIDENCE,
     minTraderReliability: DISCORD_TRADER_CONFLUENCE_MIN_RELIABILITY,
@@ -5873,7 +5879,7 @@ app.get("/api/trading", async (req, res) => {
 
     res.json({
       ok: true,
-      version: "10.21-source-recovery-quarantine",
+      version: "10.22-transition-queue-guard",
       refreshSeconds: 60,
       dbEnabled,
       sourceHealth: health,
@@ -5952,7 +5958,7 @@ app.get("/api/source-health", (req, res) => {
   const health = sourceHealthSnapshot();
   res.status(health.status === "UNHEALTHY" ? 503 : 200).json({
     ok: health.status !== "UNHEALTHY",
-    version: "10.21-source-recovery-quarantine",
+    version: "10.22-transition-queue-guard",
     gameYear: GAME_YEAR,
     refreshSeconds: 60,
     source: "FUT.GG PS5 bulk prices",
@@ -5972,7 +5978,7 @@ app.get("/api/futbin/status", (req, res) => {
 
   res.json({
     ok: true,
-    version: "10.21-source-recovery-quarantine",
+    version: "10.22-transition-queue-guard",
     gameYear: GAME_YEAR,
     configured: Boolean(FUTBIN_AUTHORIZED_FEED_URL),
     status: latestFutbinStatus,
@@ -6001,7 +6007,7 @@ app.get("/api/futbin/status", (req, res) => {
 app.get("/api/market-context", (req, res) => {
   res.json({
     ok: true,
-    version: "10.21-source-recovery-quarantine",
+    version: "10.22-transition-queue-guard",
     gameYear: GAME_YEAR,
     refreshSeconds: 60,
     context: latestMarketContext,
@@ -6012,7 +6018,7 @@ app.get("/api/market-context", (req, res) => {
 app.get("/api/trader-brain/status", (req, res) => {
   res.json({
     ok: true,
-    version: "10.21-source-recovery-quarantine",
+    version: "10.22-transition-queue-guard",
     gameYear: GAME_YEAR,
     marketProfile: marketProfile(),
     marketContext: latestMarketContext,
@@ -6022,7 +6028,7 @@ app.get("/api/trader-brain/status", (req, res) => {
     lastBrainError,
     lastGeminiCandidate,
     learning: {
-      version: "10.21-source-recovery-quarantine",
+      version: "10.22-transition-queue-guard",
       totalMatureDecisions: brainLearningCache.totalMatureDecisions,
       rawMatureDecisions: brainLearningCache.rawMatureDecisions,
       uniqueLearningEpisodes: brainLearningCache.uniqueLearningEpisodes,
@@ -6043,7 +6049,7 @@ app.get("/api/trader-brain/learning/status", async (req, res) => {
     const cache = await loadBrainLearningProfiles(true);
     return res.json({
       enabled: true,
-      version: "10.21-source-recovery-quarantine",
+      version: "10.22-transition-queue-guard",
       method: {
         windowDays: BRAIN_LEARNING_WINDOW_DAYS,
         priorAccuracy: BRAIN_LEARNING_PRIOR_ACCURACY,
@@ -7162,7 +7168,7 @@ app.listen(
   port,
   () => {
     console.log(
-      `FC Trading Intelligence v10.21 Source Recovery Quarantine (FC${GAME_YEAR}) running on ${port}`
+      `FC Trading Intelligence v10.22 Transition Queue Guard (FC${GAME_YEAR}) running on ${port}`
     );
 
     startMonitoring();
