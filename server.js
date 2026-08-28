@@ -2971,7 +2971,7 @@ async function loadBrainLearningProfiles(force = false) {
     const exactRaw = new Map();
     const cardTypeRaw = new Map();
     const actionRaw = new Map();
-    const seenEpisodes = new Set();
+    const rollingEpisodeLastSeen = new Map();
     let rawMature = 0;
     let mature = 0;
 
@@ -2998,11 +2998,25 @@ async function loadBrainLearningProfiles(force = false) {
 
       // Mehrere fast identische Entscheidungen derselben Karte im selben
       // Marktfenster sind ein Ereignis, nicht mehrere unabhängige Beweise.
-      const episodeBucket = Math.floor(row.createdAt / BRAIN_LEARNING_EPISODE_MS);
-      const episodeKey = `${row.eaId}|${row.action}|${episodeBucket}`;
-      if (seenEpisodes.has(episodeKey)) continue;
-      seenEpisodes.add(episodeKey);
+      // v10.7.4 nutzt ein rollendes 6h-Fenster statt starrer Uhrzeit-Buckets.
+      // Dadurch können zwei Entscheidungen, die nur wenige Minuten auseinander
+      // liegen, nicht nur wegen einer Bucket-Grenze doppelt gezählt werden.
+      const seriesKey = `${row.eaId}|${row.action}`;
+      const lastSeenAt = rollingEpisodeLastSeen.get(seriesKey);
 
+      if (Number.isFinite(lastSeenAt)) {
+        const gapMs = lastSeenAt - row.createdAt;
+
+        if (gapMs >= 0 && gapMs < BRAIN_LEARNING_EPISODE_MS) {
+          // Für eine zusammenhängende Entscheidungsserie die Kette weiterführen.
+          // Erst wenn zwischen zwei Entscheidungen wirklich mindestens 6h liegen,
+          // beginnt eine neue unabhängige Lernepisode.
+          rollingEpisodeLastSeen.set(seriesKey, row.createdAt);
+          continue;
+        }
+      }
+
+      rollingEpisodeLastSeen.set(seriesKey, row.createdAt);
       row.learningWeight = brainLearningQualityWeight(row);
       mature += 1;
 
@@ -3756,7 +3770,7 @@ app.get("/", (req, res) => {
   res.json({
     online: true,
     service: "FC Trading Intelligence",
-    version: "10.7.3-effective-sample-guard",
+    version: "10.7.4-rolling-episode-guard",
     refreshSeconds: 60,
     storage:
       dbEnabled
@@ -3782,7 +3796,7 @@ app.get("/", (req, res) => {
 app.get("/health", (req, res) => {
   res.json({
     ok: true,
-    version: "10.7.3-effective-sample-guard",
+    version: "10.7.4-rolling-episode-guard",
     monitoringStarted,
     monitoringBusy,
     lastMonitorAt,
@@ -3892,7 +3906,7 @@ app.get("/api/trader-reliability/status", async (req, res) => {
 
     return res.json({
       enabled: true,
-      version: "10.7.3-effective-sample-guard",
+      version: "10.7.4-rolling-episode-guard",
       method: {
         priorAccuracy: TRADER_RELIABILITY_PRIOR_ACCURACY,
         priorStrength: TRADER_RELIABILITY_PRIOR_STRENGTH,
@@ -4145,14 +4159,14 @@ app.get("/api/ratings-intelligence", (req, res) => {
 app.get("/api/trader-brain/status", (req, res) => {
   res.json({
     ok: true,
-    version: "10.7.3-effective-sample-guard",
+    version: "10.7.4-rolling-episode-guard",
     automatic: true,
     refreshSeconds: 60,
     lastBrainRunAt,
     lastBrainError,
     lastGeminiCandidate,
     learning: {
-      version: "10.7.3-effective-sample-guard",
+      version: "10.7.4-rolling-episode-guard",
       totalMatureDecisions: brainLearningCache.totalMatureDecisions,
       rawMatureDecisions: brainLearningCache.rawMatureDecisions,
       uniqueLearningEpisodes: brainLearningCache.uniqueLearningEpisodes,
@@ -4173,7 +4187,7 @@ app.get("/api/trader-brain/learning/status", async (req, res) => {
     const cache = await loadBrainLearningProfiles(true);
     return res.json({
       enabled: true,
-      version: "10.7.3-effective-sample-guard",
+      version: "10.7.4-rolling-episode-guard",
       method: {
         windowDays: BRAIN_LEARNING_WINDOW_DAYS,
         priorAccuracy: BRAIN_LEARNING_PRIOR_ACCURACY,
@@ -4187,7 +4201,7 @@ app.get("/api/trader-brain/learning/status", async (req, res) => {
         exactMinEffectiveSamples: BRAIN_LEARNING_EXACT_MIN_EFFECTIVE,
         cardTypeMinEffectiveSamples: BRAIN_LEARNING_CARDTYPE_MIN_EFFECTIVE,
         actionMinEffectiveSamples: BRAIN_LEARNING_ACTION_MIN_EFFECTIVE,
-        note: "Ähnliche Entscheidungen derselben Karte werden je 6h-Marktphase dedupliziert. Flache WAIT-Märkte zählen nur schwach; BUY/AVOID/SELL fließen erst ab dem vollständigen 6h-Auswertungspunkt ins Lernen ein. Ein Lernprofil darf Confidence erst verändern, wenn zusätzlich genug effektive, qualitätsgewichtete Evidenz vorhanden ist."
+        note: "Ähnliche Entscheidungen derselben Karte werden mit einem rollenden 6h-Abstand dedupliziert, damit Bucket-Grenzen keine Doppelzählung erzeugen. Flache WAIT-Märkte zählen nur schwach; BUY/AVOID/SELL fließen erst ab dem vollständigen 6h-Auswertungspunkt ins Lernen ein. Ein Lernprofil darf Confidence erst verändern, wenn zusätzlich genug effektive, qualitätsgewichtete Evidenz vorhanden ist."
       },
       totalMatureDecisions: cache.totalMatureDecisions,
       rawMatureDecisions: cache.rawMatureDecisions,
@@ -5266,7 +5280,7 @@ app.listen(
   port,
   () => {
     console.log(
-      `FC Trading Intelligence v10.7.3 Effective Sample Guard running on ${port}`
+      `FC Trading Intelligence v10.7.4 Rolling Episode Guard running on ${port}`
     );
 
     startMonitoring();
