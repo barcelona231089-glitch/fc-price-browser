@@ -96,6 +96,8 @@ const DISCORD_MAX_ALERTS_PER_CYCLE = Math.max(1, Math.min(10, Number(process.env
 const DISCORD_MIN_BUY_CONFIDENCE = Math.max(70, Math.min(95, Number(process.env.DISCORD_MIN_BUY_CONFIDENCE || 90)));
 const DISCORD_MIN_SELL_CONFIDENCE = Math.max(70, Math.min(95, Number(process.env.DISCORD_MIN_SELL_CONFIDENCE || 84)));
 const DISCORD_MIN_RATING_CONFIDENCE = Math.max(60, Math.min(95, Number(process.env.DISCORD_MIN_RATING_CONFIDENCE || 75)));
+const DISCORD_TRANSITION_MIN_BUY_CONFIDENCE = Math.max(70, Math.min(95, Number(process.env.DISCORD_TRANSITION_MIN_BUY_CONFIDENCE || 84)));
+const DISCORD_TRANSITION_MIN_SELL_CONFIDENCE = Math.max(70, Math.min(95, Number(process.env.DISCORD_TRANSITION_MIN_SELL_CONFIDENCE || 82)));
 
 let lastDiscordSendAt = null;
 let lastDiscordError = null;
@@ -115,6 +117,7 @@ let discordGuildCount = 0;
 let discordClient = null;
 let discordLoginPromise = null;
 const memoryDiscordAlertState = new Map();
+const memoryBrainState = new Map();
 const memoryTraderSignals = [];
 
 const memoryHistory = new Map();
@@ -621,6 +624,17 @@ async function initDb() {
       last_confidence SMALLINT,
       last_fingerprint VARCHAR(250),
       last_sent_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+  `);
+
+  // v10.9: letzter Brain-Zustand pro Karte für echte Signalwechsel-Alerts.
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS fc_brain_state (
+      ea_id BIGINT PRIMARY KEY,
+      last_action VARCHAR(50) NOT NULL,
+      last_price INTEGER,
+      last_confidence SMALLINT,
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     )
   `);
 }
@@ -1450,6 +1464,196 @@ function buildRatingDiscordPayload(stat) {
   };
 }
 
+function brainTransitionKind(previousAction, nextAction) {
+  const from = String(previousAction || "");
+  const to = String(nextAction || "");
+
+  if (
+    to === "JETZT KAUFEN" &&
+    ["NOCH WARTEN", "BEOBACHTEN", "NICHT KAUFEN"].includes(from)
+  ) {
+    return "buy";
+  }
+
+  if (
+    to === "VERKAUF PRÜFEN" &&
+    ["HALTEN", "JETZT KAUFEN", "BEOBACHTEN"].includes(from)
+  ) {
+    return "sell";
+  }
+
+  return null;
+}
+
+function buildBrainTransitionPayload(row, previousAction, kind) {
+  const emoji = kind === "buy" ? "🟢" : "💰";
+  const title = `${emoji} SIGNALWECHSEL: ${row.aiAction} • ${row.name || `EA ${row.eaId}`}`;
+
+  return {
+    embeds: [{
+      title,
+      url: row.url || undefined,
+      description: `**${previousAction} → ${row.aiAction}**`,
+      fields: [
+        { name: "Preis", value: `${discordNumber(row.price)} Coins`, inline: true },
+        { name: "KI-Sicherheit", value: `${row.aiConfidence}%`, inline: true },
+        { name: "Rating / Typ", value: `${row.overall} • ${row.cardType || "-"}`, inline: true },
+        { name: "1m / 5m / 15m", value: `${discordPct(row.change1m)} / ${discordPct(row.change5m)} / ${discordPct(row.change15m)}`, inline: false },
+        { name: "Warum jetzt?", value: String(row.aiReason || "Signalzustand hat sich geändert.").slice(0, 1000), inline: false }
+      ],
+      footer: { text: "FC Trader Brain • relevanter Zustandswechsel" },
+      timestamp: new Date().toISOString()
+    }]
+  };
+}
+
+async function loadBrainStates(rows) {
+  const ids = rows.map(row => String(row.eaId)).filter(Boolean);
+  if (!ids.length) return new Map();
+
+  if (!dbEnabled) {
+    return new Map(ids.map(id => [id, memoryBrainState.get(id)]).filter(([, state]) => state));
+  }
+
+  const result = await pool.query(`
+    SELECT ea_id::text AS ea_id, last_action, last_price, last_confidence, updated_at
+    FROM fc_brain_state
+    WHERE ea_id = ANY($1::bigint[])
+  `, [ids]);
+
+  return new Map(result.rows.map(state => [
+    state.ea_id,
+    {
+      action: state.last_action,
+      price: state.last_price == null ? null : Number(state.last_price),
+      confidence: state.last_confidence == null ? null : Number(state.last_confidence),
+      updatedAt: state.updated_at ? new Date(state.updated_at).getTime() : null
+    }
+  ]));
+}
+
+async function saveBrainStates(rows, excludedIds = new Set()) {
+  const clean = rows.filter(row =>
+    row &&
+    Number.isFinite(Number(row.eaId)) &&
+    row.aiAction &&
+    !excludedIds.has(String(row.eaId))
+  );
+
+  if (!clean.length) return;
+
+  if (!dbEnabled) {
+    for (const row of clean) {
+      memoryBrainState.set(String(row.eaId), {
+        action: row.aiAction,
+        price: Number.isFinite(row.price) ? Math.round(row.price) : null,
+        confidence: Number.isFinite(row.aiConfidence) ? Math.round(row.aiConfidence) : null,
+        updatedAt: Date.now()
+      });
+    }
+    return;
+  }
+
+  await pool.query(`
+    INSERT INTO fc_brain_state (ea_id, last_action, last_price, last_confidence, updated_at)
+    SELECT *
+    FROM UNNEST(
+      $1::bigint[],
+      $2::varchar[],
+      $3::int[],
+      $4::smallint[],
+      $5::timestamptz[]
+    )
+    ON CONFLICT (ea_id)
+    DO UPDATE SET
+      last_action = EXCLUDED.last_action,
+      last_price = EXCLUDED.last_price,
+      last_confidence = EXCLUDED.last_confidence,
+      updated_at = EXCLUDED.updated_at
+  `, [
+    clean.map(row => String(row.eaId)),
+    clean.map(row => String(row.aiAction)),
+    clean.map(row => Number.isFinite(row.price) ? Math.round(row.price) : null),
+    clean.map(row => Number.isFinite(row.aiConfidence) ? Math.round(row.aiConfidence) : null),
+    clean.map(() => new Date().toISOString())
+  ]);
+}
+
+async function processBrainStateChangeAlerts(rows) {
+  if (!rows?.length) return;
+
+  const previousStates = await loadBrainStates(rows);
+  const candidates = [];
+
+  for (const row of rows) {
+    const previous = previousStates.get(String(row.eaId));
+    if (!previous?.action || previous.action === row.aiAction) continue;
+
+    const kind = brainTransitionKind(previous.action, row.aiAction);
+    if (!kind) continue;
+
+    const minConfidence = kind === "buy"
+      ? DISCORD_TRANSITION_MIN_BUY_CONFIDENCE
+      : DISCORD_TRANSITION_MIN_SELL_CONFIDENCE;
+
+    if (!Number.isFinite(row.aiConfidence) || row.aiConfidence < minConfidence) continue;
+
+    candidates.push({ row, previous, kind });
+  }
+
+  candidates.sort((a, b) => b.row.aiConfidence - a.row.aiConfidence);
+  const failedIds = new Set();
+  let sent = 0;
+
+  if (DISCORD_CONFIGURED) {
+    for (const item of candidates) {
+      if (sent >= DISCORD_MAX_ALERTS_PER_CYCLE) break;
+
+      const { row, previous, kind } = item;
+      const transitionAction = `${previous.action}->${row.aiAction}`;
+      const transitionKey = `transition:${row.eaId}`;
+      const fingerprint = `${transitionAction}|${Math.round((row.change5m ?? 0) * 10)}|${Math.round((row.change15m ?? 0) * 10)}`;
+
+      try {
+        const alertState = await getDiscordAlertState(transitionKey);
+        if (!discordAlertShouldSend(alertState, transitionAction, row.price, row.aiConfidence, fingerprint)) {
+          continue;
+        }
+
+        await sendDiscordPayload(buildBrainTransitionPayload(row, previous.action, kind));
+
+        await saveDiscordAlertState({
+          alertKey: transitionKey,
+          alertType: "transition",
+          action: transitionAction,
+          price: row.price,
+          confidence: row.aiConfidence,
+          fingerprint
+        });
+
+        // Unterdrückt denselben BUY/SELL-Alarm direkt danach im normalen Alert-Lauf.
+        await saveDiscordAlertState({
+          alertKey: `card:${row.eaId}`,
+          alertType: kind,
+          action: row.aiAction,
+          price: row.price,
+          confidence: row.aiConfidence,
+          fingerprint: `transition:${fingerprint}`
+        });
+
+        sent += 1;
+      } catch (error) {
+        failedIds.add(String(row.eaId));
+        lastDiscordError = String(error);
+        console.error("Discord transition alert error:", error);
+      }
+    }
+  }
+
+  // Ein fehlgeschlagener Discord-Versand wird im nächsten Zyklus erneut versucht.
+  await saveBrainStates(rows, failedIds);
+}
+
 async function processDiscordAlerts(rows, ratingStats) {
   if (!DISCORD_CONFIGURED) return;
 
@@ -1533,7 +1737,7 @@ async function sendDiscordStartupMessage() {
           { name: "Kaufalarm ab", value: `${DISCORD_MIN_BUY_CONFIDENCE}% KI-Sicherheit`, inline: true },
           { name: "Spam-Schutz", value: `${Math.round(DISCORD_ALERT_COOLDOWN_MS / 60_000)} Min. Cooldown`, inline: true }
         ],
-        footer: { text: "FC Trading Intelligence v10.7" },
+        footer: { text: "FC Trading Intelligence v10.9" },
         timestamp: new Date().toISOString()
       }]
     });
@@ -1576,6 +1780,7 @@ async function monitorOnce() {
 
     await evaluateTraderSignalReliability(latestTradingRows);
     await automaticTraderBrain(latestTradingRows, built.brainWork);
+    await processBrainStateChangeAlerts(latestTradingRows);
     await processDiscordAlerts(latestTradingRows, latestRatingStats);
     await evaluatePendingDecisions();
 
@@ -3916,7 +4121,7 @@ app.get("/", (req, res) => {
   res.json({
     online: true,
     service: "FC Trading Intelligence",
-    version: "10.8.1-outcome-severity-learning",
+    version: "10.9-signal-transition-alerts",
     refreshSeconds: 60,
     storage:
       dbEnabled
@@ -3942,7 +4147,7 @@ app.get("/", (req, res) => {
 app.get("/health", (req, res) => {
   res.json({
     ok: true,
-    version: "10.8.1-outcome-severity-learning",
+    version: "10.9-signal-transition-alerts",
     monitoringStarted,
     monitoringBusy,
     lastMonitorAt,
@@ -4052,7 +4257,7 @@ app.get("/api/trader-reliability/status", async (req, res) => {
 
     return res.json({
       enabled: true,
-      version: "10.8.1-outcome-severity-learning",
+      version: "10.9-signal-transition-alerts",
       method: {
         priorAccuracy: TRADER_RELIABILITY_PRIOR_ACCURACY,
         priorStrength: TRADER_RELIABILITY_PRIOR_STRENGTH,
@@ -4305,14 +4510,14 @@ app.get("/api/ratings-intelligence", (req, res) => {
 app.get("/api/trader-brain/status", (req, res) => {
   res.json({
     ok: true,
-    version: "10.8.1-outcome-severity-learning",
+    version: "10.9-signal-transition-alerts",
     automatic: true,
     refreshSeconds: 60,
     lastBrainRunAt,
     lastBrainError,
     lastGeminiCandidate,
     learning: {
-      version: "10.8.1-outcome-severity-learning",
+      version: "10.9-signal-transition-alerts",
       totalMatureDecisions: brainLearningCache.totalMatureDecisions,
       rawMatureDecisions: brainLearningCache.rawMatureDecisions,
       uniqueLearningEpisodes: brainLearningCache.uniqueLearningEpisodes,
@@ -4333,7 +4538,7 @@ app.get("/api/trader-brain/learning/status", async (req, res) => {
     const cache = await loadBrainLearningProfiles(true);
     return res.json({
       enabled: true,
-      version: "10.8.1-outcome-severity-learning",
+      version: "10.9-signal-transition-alerts",
       method: {
         windowDays: BRAIN_LEARNING_WINDOW_DAYS,
         priorAccuracy: BRAIN_LEARNING_PRIOR_ACCURACY,
@@ -5433,7 +5638,7 @@ app.listen(
   port,
   () => {
     console.log(
-      `FC Trading Intelligence v10.8.1 Outcome Severity Learning running on ${port}`
+      `FC Trading Intelligence v10.9 Signal Transition Alerts running on ${port}`
     );
 
     startMonitoring();
