@@ -47,7 +47,25 @@ let lastBrainError = null;
 let lastGeminiCandidate = null;
 let lastGeminiAttemptAt = 0;
 let lastEvaluationSweepAt = 0;
+let lastBrainLearningRefreshAt = 0;
+let lastBrainLearningError = null;
 const lastGeminiByCard = new Map();
+
+const BRAIN_LEARNING_REFRESH_MS = Math.max(5, Number(process.env.BRAIN_LEARNING_REFRESH_MIN || 15)) * 60_000;
+const BRAIN_LEARNING_PRIOR_ACCURACY = 50;
+const BRAIN_LEARNING_PRIOR_STRENGTH = 12;
+const BRAIN_LEARNING_MAX_CONFIDENCE_ADJUSTMENT = 8;
+const BRAIN_LEARNING_WINDOW_DAYS = Math.max(30, Number(process.env.BRAIN_LEARNING_WINDOW_DAYS || 90));
+
+let brainLearningCache = {
+  loadedAt: 0,
+  updatedAt: null,
+  totalMatureDecisions: 0,
+  exact: new Map(),
+  cardType: new Map(),
+  action: new Map(),
+  profiles: []
+};
 
 const GEMINI_MIN_INTERVAL_MS = Math.max(5, Number(process.env.GEMINI_MIN_INTERVAL_MIN || 30)) * 60_000;
 const GEMINI_CARD_COOLDOWN_MS = Math.max(30, Number(process.env.GEMINI_CARD_COOLDOWN_MIN || 120)) * 60_000;
@@ -1498,7 +1516,7 @@ async function sendDiscordStartupMessage() {
           { name: "Kaufalarm ab", value: `${DISCORD_MIN_BUY_CONFIDENCE}% KI-Sicherheit`, inline: true },
           { name: "Spam-Schutz", value: `${Math.round(DISCORD_ALERT_COOLDOWN_MS / 60_000)} Min. Cooldown`, inline: true }
         ],
-        footer: { text: "FC Trading Intelligence v10.6.2" },
+        footer: { text: "FC Trading Intelligence v10.7" },
         timestamp: new Date().toISOString()
       }]
     });
@@ -2740,6 +2758,277 @@ async function evaluateTraderSignalReliability(rows) {
   return inserted;
 }
 
+function brainLearningRatingBand(rating) {
+  const value = Number(rating);
+  if (!Number.isFinite(value)) return "unknown";
+  if (value <= 79) return "75-79";
+  if (value <= 84) return "80-84";
+  if (value <= 89) return "85-89";
+  if (value <= 94) return "90-94";
+  return "95-99";
+}
+
+function brainLearningGroupKey(action, cardType = "*", ratingBand = "*") {
+  return `${String(action || "UNKNOWN")}|${String(cardType || "*")}|${String(ratingBand || "*")}`;
+}
+
+function addBrainLearningSample(map, key, row, scope) {
+  let group = map.get(key);
+  if (!group) {
+    group = {
+      scope,
+      key,
+      action: row.action,
+      cardType: scope === "action" ? "*" : row.cardType,
+      ratingBand: scope === "exact" ? row.ratingBand : "*",
+      samples: 0,
+      wins: 0,
+      totalOutcomeScore: 0,
+      scoredOutcomes: 0,
+      totalMaxRoi: 0,
+      roiSamples: 0
+    };
+    map.set(key, group);
+  }
+
+  group.samples += 1;
+  if (row.wasCorrect === true) group.wins += 1;
+
+  if (Number.isFinite(row.outcomeScore)) {
+    group.totalOutcomeScore += row.outcomeScore;
+    group.scoredOutcomes += 1;
+  }
+
+  if (Number.isFinite(row.maxRoi)) {
+    group.totalMaxRoi += row.maxRoi;
+    group.roiSamples += 1;
+  }
+}
+
+function finalizeBrainLearningGroup(group) {
+  const samples = Number(group.samples || 0);
+  const wins = Number(group.wins || 0);
+  const rawAccuracy = samples > 0 ? (wins / samples) * 100 : 50;
+  const smoothedAccuracy = (
+    BRAIN_LEARNING_PRIOR_ACCURACY * BRAIN_LEARNING_PRIOR_STRENGTH +
+    wins * 100
+  ) / (BRAIN_LEARNING_PRIOR_STRENGTH + samples);
+
+  const averageOutcomeScore = group.scoredOutcomes > 0
+    ? group.totalOutcomeScore / group.scoredOutcomes
+    : 0;
+
+  const averageMaxRoi = group.roiSamples > 0
+    ? group.totalMaxRoi / group.roiSamples
+    : null;
+
+  const confidenceAdjustment = Math.max(
+    -BRAIN_LEARNING_MAX_CONFIDENCE_ADJUSTMENT,
+    Math.min(
+      BRAIN_LEARNING_MAX_CONFIDENCE_ADJUSTMENT,
+      Math.round((smoothedAccuracy - 50) / 4)
+    )
+  );
+
+  return {
+    scope: group.scope,
+    key: group.key,
+    action: group.action,
+    cardType: group.cardType,
+    ratingBand: group.ratingBand,
+    samples,
+    wins,
+    rawAccuracy: Number(rawAccuracy.toFixed(2)),
+    smoothedAccuracy: Number(smoothedAccuracy.toFixed(2)),
+    averageOutcomeScore: Number(averageOutcomeScore.toFixed(2)),
+    averageMaxRoi: averageMaxRoi == null ? null : Number(averageMaxRoi.toFixed(2)),
+    confidenceAdjustment
+  };
+}
+
+function brainLearningDecisionIsMature(row) {
+  const action = String(row.action || "");
+
+  if (action === "NOCH WARTEN") {
+    return row.priceAfter15m != null;
+  }
+
+  if (["JETZT KAUFEN", "NICHT KAUFEN", "VERKAUF PRÜFEN"].includes(action)) {
+    return row.priceAfter1h != null || row.priceAfter6h != null || row.priceAfter24h != null;
+  }
+
+  return false;
+}
+
+async function loadBrainLearningProfiles(force = false) {
+  if (!dbEnabled) return brainLearningCache;
+
+  const now = Date.now();
+  if (
+    !force &&
+    brainLearningCache.loadedAt > 0 &&
+    now - brainLearningCache.loadedAt < BRAIN_LEARNING_REFRESH_MS
+  ) {
+    return brainLearningCache;
+  }
+
+  try {
+    const result = await pool.query(`
+      SELECT
+        d.action,
+        d.card_type,
+        d.rating,
+        e.was_correct,
+        e.outcome_score,
+        e.max_roi,
+        e.price_after_15m,
+        e.price_after_1h,
+        e.price_after_6h,
+        e.price_after_24h
+      FROM fc_trader_brain_decisions d
+      JOIN fc_decision_evaluations e ON e.decision_id = d.id
+      WHERE d.created_at >= NOW() - ($1::int * INTERVAL '1 day')
+        AND e.was_correct IS NOT NULL
+        AND d.action IN ('JETZT KAUFEN', 'NOCH WARTEN', 'NICHT KAUFEN', 'VERKAUF PRÜFEN')
+      ORDER BY d.created_at DESC
+      LIMIT 5000
+    `, [BRAIN_LEARNING_WINDOW_DAYS]);
+
+    const exactRaw = new Map();
+    const cardTypeRaw = new Map();
+    const actionRaw = new Map();
+    let mature = 0;
+
+    for (const dbRow of result.rows) {
+      const row = {
+        action: String(dbRow.action || ""),
+        cardType: String(dbRow.card_type || "Unknown"),
+        ratingBand: brainLearningRatingBand(Number(dbRow.rating)),
+        wasCorrect: dbRow.was_correct,
+        outcomeScore: dbRow.outcome_score == null ? null : Number(dbRow.outcome_score),
+        maxRoi: dbRow.max_roi == null ? null : Number(dbRow.max_roi),
+        priceAfter15m: dbRow.price_after_15m == null ? null : Number(dbRow.price_after_15m),
+        priceAfter1h: dbRow.price_after_1h == null ? null : Number(dbRow.price_after_1h),
+        priceAfter6h: dbRow.price_after_6h == null ? null : Number(dbRow.price_after_6h),
+        priceAfter24h: dbRow.price_after_24h == null ? null : Number(dbRow.price_after_24h)
+      };
+
+      if (!brainLearningDecisionIsMature(row)) continue;
+      mature += 1;
+
+      addBrainLearningSample(
+        exactRaw,
+        brainLearningGroupKey(row.action, row.cardType, row.ratingBand),
+        row,
+        "exact"
+      );
+      addBrainLearningSample(
+        cardTypeRaw,
+        brainLearningGroupKey(row.action, row.cardType, "*"),
+        row,
+        "cardType"
+      );
+      addBrainLearningSample(
+        actionRaw,
+        brainLearningGroupKey(row.action, "*", "*"),
+        row,
+        "action"
+      );
+    }
+
+    const exact = new Map([...exactRaw.entries()].map(([key, value]) => [key, finalizeBrainLearningGroup(value)]));
+    const cardType = new Map([...cardTypeRaw.entries()].map(([key, value]) => [key, finalizeBrainLearningGroup(value)]));
+    const action = new Map([...actionRaw.entries()].map(([key, value]) => [key, finalizeBrainLearningGroup(value)]));
+
+    const profiles = [
+      ...exact.values(),
+      ...cardType.values(),
+      ...action.values()
+    ].sort((a, b) => b.samples - a.samples || Math.abs(b.confidenceAdjustment) - Math.abs(a.confidenceAdjustment));
+
+    brainLearningCache = {
+      loadedAt: now,
+      updatedAt: new Date(now).toISOString(),
+      totalMatureDecisions: mature,
+      exact,
+      cardType,
+      action,
+      profiles
+    };
+    lastBrainLearningRefreshAt = now;
+    lastBrainLearningError = null;
+    return brainLearningCache;
+  } catch (error) {
+    lastBrainLearningError = String(error);
+    console.error("Brain learning refresh error:", error);
+    return brainLearningCache;
+  }
+}
+
+function selectBrainLearningProfile(cache, action, cardType, rating) {
+  if (!cache) return null;
+
+  const ratingBand = brainLearningRatingBand(rating);
+  const exact = cache.exact?.get(brainLearningGroupKey(action, cardType, ratingBand));
+  if (exact && exact.samples >= 4) return exact;
+
+  const byCardType = cache.cardType?.get(brainLearningGroupKey(action, cardType, "*"));
+  if (byCardType && byCardType.samples >= 6) return byCardType;
+
+  const byAction = cache.action?.get(brainLearningGroupKey(action, "*", "*"));
+  if (byAction && byAction.samples >= 10) return byAction;
+
+  return null;
+}
+
+function applyBrainLearningToDecision(decision, profile) {
+  if (!decision) return decision;
+
+  if (!profile) {
+    return {
+      ...decision,
+      historical_learning: {
+        applied: false,
+        reason: "Noch nicht genug ausgewertete ähnliche Entscheidungen."
+      }
+    };
+  }
+
+  const modifier = Number(profile.confidenceAdjustment || 0);
+  const oldConfidence = Number(decision.confidence || 50);
+  const confidence = Math.max(10, Math.min(95, oldConfidence + modifier));
+  const signed = modifier > 0 ? `+${modifier}` : String(modifier);
+  const learningFactor = `Historie: ${profile.samples} ähnliche Fälle, ${profile.smoothedAccuracy.toFixed(1)}% geglättete Trefferquote, Confidence ${signed}.`;
+
+  return {
+    ...decision,
+    confidence,
+    reason: modifier === 0
+      ? decision.reason
+      : `${decision.reason} ${learningFactor}`.slice(0, 1800),
+    key_factors: [
+      ...(Array.isArray(decision.key_factors) ? decision.key_factors : []),
+      learningFactor
+    ].slice(0, 12),
+    historical_learning: {
+      applied: true,
+      scope: profile.scope,
+      samples: profile.samples,
+      wins: profile.wins,
+      rawAccuracy: profile.rawAccuracy,
+      smoothedAccuracy: profile.smoothedAccuracy,
+      averageOutcomeScore: profile.averageOutcomeScore,
+      averageMaxRoi: profile.averageMaxRoi,
+      confidenceBefore: oldConfidence,
+      confidenceModifier: modifier,
+      confidenceAfter: confidence
+    },
+    ai_model_used: modifier === 0
+      ? (decision.ai_model_used || "Quantitative Core")
+      : `${decision.ai_model_used || "Quantitative Core"} + Self-Learning`
+  };
+}
+
 function baseDecisionFromQuant(quant, confluence) {
   return {
     action: quant.suggestedAction,
@@ -2780,6 +3069,7 @@ function applyDecisionToRow(row, decision) {
   row.aiTargetExitZone = decision.target_exit_zone || null;
   row.aiContext = decision.context_breakdown || null;
   row.aiTraderConfluence = decision.trader_signals_confluence || null;
+  row.aiHistoricalLearning = decision.historical_learning || null;
 }
 
 function normalizeDecisionForPosition(row, decision) {
@@ -2868,12 +3158,13 @@ function normalizeDecisionForPosition(row, decision) {
 }
 
 async function buildTradingRows() {
-  const [cards, bulk, positions, allSignals, traderProfiles] = await Promise.all([
+  const [cards, bulk, positions, allSignals, traderProfiles, brainLearning] = await Promise.all([
     ensureUniverse(false),
     loadBulkPs5Prices(false),
     getPositions(),
     loadRecentDiscordSignals(),
-    loadTraderProfiles()
+    loadTraderProfiles(),
+    loadBrainLearningProfiles(false)
   ]);
 
   const current = currentPricedCards(cards, bulk);
@@ -2996,14 +3287,21 @@ async function buildTradingRows() {
     const quant = analyzeMarketPatterns(input);
     const confluence = evaluateDiscordSignals(signals, input, quant, traderProfiles);
     const rawDecision = baseDecisionFromQuant(quant, confluence);
-    const decision = normalizeDecisionForPosition(row, rawDecision);
+    const normalizedDecision = normalizeDecisionForPosition(row, rawDecision);
+    const learningProfile = selectBrainLearningProfile(
+      brainLearning,
+      normalizedDecision?.action,
+      row.cardType,
+      row.overall
+    );
+    const decision = applyBrainLearningToDecision(normalizedDecision, learningProfile);
     applyDecisionToRow(row, decision);
 
     row.ratingMarketTrend = rating.trend;
     row.ratingMarketRisingPct = rating.risingPct;
     row.ratingMarketFallingPct = rating.fallingPct;
 
-    brainWork.set(String(row.eaId), { input, quant, confluence });
+    brainWork.set(String(row.eaId), { input, quant, confluence, learningProfile });
   }
 
   await persistDiscordSignalMarketConfirmations(rows, brainWork);
@@ -3145,7 +3443,14 @@ async function automaticTraderBrain(rows, brainWork) {
         geminiCandidate.work.confluence
       );
 
-      const decision = normalizeDecisionForPosition(geminiCandidate.row, rawDecision);
+      const normalizedDecision = normalizeDecisionForPosition(geminiCandidate.row, rawDecision);
+      const learningProfile = selectBrainLearningProfile(
+        brainLearningCache,
+        normalizedDecision?.action,
+        geminiCandidate.row.cardType,
+        geminiCandidate.row.overall
+      );
+      const decision = applyBrainLearningToDecision(normalizedDecision, learningProfile);
       applyDecisionToRow(geminiCandidate.row, decision);
       lastGeminiCandidate = {
         eaId: geminiCandidate.row.eaId,
@@ -3192,6 +3497,7 @@ async function automaticTraderBrain(rows, brainWork) {
           entry_zone: row.aiEntryZone,
           target_exit_zone: row.aiTargetExitZone,
           trader_signals_confluence: row.aiTraderConfluence,
+          historical_learning: row.aiHistoricalLearning,
           recommended_horizon: row.aiRecommendedHorizon,
           eaTaxBreakEven: Math.ceil(row.price / 0.95),
           ai_model_used: row.aiModelUsed
@@ -3341,7 +3647,7 @@ app.get("/", (req, res) => {
   res.json({
     online: true,
     service: "FC Trading Intelligence",
-    version: "10.6.2-frozen-signal-entry",
+    version: "10.7-self-learning",
     refreshSeconds: 60,
     storage:
       dbEnabled
@@ -3355,6 +3661,7 @@ app.get("/", (req, res) => {
       traderBrainStatus: "GET /api/trader-brain/status",
       ratingIntelligence: "GET /api/ratings-intelligence",
       traderBrainHistory: "GET /api/trader-brain/feedback/history",
+      traderBrainLearning: "GET /api/trader-brain/learning/status",
       geminiHealth: "GET /api/gemini-health",
       discordStatus: "GET /api/discord/status",
       traderReliabilityStatus: "GET /api/trader-reliability/status",
@@ -3366,7 +3673,7 @@ app.get("/", (req, res) => {
 app.get("/health", (req, res) => {
   res.json({
     ok: true,
-    version: "10.6.2-frozen-signal-entry",
+    version: "10.7-self-learning",
     monitoringStarted,
     monitoringBusy,
     lastMonitorAt,
@@ -3376,6 +3683,11 @@ app.get("/health", (req, res) => {
     traderBrainAutomatic: true,
     lastBrainRunAt,
     lastBrainError,
+    brainLearning: {
+      totalMatureDecisions: brainLearningCache.totalMatureDecisions,
+      updatedAt: brainLearningCache.updatedAt,
+      lastError: lastBrainLearningError
+    },
     geminiQuota: getGeminiQuotaInfo(),
     discord: {
       configured: DISCORD_CONFIGURED,
@@ -3469,7 +3781,7 @@ app.get("/api/trader-reliability/status", async (req, res) => {
 
     return res.json({
       enabled: true,
-      version: "10.6.2-frozen-signal-entry",
+      version: "10.7-self-learning",
       method: {
         priorAccuracy: TRADER_RELIABILITY_PRIOR_ACCURACY,
         priorStrength: TRADER_RELIABILITY_PRIOR_STRENGTH,
@@ -3722,15 +4034,51 @@ app.get("/api/ratings-intelligence", (req, res) => {
 app.get("/api/trader-brain/status", (req, res) => {
   res.json({
     ok: true,
-    version: "10.6.2-frozen-signal-entry",
+    version: "10.7-self-learning",
     automatic: true,
     refreshSeconds: 60,
     lastBrainRunAt,
     lastBrainError,
     lastGeminiCandidate,
+    learning: {
+      version: "10.7-self-learning",
+      totalMatureDecisions: brainLearningCache.totalMatureDecisions,
+      updatedAt: brainLearningCache.updatedAt,
+      lastError: lastBrainLearningError
+    },
     gemini: getGeminiQuotaInfo(),
     ratingStats: latestRatingStats
   });
+});
+
+app.get("/api/trader-brain/learning/status", async (req, res) => {
+  if (!dbEnabled) {
+    return res.json({ enabled: false, reason: "PostgreSQL ist nicht aktiv." });
+  }
+
+  try {
+    const cache = await loadBrainLearningProfiles(true);
+    return res.json({
+      enabled: true,
+      version: "10.7-self-learning",
+      method: {
+        windowDays: BRAIN_LEARNING_WINDOW_DAYS,
+        priorAccuracy: BRAIN_LEARNING_PRIOR_ACCURACY,
+        priorStrength: BRAIN_LEARNING_PRIOR_STRENGTH,
+        maxConfidenceAdjustment: BRAIN_LEARNING_MAX_CONFIDENCE_ADJUSTMENT,
+        exactMinSamples: 4,
+        cardTypeMinSamples: 6,
+        actionMinSamples: 10,
+        note: "Historische Trefferquoten kalibrieren die Confidence konservativ. Aktionen werden durch die Lernschicht nicht blind umgedreht."
+      },
+      totalMatureDecisions: cache.totalMatureDecisions,
+      updatedAt: cache.updatedAt,
+      lastError: lastBrainLearningError,
+      profiles: cache.profiles.slice(0, 100)
+    });
+  } catch (error) {
+    return res.status(500).json({ enabled: false, error: String(error) });
+  }
 });
 
 app.get("/api/gemini-health", async (req, res) => {
@@ -4798,7 +5146,7 @@ app.listen(
   port,
   () => {
     console.log(
-      `FC Trading Intelligence v10.6.2 Frozen Signal Entry running on ${port}`
+      `FC Trading Intelligence v10.7 Self Learning running on ${port}`
     );
 
     startMonitoring();
