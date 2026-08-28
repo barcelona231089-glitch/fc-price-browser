@@ -223,6 +223,13 @@ const DISCORD_TRADER_CONFLUENCE_MIN_RELIABILITY = Math.max(20, Math.min(80, Numb
 let lastDiscordSendAt = null;
 let lastDiscordError = null;
 let discordAlertsSent = 0;
+let lastDiscordCycleBudget = {
+  limit: DISCORD_MAX_ALERTS_PER_CYCLE,
+  used: 0,
+  blocked: 0,
+  startedAt: null,
+  finishedAt: null
+};
 let discordClientReady = false;
 let discordResolvedChannelId = null;
 let discordResolvedChannelName = null;
@@ -1020,7 +1027,31 @@ function sourceHealthAllowsTradingCycle() {
   return sourceHealthSnapshot().tradingAllowed === true;
 }
 
-async function notifySourceHealthTransition(snapshot) {
+function createDiscordCycleBudget() {
+  return {
+    limit: DISCORD_MAX_ALERTS_PER_CYCLE,
+    used: 0,
+    blocked: 0,
+    startedAt: new Date().toISOString(),
+    finishedAt: null
+  };
+}
+
+function discordCycleHasRoom(budget) {
+  return !budget || Number(budget.used || 0) < Number(budget.limit || DISCORD_MAX_ALERTS_PER_CYCLE);
+}
+
+function discordCycleConsume(budget) {
+  if (!budget) return;
+  budget.used = Number(budget.used || 0) + 1;
+}
+
+function discordCycleBlock(budget) {
+  if (!budget) return;
+  budget.blocked = Number(budget.blocked || 0) + 1;
+}
+
+async function notifySourceHealthTransition(snapshot, alertBudget = null) {
   const current = String(snapshot?.status || "UNKNOWN");
   const previous = previousSourceHealthStatus;
   previousSourceHealthStatus = current;
@@ -1031,8 +1062,13 @@ async function notifySourceHealthTransition(snapshot) {
   const becameUnhealthy = current === "UNHEALTHY";
   const recovered = ["UNHEALTHY", "RECOVERING"].includes(previous) && current === "HEALTHY";
 
-  if (!becameUnhealthy && !recovered) return;
-  if (becameUnhealthy && now - lastSourceHealthDiscordAlertAt < 30 * 60_000) return;
+  if (!becameUnhealthy && !recovered) return false;
+  if (becameUnhealthy && now - lastSourceHealthDiscordAlertAt < 30 * 60_000) return false;
+
+  if (!discordCycleHasRoom(alertBudget)) {
+    discordCycleBlock(alertBudget);
+    return false;
+  }
 
   try {
     await sendDiscordPayload({
@@ -1050,9 +1086,12 @@ async function notifySourceHealthTransition(snapshot) {
         timestamp: new Date().toISOString()
       }]
     });
+    discordCycleConsume(alertBudget);
     lastSourceHealthDiscordAlertAt = now;
+    return true;
   } catch (error) {
     console.error("Source health Discord alert error:", error);
+    return false;
   }
 }
 
@@ -2404,7 +2443,7 @@ function buildTraderConfluenceExpirationPayload(signal, gate, lifecycleWindowMs)
   };
 }
 
-async function expireTraderConfluenceSignal(signal, state, gate, lifecycleWindowMs) {
+async function expireTraderConfluenceSignal(signal, state, gate, lifecycleWindowMs, alertBudget = null) {
   const call = String(signal?.call || "").toUpperCase();
   const expiredAction = `EXPIRED:${call}`;
 
@@ -2414,9 +2453,15 @@ async function expireTraderConfluenceSignal(signal, state, gate, lifecycleWindow
     return false;
   }
 
+  if (!discordCycleHasRoom(alertBudget)) {
+    discordCycleBlock(alertBudget);
+    return false;
+  }
+
   await sendDiscordPayload(
     buildTraderConfluenceExpirationPayload(signal, gate, lifecycleWindowMs)
   );
+  discordCycleConsume(alertBudget);
 
   await saveDiscordAlertState({
     alertKey: `trader-confluence:${signal.id}`,
@@ -2442,7 +2487,7 @@ async function expireTraderConfluenceSignal(signal, state, gate, lifecycleWindow
   return true;
 }
 
-async function invalidateTraderConfluenceSignal(signal, state, kind, gate) {
+async function invalidateTraderConfluenceSignal(signal, state, kind, gate, alertBudget = null) {
   const call = String(signal?.call || "").toUpperCase();
   const invalidAction = `INVALIDATED:${call}`;
 
@@ -2450,7 +2495,13 @@ async function invalidateTraderConfluenceSignal(signal, state, kind, gate) {
     return false;
   }
 
+  if (!discordCycleHasRoom(alertBudget)) {
+    discordCycleBlock(alertBudget);
+    return false;
+  }
+
   await sendDiscordPayload(buildTraderConfluenceInvalidationPayload(signal, kind, gate));
+  discordCycleConsume(alertBudget);
 
   await saveDiscordAlertState({
     alertKey: `trader-confluence:${signal.id}`,
@@ -2473,7 +2524,7 @@ async function invalidateTraderConfluenceSignal(signal, state, kind, gate) {
   return true;
 }
 
-async function processTraderConfluenceAlerts(rows, ratingStats, brainWork) {
+async function processTraderConfluenceAlerts(rows, ratingStats, brainWork, alertBudget = null) {
   if (!DISCORD_CONFIGURED || !dbEnabled || !rows?.length) return;
 
   try {
@@ -2495,12 +2546,12 @@ async function processTraderConfluenceAlerts(rows, ratingStats, brainWork) {
       if (!Number.isFinite(ageMs) || ageMs < 0) continue;
 
       if (ageMs > lifecycleWindowMs) {
-        await expireTraderConfluenceSignal(signal, state, gate, lifecycleWindowMs);
+        await expireTraderConfluenceSignal(signal, state, gate, lifecycleWindowMs, alertBudget);
         continue;
       }
 
       if (signal.marketConfirmed !== true) {
-        await invalidateTraderConfluenceSignal(signal, state, "MARKET_LOST", gate);
+        await invalidateTraderConfluenceSignal(signal, state, "MARKET_LOST", gate, alertBudget);
         continue;
       }
 
@@ -2520,7 +2571,7 @@ async function processTraderConfluenceAlerts(rows, ratingStats, brainWork) {
 
       const agreement = traderSignalBrainAgreement(signal, rows, ratingStats, brainWork, gate);
       if (!agreement) {
-        const invalidated = await invalidateTraderConfluenceSignal(signal, state, "BRAIN_LOST", gate);
+        const invalidated = await invalidateTraderConfluenceSignal(signal, state, "BRAIN_LOST", gate, alertBudget);
 
         if (!invalidated) {
           lastTraderConfluenceGate = {
@@ -2546,10 +2597,11 @@ async function processTraderConfluenceAlerts(rows, ratingStats, brainWork) {
       return b.gate.effectiveReliability - a.gate.effectiveReliability;
     });
 
-    let sent = 0;
-
     for (const item of candidates) {
-      if (sent >= DISCORD_MAX_ALERTS_PER_CYCLE) break;
+      if (!discordCycleHasRoom(alertBudget)) {
+        discordCycleBlock(alertBudget);
+        break;
+      }
 
       const { signal, agreement, gate, state, lifecycleWindowMs } = item;
       const alertKey = `trader-confluence:${signal.id}`;
@@ -2568,6 +2620,7 @@ async function processTraderConfluenceAlerts(rows, ratingStats, brainWork) {
       }
 
       await sendDiscordPayload(buildTraderConfluencePayload(signal, agreement, gate));
+      discordCycleConsume(alertBudget);
 
       await saveDiscordAlertState({
         alertKey,
@@ -2613,7 +2666,6 @@ async function processTraderConfluenceAlerts(rows, ratingStats, brainWork) {
         lifecycleWindowMinutes: Math.round(lifecycleWindowMs / 60_000),
         at: lastTraderConfluenceAlertAt
       };
-      sent += 1;
     }
   } catch (error) {
     lastTraderConfluenceAlertError = String(error);
@@ -2737,7 +2789,7 @@ async function saveBrainStates(rows, excludedIds = new Set()) {
   ]);
 }
 
-async function processBrainStateChangeAlerts(rows) {
+async function processBrainStateChangeAlerts(rows, alertBudget = null) {
   if (!rows?.length) return;
 
   const previousStates = await loadBrainStates(rows);
@@ -2761,14 +2813,14 @@ async function processBrainStateChangeAlerts(rows) {
 
   candidates.sort((a, b) => b.row.aiConfidence - a.row.aiConfidence);
   const retryIds = new Set();
-  let sent = 0;
 
   if (DISCORD_CONFIGURED) {
     for (const item of candidates) {
-      if (sent >= DISCORD_MAX_ALERTS_PER_CYCLE) {
+      if (!discordCycleHasRoom(alertBudget)) {
         // Nicht verwerfen: Übergänge oberhalb des Zyklus-Limits bleiben für den
         // nächsten 60-Sekunden-Lauf offen, statt durch den Brain-State verloren zu gehen.
         retryIds.add(String(item.row.eaId));
+        discordCycleBlock(alertBudget);
         continue;
       }
 
@@ -2784,6 +2836,7 @@ async function processBrainStateChangeAlerts(rows) {
         }
 
         await sendDiscordPayload(buildBrainTransitionPayload(row, previous.action, kind));
+        discordCycleConsume(alertBudget);
 
         await saveDiscordAlertState({
           alertKey: transitionKey,
@@ -2804,7 +2857,6 @@ async function processBrainStateChangeAlerts(rows) {
           fingerprint: `transition:${fingerprint}`
         });
 
-        sent += 1;
       } catch (error) {
         retryIds.add(String(row.eaId));
         lastDiscordError = String(error);
@@ -2818,7 +2870,7 @@ async function processBrainStateChangeAlerts(rows) {
   await saveBrainStates(rows, retryIds);
 }
 
-async function processDiscordAlerts(rows, ratingStats) {
+async function processDiscordAlerts(rows, ratingStats, alertBudget = null) {
   if (!DISCORD_CONFIGURED) return;
 
   try {
@@ -2836,10 +2888,12 @@ async function processDiscordAlerts(rows, ratingStats) {
     }
 
     candidates.sort((a, b) => b.priority - a.priority);
-    let sentThisCycle = 0;
 
     for (const item of candidates) {
-      if (sentThisCycle >= DISCORD_MAX_ALERTS_PER_CYCLE) break;
+      if (!discordCycleHasRoom(alertBudget)) {
+        discordCycleBlock(alertBudget);
+        break;
+      }
 
       if (item.kind === "card") {
         const row = item.row;
@@ -2849,6 +2903,7 @@ async function processDiscordAlerts(rows, ratingStats) {
         if (!discordAlertShouldSend(state, row.aiAction, row.price, row.aiConfidence, fingerprint)) continue;
 
         await sendDiscordPayload(buildCardDiscordPayload(row, item.type));
+        discordCycleConsume(alertBudget);
         await saveDiscordAlertState({
           alertKey,
           alertType: item.type,
@@ -2857,7 +2912,6 @@ async function processDiscordAlerts(rows, ratingStats) {
           confidence: row.aiConfidence,
           fingerprint
         });
-        sentThisCycle++;
       } else {
         const stat = item.stat;
         const alertKey = `rating:${stat.rating}`;
@@ -2866,6 +2920,7 @@ async function processDiscordAlerts(rows, ratingStats) {
         if (!discordAlertShouldSend(state, stat.marketSignal, stat.medianPrice, stat.confidence, fingerprint)) continue;
 
         await sendDiscordPayload(buildRatingDiscordPayload(stat));
+        discordCycleConsume(alertBudget);
         await saveDiscordAlertState({
           alertKey,
           alertType: "rating",
@@ -2874,7 +2929,6 @@ async function processDiscordAlerts(rows, ratingStats) {
           confidence: stat.confidence,
           fingerprint
         });
-        sentThisCycle++;
       }
     }
   } catch (error) {
@@ -2901,7 +2955,7 @@ async function sendDiscordStartupMessage() {
           { name: "Kaufalarm ab", value: `${DISCORD_MIN_BUY_CONFIDENCE}% KI-Sicherheit`, inline: true },
           { name: "Spam-Schutz", value: `${Math.round(DISCORD_ALERT_COOLDOWN_MS / 60_000)} Min. Cooldown`, inline: true }
         ],
-        footer: { text: "FC Trading Intelligence v10.22" },
+        footer: { text: "FC Trading Intelligence v10.23" },
         timestamp: new Date().toISOString()
       }]
     });
@@ -2922,6 +2976,7 @@ async function monitorOnce() {
   if (monitoringBusy) return;
 
   monitoringBusy = true;
+  const cycleAlertBudget = createDiscordCycleBudget();
 
   try {
     const [cards, bulk, futbinFeed] = await Promise.all([
@@ -2934,7 +2989,7 @@ async function monitorOnce() {
     const at = Date.now();
 
     const sourceHealth = updateSourceHealthSuccess(cards, bulk, currentRows);
-    await notifySourceHealthTransition(sourceHealth);
+    await notifySourceHealthTransition(sourceHealth, cycleAlertBudget);
 
     if (!sourceHealthAllowsTradingCycle()) {
       latestFutbinFallbackRows = futbinFallbackAllowed()
@@ -2960,16 +3015,16 @@ async function monitorOnce() {
 
     await evaluateTraderSignalReliability(latestTradingRows);
     await automaticTraderBrain(latestTradingRows, built.brainWork);
-    await processTraderConfluenceAlerts(latestTradingRows, latestRatingStats, built.brainWork);
-    await processBrainStateChangeAlerts(latestTradingRows);
-    await processDiscordAlerts(latestTradingRows, latestRatingStats);
+    await processTraderConfluenceAlerts(latestTradingRows, latestRatingStats, built.brainWork, cycleAlertBudget);
+    await processBrainStateChangeAlerts(latestTradingRows, cycleAlertBudget);
+    await processDiscordAlerts(latestTradingRows, latestRatingStats, cycleAlertBudget);
     await evaluatePendingDecisions();
 
     lastMonitorAt = new Date(at).toISOString();
     lastMonitorError = null;
   } catch (error) {
     const sourceHealth = updateSourceHealthFailure(error);
-    await notifySourceHealthTransition(sourceHealth);
+    await notifySourceHealthTransition(sourceHealth, cycleAlertBudget);
 
     const futbinFeed = await loadAuthorizedFutbinFeedSafe(false);
     latestFutbinFallbackRows = futbinFallbackAllowed()
@@ -2979,6 +3034,8 @@ async function monitorOnce() {
     lastMonitorError = String(error);
     console.error("monitor error:", error);
   } finally {
+    cycleAlertBudget.finishedAt = new Date().toISOString();
+    lastDiscordCycleBudget = { ...cycleAlertBudget };
     monitoringBusy = false;
   }
 }
@@ -5444,7 +5501,7 @@ app.get("/", (req, res) => {
   res.json({
     online: true,
     service: "FC Trading Intelligence",
-    version: "10.22-transition-queue-guard",
+    version: "10.23-global-alert-budget-guard",
     gameYear: GAME_YEAR,
     marketProfile: marketProfile(),
     refreshSeconds: 60,
@@ -5477,7 +5534,7 @@ app.get("/", (req, res) => {
 app.get("/health", (req, res) => {
   res.json({
     ok: true,
-    version: "10.22-transition-queue-guard",
+    version: "10.23-global-alert-budget-guard",
     gameYear: GAME_YEAR,
     marketProfile: marketProfile(),
     marketContext: latestMarketContext,
@@ -5524,7 +5581,8 @@ app.get("/health", (req, res) => {
       lastTraderConfluenceGate,
       alertsSent: discordAlertsSent,
       lastSendAt: lastDiscordSendAt,
-      lastError: lastDiscordError
+      lastError: lastDiscordError,
+      cycleBudget: lastDiscordCycleBudget
     },
     now: new Date().toISOString()
   });
@@ -5597,7 +5655,7 @@ app.get("/api/trader-reliability/status", async (req, res) => {
 
     return res.json({
       enabled: true,
-      version: "10.22-transition-queue-guard",
+      version: "10.23-global-alert-budget-guard",
       gameYear: GAME_YEAR,
       method: {
         priorAccuracy: TRADER_RELIABILITY_PRIOR_ACCURACY,
@@ -5656,7 +5714,7 @@ app.get("/api/trader-reliability/status", async (req, res) => {
 app.get("/api/trader-confluence/status", (req, res) => {
   res.json({
     enabled: DISCORD_CONFIGURED && dbEnabled,
-    version: "10.22-transition-queue-guard",
+    version: "10.23-global-alert-budget-guard",
     minCardConfidence: DISCORD_TRADER_CONFLUENCE_MIN_CONFIDENCE,
     minRatingConfidence: DISCORD_TRADER_CONFLUENCE_MIN_RATING_CONFIDENCE,
     minTraderReliability: DISCORD_TRADER_CONFLUENCE_MIN_RELIABILITY,
@@ -5716,6 +5774,7 @@ app.get("/api/discord/status", (req, res) => {
     lastError: lastDiscordError,
     cooldownMinutes: Math.round(DISCORD_ALERT_COOLDOWN_MS / 60_000),
     maxAlertsPerCycle: DISCORD_MAX_ALERTS_PER_CYCLE,
+    cycleBudget: lastDiscordCycleBudget,
     minBuyConfidence: DISCORD_MIN_BUY_CONFIDENCE,
     minSellConfidence: DISCORD_MIN_SELL_CONFIDENCE,
     minRatingConfidence: DISCORD_MIN_RATING_CONFIDENCE
@@ -5879,7 +5938,7 @@ app.get("/api/trading", async (req, res) => {
 
     res.json({
       ok: true,
-      version: "10.22-transition-queue-guard",
+      version: "10.23-global-alert-budget-guard",
       refreshSeconds: 60,
       dbEnabled,
       sourceHealth: health,
@@ -5958,7 +6017,7 @@ app.get("/api/source-health", (req, res) => {
   const health = sourceHealthSnapshot();
   res.status(health.status === "UNHEALTHY" ? 503 : 200).json({
     ok: health.status !== "UNHEALTHY",
-    version: "10.22-transition-queue-guard",
+    version: "10.23-global-alert-budget-guard",
     gameYear: GAME_YEAR,
     refreshSeconds: 60,
     source: "FUT.GG PS5 bulk prices",
@@ -5978,7 +6037,7 @@ app.get("/api/futbin/status", (req, res) => {
 
   res.json({
     ok: true,
-    version: "10.22-transition-queue-guard",
+    version: "10.23-global-alert-budget-guard",
     gameYear: GAME_YEAR,
     configured: Boolean(FUTBIN_AUTHORIZED_FEED_URL),
     status: latestFutbinStatus,
@@ -6007,7 +6066,7 @@ app.get("/api/futbin/status", (req, res) => {
 app.get("/api/market-context", (req, res) => {
   res.json({
     ok: true,
-    version: "10.22-transition-queue-guard",
+    version: "10.23-global-alert-budget-guard",
     gameYear: GAME_YEAR,
     refreshSeconds: 60,
     context: latestMarketContext,
@@ -6018,7 +6077,7 @@ app.get("/api/market-context", (req, res) => {
 app.get("/api/trader-brain/status", (req, res) => {
   res.json({
     ok: true,
-    version: "10.22-transition-queue-guard",
+    version: "10.23-global-alert-budget-guard",
     gameYear: GAME_YEAR,
     marketProfile: marketProfile(),
     marketContext: latestMarketContext,
@@ -6028,7 +6087,7 @@ app.get("/api/trader-brain/status", (req, res) => {
     lastBrainError,
     lastGeminiCandidate,
     learning: {
-      version: "10.22-transition-queue-guard",
+      version: "10.23-global-alert-budget-guard",
       totalMatureDecisions: brainLearningCache.totalMatureDecisions,
       rawMatureDecisions: brainLearningCache.rawMatureDecisions,
       uniqueLearningEpisodes: brainLearningCache.uniqueLearningEpisodes,
@@ -6049,7 +6108,7 @@ app.get("/api/trader-brain/learning/status", async (req, res) => {
     const cache = await loadBrainLearningProfiles(true);
     return res.json({
       enabled: true,
-      version: "10.22-transition-queue-guard",
+      version: "10.23-global-alert-budget-guard",
       method: {
         windowDays: BRAIN_LEARNING_WINDOW_DAYS,
         priorAccuracy: BRAIN_LEARNING_PRIOR_ACCURACY,
@@ -7168,7 +7227,7 @@ app.listen(
   port,
   () => {
     console.log(
-      `FC Trading Intelligence v10.22 Transition Queue Guard (FC${GAME_YEAR}) running on ${port}`
+      `FC Trading Intelligence v10.23 Global Alert Budget Guard (FC${GAME_YEAR}) running on ${port}`
     );
 
     startMonitoring();
