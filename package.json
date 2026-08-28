@@ -1,6 +1,6 @@
 {
   "name": "fc-trading-intelligence",
-  "version": "8.1.0",
+  "version": "10.0.0",
   "private": true,
   "type": "module",
   "scripts": {
@@ -8,7 +8,7 @@
   },
   "dependencies": {
     "express": "^4.21.2",
-    "pg": "^8.13.1"
+    "pg": "^8.13.1",
+    "@google/genai": "^1.0.0"
   }
 }
-
