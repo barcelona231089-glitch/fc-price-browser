@@ -1150,6 +1150,91 @@ function applyDecisionToRow(row, decision) {
   row.aiTraderConfluence = decision.trader_signals_confluence || null;
 }
 
+function normalizeDecisionForPosition(row, decision) {
+  if (!decision || decision.action !== "VERKAUF PRÜFEN") return decision;
+
+  const profit = Number.isFinite(row.profitPercent) ? row.profitPercent : null;
+  const nearHigh =
+    Number.isFinite(row.high24h) &&
+    row.high24h > 0 &&
+    row.price >= row.high24h * 0.97;
+
+  const strongRun =
+    (Number.isFinite(row.change15m) && row.change15m >= 10) ||
+    (Number.isFinite(row.change1h) && row.change1h >= 12) ||
+    (Number.isFinite(row.change24h) && row.change24h >= 18);
+
+  const momentumCooling =
+    (Number.isFinite(row.change1m) && row.change1m < 0) ||
+    (
+      Number.isFinite(row.change1m) &&
+      Number.isFinite(row.change5m) &&
+      row.change1m <= 0.5 &&
+      row.change5m <= 3
+    ) ||
+    (
+      Number.isFinite(row.change5m) &&
+      Number.isFinite(row.change15m) &&
+      row.change5m <= row.change15m - 2
+    );
+
+  // Verkaufshinweise sind nur für Karten sinnvoll, die der Nutzer wirklich besitzt.
+  if (!row.tracked) {
+    return {
+      ...decision,
+      action: "NICHT KAUFEN",
+      confidence: Math.max(80, Math.min(92, decision.confidence ?? 82)),
+      risk: "hoch",
+      market_state: "stark gestiegen / Einstieg unattraktiv",
+      reason: "Karte notiert nach starkem Anstieg nahe dem 24h-Hoch. Ohne eigenen Bestand kein Verkaufssignal: nicht hinterherkaufen, Rücksetzer abwarten.",
+      recommended_horizon: "Rücksetzer abwarten"
+    };
+  }
+
+  // Kein echter Netto-Gewinn nach EA-Steuer -> nicht vorschnell verkaufen.
+  if (profit === null || profit < 6) {
+    return {
+      ...decision,
+      action: "HALTEN",
+      confidence: 78,
+      risk: "mittel",
+      market_state: "Position noch ohne ausreichende Gewinnmarge",
+      reason: profit === null
+        ? "Eigener Bestand erkannt, aber die Netto-Gewinnmarge ist noch nicht belastbar. Position weiter beobachten."
+        : `Nach 5% EA-Steuer liegt der Netto-Gewinn erst bei ${profit.toFixed(2)}%. Für ein Verkaufssignal ist die Marge noch zu klein.`,
+      recommended_horizon: "Weiter beobachten"
+    };
+  }
+
+  // Sehr guter Nettogewinn nahe Widerstand: Gewinnmitnahme aktiv prüfen.
+  if (profit >= 12 && nearHigh) {
+    return {
+      ...decision,
+      confidence: Math.max(88, Math.min(95, decision.confidence ?? 88)),
+      reason: `Eigener Bestand liegt nach 5% EA-Steuer bei +${profit.toFixed(2)}% Netto-Gewinn und notiert nahe dem 24h-Hoch. Gewinnmitnahme aktiv prüfen.`
+    };
+  }
+
+  // Solider Gewinn reicht nur dann für Verkauf, wenn der starke Lauf sichtbar abkühlt.
+  if (profit >= 6 && nearHigh && strongRun && momentumCooling) {
+    return {
+      ...decision,
+      confidence: Math.max(84, Math.min(93, decision.confidence ?? 86)),
+      reason: `Eigener Bestand liegt nach 5% EA-Steuer bei +${profit.toFixed(2)}% Netto-Gewinn. Preis ist nahe dem 24h-Hoch und das kurzfristige Momentum kühlt ab: Verkauf prüfen.`
+    };
+  }
+
+  return {
+    ...decision,
+    action: "HALTEN",
+    confidence: 82,
+    risk: "niedrig",
+    market_state: "Gewinnposition mit weiter laufendem Momentum",
+    reason: `Eigener Bestand liegt bei +${profit.toFixed(2)}% Netto-Gewinn, aber der Aufwärtstrend ist noch nicht klar ausgelaufen. Weiter halten und Momentum beobachten.`,
+    recommended_horizon: "Momentum weiter beobachten"
+  };
+}
+
 async function buildTradingRows() {
   const [cards, bulk, positions, allSignals, traderProfiles] = await Promise.all([
     ensureUniverse(false),
@@ -1278,7 +1363,8 @@ async function buildTradingRows() {
 
     const quant = analyzeMarketPatterns(input);
     const confluence = evaluateDiscordSignals(signals, input, quant, traderProfiles);
-    const decision = baseDecisionFromQuant(quant, confluence);
+    const rawDecision = baseDecisionFromQuant(quant, confluence);
+    const decision = normalizeDecisionForPosition(row, rawDecision);
     applyDecisionToRow(row, decision);
 
     row.ratingMarketTrend = rating.trend;
@@ -1419,12 +1505,13 @@ async function automaticTraderBrain(rows, brainWork) {
 
     if (geminiCandidate) {
       lastGeminiAttemptAt = now;
-      const decision = await generateAiTraderDecision(
+      const rawDecision = await generateAiTraderDecision(
         geminiCandidate.work.input,
         geminiCandidate.work.quant,
         geminiCandidate.work.confluence
       );
 
+      const decision = normalizeDecisionForPosition(geminiCandidate.row, rawDecision);
       applyDecisionToRow(geminiCandidate.row, decision);
       lastGeminiCandidate = {
         eaId: geminiCandidate.row.eaId,
@@ -2695,7 +2782,7 @@ app.listen(
   port,
   () => {
     console.log(
-      `FC Trading Intelligence v10.1 Google Trader Brain Signal Fix running on ${port}`
+      `FC Trading Intelligence v10.2 Google Trader Brain Sell Fix running on ${port}`
     );
 
     startMonitoring();
