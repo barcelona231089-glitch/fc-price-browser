@@ -1,5 +1,6 @@
 import express from "express";
 import pg from "pg";
+import { Client, GatewayIntentBits } from "discord.js";
 import {
   analyzeMarketPatterns,
   evaluateDiscordSignals,
@@ -53,7 +54,7 @@ const GEMINI_CARD_COOLDOWN_MS = Math.max(30, Number(process.env.GEMINI_CARD_COOL
 
 const DISCORD_BOT_TOKEN = String(process.env.DISCORD_BOT_TOKEN || "").trim();
 const DISCORD_ALERT_CHANNEL_ID = String(process.env.DISCORD_ALERT_CHANNEL_ID || "").trim();
-const DISCORD_CONFIGURED = Boolean(DISCORD_BOT_TOKEN && DISCORD_ALERT_CHANNEL_ID);
+const DISCORD_CONFIGURED = Boolean(DISCORD_BOT_TOKEN);
 const DISCORD_ALERT_COOLDOWN_MS = Math.max(5, Number(process.env.DISCORD_ALERT_COOLDOWN_MIN || 30)) * 60_000;
 const DISCORD_MAX_ALERTS_PER_CYCLE = Math.max(1, Math.min(10, Number(process.env.DISCORD_MAX_ALERTS_PER_CYCLE || 5)));
 const DISCORD_MIN_BUY_CONFIDENCE = Math.max(70, Math.min(95, Number(process.env.DISCORD_MIN_BUY_CONFIDENCE || 90)));
@@ -63,6 +64,13 @@ const DISCORD_MIN_RATING_CONFIDENCE = Math.max(60, Math.min(95, Number(process.e
 let lastDiscordSendAt = null;
 let lastDiscordError = null;
 let discordAlertsSent = 0;
+let discordClientReady = false;
+let discordResolvedChannelId = null;
+let discordResolvedChannelName = null;
+let discordBotTag = null;
+let discordGuildCount = 0;
+let discordClient = null;
+let discordLoginPromise = null;
 const memoryDiscordAlertState = new Map();
 
 const memoryHistory = new Map();
@@ -653,26 +661,151 @@ function discordPct(value) {
   return `${sign}${Number(value).toFixed(2)}%`;
 }
 
+async function initDiscordBot() {
+  if (!DISCORD_CONFIGURED) {
+    lastDiscordError = "DISCORD_BOT_TOKEN fehlt";
+    return false;
+  }
+
+  if (discordClientReady && discordClient?.isReady()) {
+    return true;
+  }
+
+  if (discordLoginPromise) {
+    return discordLoginPromise;
+  }
+
+  discordClient = new Client({
+    intents: [
+      GatewayIntentBits.Guilds,
+      GatewayIntentBits.GuildMessages,
+      GatewayIntentBits.MessageContent
+    ]
+  });
+
+  discordClient.on("error", error => {
+    lastDiscordError = `Discord Client: ${String(error)}`;
+    console.error("Discord client error:", error);
+  });
+
+  discordClient.on("warn", warning => {
+    console.warn("Discord client warning:", warning);
+  });
+
+  discordLoginPromise = new Promise(async resolve => {
+    const timeout = setTimeout(() => {
+      lastDiscordError = "Discord Gateway Login Timeout";
+      console.error("Discord Gateway Login Timeout");
+      resolve(false);
+    }, 25_000);
+
+    discordClient.once("ready", async () => {
+      clearTimeout(timeout);
+      discordClientReady = true;
+      discordBotTag = discordClient.user?.tag || discordClient.user?.username || "Bot";
+      discordGuildCount = discordClient.guilds.cache.size;
+      lastDiscordError = null;
+
+      console.log(
+        `Discord Gateway verbunden als ${discordBotTag} • Guilds: ${discordGuildCount}`
+      );
+
+      const channel = await resolveDiscordAlertChannel();
+      if (channel) {
+        console.log(
+          `Discord Alert-Kanal gefunden: #${discordResolvedChannelName} (${discordResolvedChannelId})`
+        );
+      }
+
+      resolve(true);
+    });
+
+    try {
+      await discordClient.login(DISCORD_BOT_TOKEN);
+    } catch (error) {
+      clearTimeout(timeout);
+      discordClientReady = false;
+      lastDiscordError = `Discord Login fehlgeschlagen: ${String(error)}`;
+      console.error("Discord login error:", error);
+      resolve(false);
+    }
+  });
+
+  return discordLoginPromise;
+}
+
+async function resolveDiscordAlertChannel() {
+  if (!discordClientReady || !discordClient?.isReady()) return null;
+
+  // 1) Bevorzugt die in Render konfigurierte Channel-ID.
+  if (DISCORD_ALERT_CHANNEL_ID) {
+    try {
+      const configured = await discordClient.channels.fetch(DISCORD_ALERT_CHANNEL_ID);
+      if (configured?.isTextBased?.() && typeof configured.send === "function") {
+        discordResolvedChannelId = configured.id;
+        discordResolvedChannelName = configured.name || "trading-alerts";
+        return configured;
+      }
+    } catch (error) {
+      console.warn(
+        `Discord Channel-ID ${DISCORD_ALERT_CHANNEL_ID} nicht direkt erreichbar. Suche automatisch nach #trading-alerts...`,
+        error?.message || error
+      );
+    }
+  }
+
+  // 2) Fallback: im/den Server(n), in denen der Bot Mitglied ist, nach #trading-alerts suchen.
+  for (const guild of discordClient.guilds.cache.values()) {
+    try {
+      const channels = await guild.channels.fetch();
+      const found = channels.find(channel =>
+        channel &&
+        channel.name === "trading-alerts" &&
+        channel.isTextBased?.() &&
+        typeof channel.send === "function"
+      );
+
+      if (found) {
+        discordResolvedChannelId = found.id;
+        discordResolvedChannelName = found.name;
+        console.warn(
+          `Discord Alert-Kanal automatisch gefunden: Guild "${guild.name}", #${found.name}, ID ${found.id}`
+        );
+        return found;
+      }
+    } catch (error) {
+      console.warn(
+        `Discord Kanäle von Guild "${guild.name}" konnten nicht gelesen werden:`,
+        error?.message || error
+      );
+    }
+  }
+
+  lastDiscordError =
+    "Discord Bot ist verbunden, aber #trading-alerts wurde nicht gefunden oder ist für den Bot nicht sichtbar.";
+  return null;
+}
+
 async function sendDiscordPayload(payload) {
   if (!DISCORD_CONFIGURED) return { ok: false, skipped: "not_configured" };
 
-  const response = await fetch(
-    `https://discord.com/api/v10/channels/${encodeURIComponent(DISCORD_ALERT_CHANNEL_ID)}/messages`,
-    {
-      method: "POST",
-      headers: {
-        authorization: `Bot ${DISCORD_BOT_TOKEN}`,
-        "content-type": "application/json",
-        "user-agent": "FC-Trader-Brain/10.4"
-      },
-      body: JSON.stringify(payload)
-    }
-  );
+  const ready = await initDiscordBot();
+  if (!ready) {
+    throw new Error(lastDiscordError || "Discord Bot konnte nicht verbunden werden");
+  }
 
-  if (!response.ok) {
-    const body = await response.text().catch(() => "");
-    const error = new Error(`Discord HTTP ${response.status}: ${body.slice(0, 500)}`);
-    error.status = response.status;
+  const channel = await resolveDiscordAlertChannel();
+  if (!channel) {
+    throw new Error(lastDiscordError || "Discord Alert-Kanal nicht gefunden");
+  }
+
+  try {
+    await channel.send({
+      ...payload,
+      allowedMentions: { parse: [] }
+    });
+  } catch (error) {
+    lastDiscordError = `Discord send failed: ${String(error)}`;
     throw error;
   }
 
@@ -946,7 +1079,7 @@ async function sendDiscordStartupMessage() {
           { name: "Kaufalarm ab", value: `${DISCORD_MIN_BUY_CONFIDENCE}% KI-Sicherheit`, inline: true },
           { name: "Spam-Schutz", value: `${Math.round(DISCORD_ALERT_COOLDOWN_MS / 60_000)} Min. Cooldown`, inline: true }
         ],
-        footer: { text: "FC Trading Intelligence v10.4" },
+        footer: { text: "FC Trading Intelligence v10.4.1" },
         timestamp: new Date().toISOString()
       }]
     });
@@ -955,7 +1088,7 @@ async function sendDiscordStartupMessage() {
       alertKey,
       alertType: "system",
       action: "CONNECTED",
-      fingerprint: "v10.4"
+      fingerprint: "v10.4.1"
     });
   } catch (error) {
     lastDiscordError = String(error);
@@ -2230,7 +2363,7 @@ app.get("/", (req, res) => {
   res.json({
     online: true,
     service: "FC Trading Intelligence",
-    version: "10.4-discord-alerts",
+    version: "10.4.1-discord-gateway-fix",
     refreshSeconds: 60,
     storage:
       dbEnabled
@@ -2254,7 +2387,7 @@ app.get("/", (req, res) => {
 app.get("/health", (req, res) => {
   res.json({
     ok: true,
-    version: "10.4-discord-alerts",
+    version: "10.4.1-discord-gateway-fix",
     monitoringStarted,
     monitoringBusy,
     lastMonitorAt,
@@ -2269,6 +2402,11 @@ app.get("/health", (req, res) => {
       configured: DISCORD_CONFIGURED,
       channelConfigured: Boolean(DISCORD_ALERT_CHANNEL_ID),
       tokenConfigured: Boolean(DISCORD_BOT_TOKEN),
+      gatewayReady: discordClientReady,
+      botTag: discordBotTag,
+      guildCount: discordGuildCount,
+      resolvedChannelId: discordResolvedChannelId,
+      resolvedChannelName: discordResolvedChannelName,
       alertsSent: discordAlertsSent,
       lastSendAt: lastDiscordSendAt,
       lastError: lastDiscordError
@@ -2282,6 +2420,11 @@ app.get("/api/discord/status", (req, res) => {
     configured: DISCORD_CONFIGURED,
     channelConfigured: Boolean(DISCORD_ALERT_CHANNEL_ID),
     tokenConfigured: Boolean(DISCORD_BOT_TOKEN),
+    gatewayReady: discordClientReady,
+    botTag: discordBotTag,
+    guildCount: discordGuildCount,
+    resolvedChannelId: discordResolvedChannelId,
+    resolvedChannelName: discordResolvedChannelName,
     alertsSent: discordAlertsSent,
     lastSendAt: lastDiscordSendAt,
     lastError: lastDiscordError,
@@ -2462,7 +2605,7 @@ app.get("/api/ratings-intelligence", (req, res) => {
 app.get("/api/trader-brain/status", (req, res) => {
   res.json({
     ok: true,
-    version: "10.4-discord-alerts",
+    version: "10.4.1-discord-gateway-fix",
     automatic: true,
     refreshSeconds: 60,
     lastBrainRunAt,
@@ -3507,6 +3650,10 @@ async function startMonitoring() {
       String(error);
   }
 
+  if (DISCORD_CONFIGURED) {
+    await initDiscordBot();
+  }
+
   await sendDiscordStartupMessage();
   monitorOnce();
 
@@ -3534,7 +3681,7 @@ app.listen(
   port,
   () => {
     console.log(
-      `FC Trading Intelligence v10.4 Discord Alerts running on ${port}`
+      `FC Trading Intelligence v10.4.1 Discord Gateway Fix running on ${port}`
     );
 
     startMonitoring();
