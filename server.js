@@ -1050,10 +1050,50 @@ function median(values) {
     : (clean[mid - 1] + clean[mid]) / 2;
 }
 
+function reconstructPreviousPrice(currentPrice, changePctValue) {
+  if (
+    !Number.isFinite(currentPrice) ||
+    !Number.isFinite(changePctValue) ||
+    changePctValue <= -99
+  ) {
+    return null;
+  }
+
+  const divisor = 1 + changePctValue / 100;
+  if (divisor <= 0) return null;
+
+  return currentPrice / divisor;
+}
+
+function ratingWindowStats(cards, changeField) {
+  const measured = cards.filter(card => Number.isFinite(card[changeField]));
+  const moves = measured.map(card => card[changeField]);
+  const rising = moves.filter(v => v >= 0.5).length;
+  const falling = moves.filter(v => v <= -0.5).length;
+
+  const previousPrices = measured
+    .map(card => reconstructPreviousPrice(card.price, card[changeField]))
+    .filter(Number.isFinite);
+
+  return {
+    measuredCards: measured.length,
+    risingPct: moves.length
+      ? Number(((rising / moves.length) * 100).toFixed(1))
+      : 0,
+    fallingPct: moves.length
+      ? Number(((falling / moves.length) * 100).toFixed(1))
+      : 0,
+    medianMove: Number((median(moves) ?? 0).toFixed(2)),
+    previousMedianPrice: median(previousPrices)
+  };
+}
+
 function buildRatingStats(rows) {
   const byRating = new Map();
 
   for (const row of rows) {
+    // Für Rating-/Fodder-Intelligence bewusst nur Base Rare verwenden.
+    // Specials würden die Mediane und Marktbreite stark verzerren.
     if (row.cardType !== "Base Rare") continue;
     if (!byRating.has(row.overall)) byRating.set(row.overall, []);
     byRating.get(row.overall).push(row);
@@ -1062,29 +1102,163 @@ function buildRatingStats(rows) {
   const stats = {};
 
   for (const [rating, cards] of byRating.entries()) {
-    const usable = cards.filter(card => Number.isFinite(card.change5m) || Number.isFinite(card.change1m));
-    const moves = usable.map(card => Number.isFinite(card.change5m) ? card.change5m : card.change1m);
-    const rising = moves.filter(v => v >= 0.5).length;
-    const falling = moves.filter(v => v <= -0.5).length;
-    const risingPct = moves.length ? Number(((rising / moves.length) * 100).toFixed(1)) : 0;
-    const fallingPct = moves.length ? Number(((falling / moves.length) * 100).toFixed(1)) : 0;
-    const medMove = median(moves) ?? 0;
+    const currentMedian = median(cards.map(card => card.price));
+    const w1m = ratingWindowStats(cards, "change1m");
+    const w5m = ratingWindowStats(cards, "change5m");
+    const w15m = ratingWindowStats(cards, "change15m");
+    const w1h = ratingWindowStats(cards, "change1h");
+    const w24h = ratingWindowStats(cards, "change24h");
+
+    const nearLowCards = cards.filter(card =>
+      Number.isFinite(card.distanceFrom24hLow) &&
+      card.distanceFrom24hLow <= 5
+    );
+
+    const recoveryCards = cards.filter(card =>
+      Number.isFinite(card.change5m) &&
+      Number.isFinite(card.change15m) &&
+      card.change5m >= 1 &&
+      card.change15m >= 1
+    );
+
+    const nearLowPct = cards.length
+      ? Number(((nearLowCards.length / cards.length) * 100).toFixed(1))
+      : 0;
+
+    const recoveryPct = cards.length
+      ? Number(((recoveryCards.length / cards.length) * 100).toFixed(1))
+      : 0;
 
     let trend = "neutral";
-    if (risingPct >= 70 && medMove >= 1) trend = "stark_steigend";
-    else if (risingPct >= 55 || medMove >= 0.6) trend = "steigend";
-    else if (fallingPct >= 70 && medMove <= -1) trend = "stark_fallend";
-    else if (fallingPct >= 55 || medMove <= -0.6) trend = "fallend";
+    if (w5m.risingPct >= 70 && w5m.medianMove >= 1) trend = "stark_steigend";
+    else if (w5m.risingPct >= 55 || w5m.medianMove >= 0.6) trend = "steigend";
+    else if (w5m.fallingPct >= 70 && w5m.medianMove <= -1) trend = "stark_fallend";
+    else if (w5m.fallingPct >= 55 || w5m.medianMove <= -0.6) trend = "fallend";
+
+    let marketSignal = "NEUTRAL";
+    let marketAdvice = "BEOBACHTEN";
+    let confidence = 58;
+    let reason = "Kein klares Rating-Markt-Setup.";
+
+    const enoughData = w5m.measuredCards >= 5;
+
+    if (!enoughData) {
+      marketSignal = "ZU WENIG DATEN";
+      marketAdvice = "BEOBACHTEN";
+      confidence = 35;
+      reason = "Noch zu wenige Karten mit 5-Minuten-Historie für ein belastbares Rating-Signal.";
+    } else if (
+      w5m.fallingPct >= 70 &&
+      w5m.medianMove <= -2
+    ) {
+      marketSignal = "STARK FALLEND";
+      marketAdvice = "NOCH WARTEN";
+      confidence = Math.min(
+        95,
+        Math.round(78 + Math.min(12, Math.abs(w5m.medianMove) * 2))
+      );
+      reason =
+        `${w5m.fallingPct.toFixed(0)}% der ${rating}er fallen in 5m; ` +
+        `Median-Bewegung ${w5m.medianMove.toFixed(2)}%. Breiter Abverkauf noch aktiv.`;
+    } else if (
+      nearLowPct >= 50 &&
+      recoveryPct >= 45 &&
+      w5m.risingPct >= 50 &&
+      w5m.fallingPct < 40 &&
+      w15m.medianMove >= 0.8 &&
+      w15m.medianMove <= 10
+    ) {
+      marketSignal = "KAUFZONE";
+      marketAdvice = "JETZT KAUFEN PRÜFEN";
+      confidence = Math.min(
+        95,
+        Math.round(76 + Math.min(15, recoveryPct / 5))
+      );
+      reason =
+        `${nearLowPct.toFixed(0)}% der ${rating}er liegen nahe ihrem 24h-Tief und ` +
+        `${recoveryPct.toFixed(0)}% bestätigen 5m/15m-Erholung. Rating-Segment dreht.`;
+    } else if (
+      w5m.risingPct >= 70 &&
+      w5m.medianMove >= 2
+    ) {
+      marketSignal = "STARK STEIGEND";
+
+      if (w15m.medianMove >= 10) {
+        marketAdvice = "NICHT HINTERHERKAUFEN";
+        confidence = Math.min(
+          95,
+          Math.round(82 + Math.min(10, w5m.medianMove))
+        );
+        reason =
+          `${w5m.risingPct.toFixed(0)}% der ${rating}er steigen; ` +
+          `15m-Median bereits +${w15m.medianMove.toFixed(2)}%. FOMO-Risiko erhöht.`;
+      } else {
+        marketAdvice = "BEOBACHTEN";
+        confidence = Math.min(
+          95,
+          Math.round(76 + Math.min(12, w5m.medianMove * 2))
+        );
+        reason =
+          `${w5m.risingPct.toFixed(0)}% der ${rating}er steigen; ` +
+          `5m-Median +${w5m.medianMove.toFixed(2)}%. Breite Aufwärtsbewegung bestätigt.`;
+      }
+    } else if (
+      w5m.risingPct >= 60 ||
+      w5m.medianMove >= 1
+    ) {
+      marketSignal = "STEIGEND";
+      marketAdvice = "BEOBACHTEN";
+      confidence = 68;
+      reason =
+        `${w5m.risingPct.toFixed(0)}% der ${rating}er steigen; ` +
+        `5m-Median ${w5m.medianMove >= 0 ? "+" : ""}${w5m.medianMove.toFixed(2)}%.`;
+    } else if (
+      w5m.fallingPct >= 60 ||
+      w5m.medianMove <= -1
+    ) {
+      marketSignal = "FÄLLT";
+      marketAdvice = "NOCH WARTEN";
+      confidence = 72;
+      reason =
+        `${w5m.fallingPct.toFixed(0)}% der ${rating}er fallen; ` +
+        `5m-Median ${w5m.medianMove.toFixed(2)}%. Noch keine breite Trendwende.`;
+    }
 
     stats[rating] = {
       rating,
       cardCount: cards.length,
-      measuredCards: moves.length,
-      risingPct,
-      fallingPct,
-      medianMove5m: Number(medMove.toFixed(2)),
-      medianPrice: median(cards.map(card => card.price)),
-      trend
+      measuredCards: w5m.measuredCards,
+      medianPrice: currentMedian,
+      medianPrice1mAgo: w1m.previousMedianPrice,
+      medianPrice5mAgo: w5m.previousMedianPrice,
+      medianPrice15mAgo: w15m.previousMedianPrice,
+      medianPrice1hAgo: w1h.previousMedianPrice,
+      medianPrice24hAgo: w24h.previousMedianPrice,
+
+      risingPct: w5m.risingPct,
+      fallingPct: w5m.fallingPct,
+      medianMove5m: w5m.medianMove,
+      trend,
+
+      change1m: w1m.medianMove,
+      change5m: w5m.medianMove,
+      change15m: w15m.medianMove,
+      change1h: w1h.medianMove,
+      change24h: w24h.medianMove,
+
+      risingPct1m: w1m.risingPct,
+      fallingPct1m: w1m.fallingPct,
+      risingPct5m: w5m.risingPct,
+      fallingPct5m: w5m.fallingPct,
+      risingPct15m: w15m.risingPct,
+      fallingPct15m: w15m.fallingPct,
+
+      near24hLowPct: nearLowPct,
+      recoveryPct,
+      marketSignal,
+      marketAdvice,
+      confidence,
+      reason
     };
   }
 
@@ -1707,7 +1881,7 @@ app.get("/", (req, res) => {
   res.json({
     online: true,
     service: "FC Trading Intelligence",
-    version: "10.0-google-trader-brain",
+    version: "10.3-rating-market-intelligence",
     refreshSeconds: 60,
     storage:
       dbEnabled
@@ -1719,6 +1893,7 @@ app.get("/", (req, res) => {
       positionSave: "POST /api/position",
       positionDelete: "DELETE /api/position/:eaId",
       traderBrainStatus: "GET /api/trader-brain/status",
+      ratingIntelligence: "GET /api/ratings-intelligence",
       traderBrainHistory: "GET /api/trader-brain/feedback/history",
       geminiHealth: "GET /api/gemini-health",
       health: "GET /health"
@@ -1729,7 +1904,7 @@ app.get("/", (req, res) => {
 app.get("/health", (req, res) => {
   res.json({
     ok: true,
-    version: "10.0-google-trader-brain",
+    version: "10.3-rating-market-intelligence",
     monitoringStarted,
     monitoringBusy,
     lastMonitorAt,
@@ -1855,6 +2030,10 @@ app.get("/api/trading", async (req, res) => {
         doNotBuy: rows.filter(row => row.aiAction === "NICHT KAUFEN").length,
         sellCheck: rows.filter(row => row.aiAction === "VERKAUF PRÜFEN").length
       },
+      ratingIntelligence: Object.values(latestRatingStats)
+        .sort((a, b) => b.rating - a.rating),
+      ratingAlerts: Object.values(latestRatingStats)
+        .filter(r => !["NEUTRAL", "ZU WENIG DATEN"].includes(r.marketSignal)).length,
       geminiQuota: getGeminiQuotaInfo(),
       lastBrainRunAt,
       lastBrainError,
@@ -1870,10 +2049,40 @@ app.get("/api/trading", async (req, res) => {
   }
 });
 
+app.get("/api/ratings-intelligence", (req, res) => {
+  const priority = {
+    "KAUFZONE": 6,
+    "STARK FALLEND": 5,
+    "STARK STEIGEND": 4,
+    "FÄLLT": 3,
+    "STEIGEND": 2,
+    "NEUTRAL": 1,
+    "ZU WENIG DATEN": 0
+  };
+
+  const ratings = Object.values(latestRatingStats)
+    .sort((a, b) => {
+      const signalDiff =
+        (priority[b.marketSignal] ?? 0) -
+        (priority[a.marketSignal] ?? 0);
+
+      if (signalDiff !== 0) return signalDiff;
+      return b.rating - a.rating;
+    });
+
+  res.json({
+    ok: true,
+    refreshSeconds: 60,
+    source: "FUT.GG Base Rare",
+    ratings,
+    updatedAt: lastMonitorAt || new Date().toISOString()
+  });
+});
+
 app.get("/api/trader-brain/status", (req, res) => {
   res.json({
     ok: true,
-    version: "10.0-google-trader-brain",
+    version: "10.3-rating-market-intelligence",
     automatic: true,
     refreshSeconds: 60,
     lastBrainRunAt,
@@ -2078,6 +2287,57 @@ app.get("/trading", (req, res) => {
     font-size: 11px;
     padding: 5px 7px;
   }
+
+  .rating-box {
+    background: #161616;
+    border: 1px solid #252525;
+    border-radius: 10px;
+    margin-bottom: 14px;
+    overflow: hidden;
+  }
+
+  .rating-head {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 12px;
+    padding: 12px 14px;
+    background: #1b1b1b;
+    border-bottom: 1px solid #292929;
+  }
+
+  .rating-title {
+    font-weight: 700;
+    font-size: 16px;
+  }
+
+  .rating-sub {
+    color: #999;
+    font-size: 12px;
+  }
+
+  .rating-scroll {
+    max-height: 330px;
+    overflow: auto;
+  }
+
+  .rating-table {
+    font-size: 12px;
+  }
+
+  .rating-table th,
+  .rating-table td {
+    padding: 7px 8px;
+  }
+
+  .rating-signal {
+    font-weight: 800;
+  }
+
+  .rating-hot {
+    background: #1b1b1b;
+  }
+
 </style>
 </head>
 
@@ -2158,6 +2418,39 @@ app.get("/trading", (req, res) => {
     Lade Datenbankstatus…
   </div>
 
+  <div class="rating-box">
+    <div class="rating-head">
+      <div>
+        <div class="rating-title">Rating-Markt Intelligence</div>
+        <div class="rating-sub">Base Rare • kompletter Rating-Markt • automatisch alle 60 Sekunden</div>
+      </div>
+      <div id="ratingSummary" class="rating-sub">Lade Rating-Märkte…</div>
+    </div>
+
+    <div class="rating-scroll">
+      <table class="rating-table">
+        <thead>
+          <tr>
+            <th>GES</th>
+            <th>Median</th>
+            <th>1m</th>
+            <th>5m</th>
+            <th>15m</th>
+            <th>1h</th>
+            <th>Steigen 5m</th>
+            <th>Fallen 5m</th>
+            <th>Nahe 24h-Tief</th>
+            <th>Signal</th>
+            <th>Rating-Aktion</th>
+            <th>Sicherheit</th>
+            <th>Grund</th>
+          </tr>
+        </thead>
+        <tbody id="ratingRows"></tbody>
+      </table>
+    </div>
+  </div>
+
   <table>
 
     <thead>
@@ -2199,6 +2492,7 @@ app.get("/trading", (req, res) => {
 <script>
 
 let allRows = [];
+let allRatingRows = [];
 let busy = false;
 
 const fmt = value =>
@@ -2236,6 +2530,75 @@ function moneyClass(value) {
   if (value < 0) return "neg";
 
   return "";
+}
+
+
+function renderRatings() {
+  const body = document.getElementById("ratingRows");
+  const summary = document.getElementById("ratingSummary");
+
+  if (!body || !summary) return;
+
+  const priority = {
+    "KAUFZONE": 6,
+    "STARK FALLEND": 5,
+    "STARK STEIGEND": 4,
+    "FÄLLT": 3,
+    "STEIGEND": 2,
+    "NEUTRAL": 1,
+    "ZU WENIG DATEN": 0
+  };
+
+  const rows = [...allRatingRows].sort((a, b) => {
+    const p =
+      (priority[b.marketSignal] ?? 0) -
+      (priority[a.marketSignal] ?? 0);
+
+    if (p !== 0) return p;
+    return b.rating - a.rating;
+  });
+
+  body.innerHTML = "";
+
+  for (const row of rows) {
+    const tr = document.createElement("tr");
+
+    if (
+      row.marketSignal === "KAUFZONE" ||
+      row.marketSignal === "STARK FALLEND" ||
+      row.marketSignal === "STARK STEIGEND"
+    ) {
+      tr.className = "rating-hot";
+    }
+
+    tr.innerHTML = \`
+      <td class="strong">\${row.rating}</td>
+      <td>\${fmt(row.medianPrice)}</td>
+      <td>\${pctCell(row.change1m)}</td>
+      <td>\${pctCell(row.change5m)}</td>
+      <td>\${pctCell(row.change15m)}</td>
+      <td>\${pctCell(row.change1h)}</td>
+      <td>\${Number(row.risingPct5m ?? 0).toFixed(1)}%</td>
+      <td>\${Number(row.fallingPct5m ?? 0).toFixed(1)}%</td>
+      <td>\${Number(row.near24hLowPct ?? 0).toFixed(1)}%</td>
+      <td class="rating-signal">\${row.marketSignal}</td>
+      <td class="strong">\${row.marketAdvice}</td>
+      <td>\${row.confidence}%</td>
+      <td style="text-align:left; white-space:normal; min-width:320px">\${row.reason}</td>
+    \`;
+
+    body.appendChild(tr);
+  }
+
+  const alerts = rows.filter(
+    row => !["NEUTRAL", "ZU WENIG DATEN"].includes(row.marketSignal)
+  ).length;
+
+  summary.textContent =
+    rows.length +
+    " Ratings • " +
+    alerts +
+    " aktive Rating-Signale";
 }
 
 function render() {
@@ -2660,6 +3023,9 @@ async function load() {
     allRows =
       json.rows || [];
 
+    allRatingRows =
+      json.ratingIntelligence || [];
+
     document
       .getElementById("storage")
       .textContent =
@@ -2676,6 +3042,8 @@ async function load() {
         (json.aiSummary?.buyNow ?? 0) +
         " • KI Verkauf prüfen: " +
         (json.aiSummary?.sellCheck ?? 0) +
+        " • Rating-Signale: " +
+        (json.ratingAlerts ?? 0) +
         " • Gemini: " +
         (json.geminiQuota?.usedToday ?? 0) +
         "/" +
@@ -2687,6 +3055,7 @@ async function load() {
           "de-DE"
         );
 
+    renderRatings();
     render();
 
   } catch (error) {
@@ -2782,7 +3151,7 @@ app.listen(
   port,
   () => {
     console.log(
-      `FC Trading Intelligence v10.2 Google Trader Brain Sell Fix running on ${port}`
+      `FC Trading Intelligence v10.3 Rating Market Intelligence running on ${port}`
     );
 
     startMonitoring();
