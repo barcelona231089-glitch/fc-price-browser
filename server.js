@@ -116,7 +116,9 @@ let traderSignalsIgnored = 0;
 let lastTraderSignalAt = null;
 let lastTraderSignalError = null;
 let traderConfluenceAlertsSent = 0;
+let traderConfluenceInvalidationsSent = 0;
 let lastTraderConfluenceAlertAt = null;
+let lastTraderConfluenceInvalidationAt = null;
 let lastTraderConfluenceAlertError = null;
 let lastTraderConfluenceGate = null;
 const traderConfluenceSuppressedSignals = new Set();
@@ -1633,6 +1635,88 @@ function buildTraderConfluencePayload(signal, agreement, gate) {
   };
 }
 
+
+function traderSignalLifecycleWindowMs(signal) {
+  const preferredMinutes = preferredTraderSignalHorizon(signal);
+  const preferredMs = Math.max(5, Number(preferredMinutes || 60)) * 60_000;
+  const graceMs = 30 * 60_000;
+
+  // Mindestens 90 Minuten aktiv, maximal 24 Stunden.
+  // So bleibt ein "morgen"-Call bis zu seinem relevanten 24h-Fenster aktiv,
+  // während Short-Term-Flips nicht ewig als aktuelles Signal herumliegen.
+  return Math.min(
+    24 * 60 * 60_000,
+    Math.max(90 * 60_000, preferredMs + graceMs)
+  );
+}
+
+function traderConfluenceInvalidationReason(signal, kind) {
+  if (kind === "MARKET_LOST") {
+    return String(signal?.confirmationDetails || "FUT.GG bestätigt den Trader-Call aktuell nicht mehr.").slice(0, 1000);
+  }
+
+  if (kind === "BRAIN_LOST") {
+    return "FUT.GG kann den Call noch stützen, aber Quant Core / Trader Brain erfüllen die Bestätigungsbedingungen aktuell nicht mehr.";
+  }
+
+  return "Die frühere Konfluenz-Bestätigung ist aktuell nicht mehr gültig.";
+}
+
+function buildTraderConfluenceInvalidationPayload(signal, kind, gate) {
+  const call = String(signal?.call || "-").toUpperCase();
+  const target = String(signal?.playerOrRating || "-");
+  const reason = traderConfluenceInvalidationReason(signal, kind);
+  const reliability = Number(gate?.effectiveReliability ?? signal?.sourceReliability ?? 50);
+
+  return {
+    embeds: [{
+      title: `⚠️ TRADER-SIGNAL NICHT MEHR BESTÄTIGT`,
+      description:
+        "Eine zuvor bestätigte Konfluenz ist weggefallen. Der alte Call wird deshalb nicht mehr als aktuell bestätigt behandelt.",
+      fields: [
+        { name: "Trader-Call", value: `${call} • ${target}`, inline: true },
+        { name: "Quelle", value: String(signal?.source || "-").slice(0, 100), inline: true },
+        { name: "Trader-Zuverlässigkeit", value: `${reliability.toFixed(1)}%`, inline: true },
+        { name: "Status", value: kind === "MARKET_LOST" ? "FUT.GG-Marktbestätigung verloren" : "Brain-Bestätigung verloren", inline: false },
+        { name: "Grund", value: reason, inline: false }
+      ],
+      footer: { text: "FC Trader Brain • Confluence Lifecycle" },
+      timestamp: new Date().toISOString()
+    }]
+  };
+}
+
+async function invalidateTraderConfluenceSignal(signal, state, kind, gate) {
+  const call = String(signal?.call || "").toUpperCase();
+  const invalidAction = `INVALIDATED:${call}`;
+
+  if (!state || !String(state.lastAction || "").startsWith("CONFIRMED:")) {
+    return false;
+  }
+
+  await sendDiscordPayload(buildTraderConfluenceInvalidationPayload(signal, kind, gate));
+
+  await saveDiscordAlertState({
+    alertKey: `trader-confluence:${signal.id}`,
+    alertType: "trader_confluence_invalidated",
+    action: invalidAction,
+    confidence: Number.isFinite(gate?.effectiveReliability) ? Math.round(gate.effectiveReliability) : null,
+    fingerprint: `${signal.id}|${kind}|${signal.confirmationDetails || ""}`.slice(0, 240)
+  });
+
+  traderConfluenceInvalidationsSent += 1;
+  lastTraderConfluenceInvalidationAt = new Date().toISOString();
+  lastTraderConfluenceGate = {
+    signalId: signal.id,
+    source: signal.source,
+    result: kind,
+    effectiveReliability: gate?.effectiveReliability ?? signal?.sourceReliability ?? 50,
+    at: lastTraderConfluenceInvalidationAt
+  };
+
+  return true;
+}
+
 async function processTraderConfluenceAlerts(rows, ratingStats, brainWork) {
   if (!DISCORD_CONFIGURED || !dbEnabled || !rows?.length) return;
 
@@ -1645,12 +1729,19 @@ async function processTraderConfluenceAlerts(rows, ratingStats, brainWork) {
     const candidates = [];
 
     for (const signal of signals) {
-      if (signal.marketConfirmed !== true) continue;
-
       const profile = profiles[String(signal.source || "").toLowerCase()];
       const gate = traderConfluenceReliabilityGate(signal, profile);
       const ageMs = Date.now() - Number(signal.timestamp || 0);
-      if (!Number.isFinite(ageMs) || ageMs < 0 || ageMs > 6 * 60 * 60_000) continue;
+      const lifecycleWindowMs = traderSignalLifecycleWindowMs(signal);
+      const alertKey = `trader-confluence:${signal.id}`;
+      const state = await getDiscordAlertState(alertKey);
+
+      if (!Number.isFinite(ageMs) || ageMs < 0 || ageMs > lifecycleWindowMs) continue;
+
+      if (signal.marketConfirmed !== true) {
+        await invalidateTraderConfluenceSignal(signal, state, "MARKET_LOST", gate);
+        continue;
+      }
 
       if (!gate.allowed) {
         traderConfluenceSuppressedSignals.add(String(signal.id));
@@ -1660,6 +1751,7 @@ async function processTraderConfluenceAlerts(rows, ratingStats, brainWork) {
           result: "SUPPRESSED_LOW_RELIABILITY",
           effectiveReliability: gate.effectiveReliability,
           minimumReliability: DISCORD_TRADER_CONFLUENCE_MIN_RELIABILITY,
+          lifecycleWindowMinutes: Math.round(lifecycleWindowMs / 60_000),
           at: new Date().toISOString()
         };
         continue;
@@ -1667,19 +1759,24 @@ async function processTraderConfluenceAlerts(rows, ratingStats, brainWork) {
 
       const agreement = traderSignalBrainAgreement(signal, rows, ratingStats, brainWork, gate);
       if (!agreement) {
-        lastTraderConfluenceGate = {
-          signalId: signal.id,
-          source: signal.source,
-          result: "WAITING_FOR_STRONGER_BRAIN_CONFIRMATION",
-          effectiveReliability: gate.effectiveReliability,
-          requiredCardConfidence: gate.requiredCardConfidence,
-          requiredRatingConfidence: gate.requiredRatingConfidence,
-          at: new Date().toISOString()
-        };
+        const invalidated = await invalidateTraderConfluenceSignal(signal, state, "BRAIN_LOST", gate);
+
+        if (!invalidated) {
+          lastTraderConfluenceGate = {
+            signalId: signal.id,
+            source: signal.source,
+            result: "WAITING_FOR_STRONGER_BRAIN_CONFIRMATION",
+            effectiveReliability: gate.effectiveReliability,
+            requiredCardConfidence: gate.requiredCardConfidence,
+            requiredRatingConfidence: gate.requiredRatingConfidence,
+            lifecycleWindowMinutes: Math.round(lifecycleWindowMs / 60_000),
+            at: new Date().toISOString()
+          };
+        }
         continue;
       }
 
-      candidates.push({ signal, agreement, gate });
+      candidates.push({ signal, agreement, gate, state, lifecycleWindowMs });
     }
 
     candidates.sort((a, b) => {
@@ -1693,13 +1790,21 @@ async function processTraderConfluenceAlerts(rows, ratingStats, brainWork) {
     for (const item of candidates) {
       if (sent >= DISCORD_MAX_ALERTS_PER_CYCLE) break;
 
-      const { signal, agreement, gate } = item;
+      const { signal, agreement, gate, state, lifecycleWindowMs } = item;
       const alertKey = `trader-confluence:${signal.id}`;
       const action = `CONFIRMED:${String(signal.call || "").toUpperCase()}`;
-      const state = await getDiscordAlertState(alertKey);
 
-      // Ein Trader-Signal bekommt genau einen Reliability-Confluence-Alarm.
       if (state?.lastAction === action) continue;
+
+      // Nach einer Invalidierung mindestens 15 Minuten Stabilität verlangen,
+      // bevor derselbe Call erneut als bestätigt gemeldet wird.
+      if (
+        String(state?.lastAction || "").startsWith("INVALIDATED:") &&
+        Number.isFinite(state?.lastSentAt) &&
+        Date.now() - state.lastSentAt < 15 * 60_000
+      ) {
+        continue;
+      }
 
       await sendDiscordPayload(buildTraderConfluencePayload(signal, agreement, gate));
 
@@ -1712,7 +1817,6 @@ async function processTraderConfluenceAlerts(rows, ratingStats, brainWork) {
         fingerprint: `${signal.id}|${agreement.summary}|rel:${gate.effectiveReliability}`.slice(0, 240)
       });
 
-      // Verhindert einen identischen Standardalarm direkt im Anschluss.
       if (agreement.kind === "card" && agreement.row) {
         const row = agreement.row;
         await saveDiscordAlertState({
@@ -1741,10 +1845,11 @@ async function processTraderConfluenceAlerts(rows, ratingStats, brainWork) {
       lastTraderConfluenceGate = {
         signalId: signal.id,
         source: signal.source,
-        result: "ALERT_SENT",
+        result: state && String(state.lastAction || "").startsWith("INVALIDATED:") ? "RECONFIRMED" : "ALERT_SENT",
         effectiveReliability: gate.effectiveReliability,
         requiredConfidence: agreement.requiredConfidence,
         actualConfidence: agreement.confidence,
+        lifecycleWindowMinutes: Math.round(lifecycleWindowMs / 60_000),
         at: lastTraderConfluenceAlertAt
       };
       sent += 1;
@@ -2029,7 +2134,7 @@ async function sendDiscordStartupMessage() {
           { name: "Kaufalarm ab", value: `${DISCORD_MIN_BUY_CONFIDENCE}% KI-Sicherheit`, inline: true },
           { name: "Spam-Schutz", value: `${Math.round(DISCORD_ALERT_COOLDOWN_MS / 60_000)} Min. Cooldown`, inline: true }
         ],
-        footer: { text: "FC Trading Intelligence v10.11" },
+        footer: { text: "FC Trading Intelligence v10.12" },
         timestamp: new Date().toISOString()
       }]
     });
@@ -4414,7 +4519,7 @@ app.get("/", (req, res) => {
   res.json({
     online: true,
     service: "FC Trading Intelligence",
-    version: "10.11-reliability-aware-confluence",
+    version: "10.12-confluence-lifecycle",
     refreshSeconds: 60,
     storage:
       dbEnabled
@@ -4441,7 +4546,7 @@ app.get("/", (req, res) => {
 app.get("/health", (req, res) => {
   res.json({
     ok: true,
-    version: "10.11-reliability-aware-confluence",
+    version: "10.12-confluence-lifecycle",
     monitoringStarted,
     monitoringBusy,
     lastMonitorAt,
@@ -4556,7 +4661,7 @@ app.get("/api/trader-reliability/status", async (req, res) => {
 
     return res.json({
       enabled: true,
-      version: "10.11-reliability-aware-confluence",
+      version: "10.12-confluence-lifecycle",
       method: {
         priorAccuracy: TRADER_RELIABILITY_PRIOR_ACCURACY,
         priorStrength: TRADER_RELIABILITY_PRIOR_STRENGTH,
@@ -4614,7 +4719,7 @@ app.get("/api/trader-reliability/status", async (req, res) => {
 app.get("/api/trader-confluence/status", (req, res) => {
   res.json({
     enabled: DISCORD_CONFIGURED && dbEnabled,
-    version: "10.11-reliability-aware-confluence",
+    version: "10.12-confluence-lifecycle",
     minCardConfidence: DISCORD_TRADER_CONFLUENCE_MIN_CONFIDENCE,
     minRatingConfidence: DISCORD_TRADER_CONFLUENCE_MIN_RATING_CONFIDENCE,
     minTraderReliability: DISCORD_TRADER_CONFLUENCE_MIN_RELIABILITY,
@@ -4626,9 +4731,17 @@ app.get("/api/trader-confluence/status", (req, res) => {
       poorBelow40: 6
     },
     suppressedLowReliabilitySignals: traderConfluenceSuppressedSignals.size,
+    lifecyclePolicy: {
+      minActiveMinutes: 90,
+      maxActiveMinutes: 1440,
+      reconfirmStabilityMinutes: 15,
+      note: "Signal-Laufzeit folgt dem erwarteten Horizont; verlorene Markt-/Brain-Bestätigung wird einmal als Invalidierung gemeldet."
+    },
     lastGate: lastTraderConfluenceGate,
     alertsSent: traderConfluenceAlertsSent,
+    invalidationsSent: traderConfluenceInvalidationsSent,
     lastAlertAt: lastTraderConfluenceAlertAt,
+    lastInvalidationAt: lastTraderConfluenceInvalidationAt,
     lastError: lastTraderConfluenceAlertError
   });
 });
@@ -4652,7 +4765,9 @@ app.get("/api/discord/status", (req, res) => {
     lastTraderSignalAt,
     lastTraderSignalError,
     traderConfluenceAlertsSent,
+    traderConfluenceInvalidationsSent,
     lastTraderConfluenceAlertAt,
+    lastTraderConfluenceInvalidationAt,
     lastTraderConfluenceAlertError,
     traderConfluenceSuppressedLowReliability: traderConfluenceSuppressedSignals.size,
     lastTraderConfluenceGate,
@@ -4836,14 +4951,14 @@ app.get("/api/ratings-intelligence", (req, res) => {
 app.get("/api/trader-brain/status", (req, res) => {
   res.json({
     ok: true,
-    version: "10.11-reliability-aware-confluence",
+    version: "10.12-confluence-lifecycle",
     automatic: true,
     refreshSeconds: 60,
     lastBrainRunAt,
     lastBrainError,
     lastGeminiCandidate,
     learning: {
-      version: "10.11-reliability-aware-confluence",
+      version: "10.12-confluence-lifecycle",
       totalMatureDecisions: brainLearningCache.totalMatureDecisions,
       rawMatureDecisions: brainLearningCache.rawMatureDecisions,
       uniqueLearningEpisodes: brainLearningCache.uniqueLearningEpisodes,
@@ -4864,7 +4979,7 @@ app.get("/api/trader-brain/learning/status", async (req, res) => {
     const cache = await loadBrainLearningProfiles(true);
     return res.json({
       enabled: true,
-      version: "10.11-reliability-aware-confluence",
+      version: "10.12-confluence-lifecycle",
       method: {
         windowDays: BRAIN_LEARNING_WINDOW_DAYS,
         priorAccuracy: BRAIN_LEARNING_PRIOR_ACCURACY,
@@ -5964,7 +6079,7 @@ app.listen(
   port,
   () => {
     console.log(
-      `FC Trading Intelligence v10.11 Reliability Aware Confluence running on ${port}`
+      `FC Trading Intelligence v10.12 Confluence Lifecycle running on ${port}`
     );
 
     startMonitoring();
