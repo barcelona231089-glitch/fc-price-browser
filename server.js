@@ -79,6 +79,10 @@ const FUTBIN_OUTLIER_DIFF_PCT = Math.max(
   Math.min(60, Number(process.env.FUTBIN_OUTLIER_DIFF_PCT || 25))
 );
 const FUTBIN_FALLBACK_MIN_MATCHES = Math.max(10, Number(process.env.FUTBIN_FALLBACK_MIN_MATCHES || 50));
+const FUTBIN_TRUST_MIN_MATCHES = Math.max(10, Number(process.env.FUTBIN_TRUST_MIN_MATCHES || 40));
+const FUTBIN_MAX_DIVERGENT_SHARE = Math.max(0.05, Math.min(0.9, Number(process.env.FUTBIN_MAX_DIVERGENT_SHARE || 0.35)));
+const FUTBIN_MAX_OUTLIER_SHARE = Math.max(0.02, Math.min(0.6, Number(process.env.FUTBIN_MAX_OUTLIER_SHARE || 0.12)));
+const FUTBIN_TRUST_TTL_MS = Math.max(5, Number(process.env.FUTBIN_TRUST_TTL_MIN || 30)) * 60_000;
 
 const cardCache = new Map();
 const cardInflight = new Map();
@@ -134,6 +138,23 @@ let latestFutbinStatus = {
   lastSuccessAt: null,
   lastFailureAt: null,
   lastError: null,
+  updatedAt: null
+};
+let latestFutbinCrossCheckHealth = {
+  status: FUTBIN_AUTHORIZED_FEED_URL ? "STARTING" : "NOT_CONFIGURED",
+  trusted: false,
+  fallbackEligible: false,
+  comparedCards: 0,
+  matchCards: 0,
+  divergentCards: 0,
+  outlierCards: 0,
+  divergentShare: 0,
+  outlierShare: 0,
+  medianAbsDiffPct: null,
+  reason: FUTBIN_AUTHORIZED_FEED_URL
+    ? "Noch kein belastbarer FUT.GG/FUTBIN-Cross-Check vorhanden."
+    : "Kein autorisierter FUTBIN-Feed konfiguriert.",
+  lastHealthyAt: null,
   updatedAt: null
 };
 let lastBrainRunAt = null;
@@ -639,7 +660,7 @@ async function loadAuthorizedFutbinFeed(force = false) {
     try {
       const headers = {
         accept: "application/json",
-        "user-agent": "FC-Trader-Brain/10.19"
+        "user-agent": "FC-Trader-Brain/10.20"
       };
       if (FUTBIN_AUTHORIZED_FEED_TOKEN) {
         headers.authorization = `Bearer ${FUTBIN_AUTHORIZED_FEED_TOKEN}`;
@@ -734,6 +755,101 @@ function futbinCrossCheckFields(eaId, futggPrice, feed) {
     futbinDiffPct: diffPct,
     futbinCrossCheck: status
   };
+}
+
+
+function updateFutbinCrossCheckHealth(rows) {
+  const previousLastHealthyAt = latestFutbinCrossCheckHealth?.lastHealthyAt || null;
+
+  if (!FUTBIN_AUTHORIZED_FEED_URL) {
+    latestFutbinCrossCheckHealth = {
+      status: "NOT_CONFIGURED",
+      trusted: false,
+      fallbackEligible: false,
+      comparedCards: 0,
+      matchCards: 0,
+      divergentCards: 0,
+      outlierCards: 0,
+      divergentShare: 0,
+      outlierShare: 0,
+      medianAbsDiffPct: null,
+      reason: "Kein autorisierter FUTBIN-Feed konfiguriert.",
+      lastHealthyAt: null,
+      updatedAt: new Date().toISOString()
+    };
+    return latestFutbinCrossCheckHealth;
+  }
+
+  const compared = (Array.isArray(rows) ? rows : [])
+    .filter(row => Number.isFinite(row?.futbinPrice) && Number.isFinite(row?.futbinDiffPct));
+  const matchCards = compared.filter(row => row.futbinCrossCheck === "MATCH").length;
+  const divergentOnly = compared.filter(row => row.futbinCrossCheck === "DIVERGENCE").length;
+  const outlierCards = compared.filter(row => row.futbinCrossCheck === "OUTLIER").length;
+  const divergentCards = divergentOnly + outlierCards;
+  const comparedCards = compared.length;
+  const divergentShare = comparedCards ? divergentCards / comparedCards : 0;
+  const outlierShare = comparedCards ? outlierCards / comparedCards : 0;
+  const medianAbsDiffPct = median(compared.map(row => Math.abs(Number(row.futbinDiffPct))));
+
+  let status = "HEALTHY";
+  let trusted = true;
+  let fallbackEligible = true;
+  let reason = `Cross-Check stabil: ${matchCards}/${comparedCards} Preise innerhalb der Toleranz.`;
+
+  if (comparedCards < FUTBIN_TRUST_MIN_MATCHES) {
+    status = "INSUFFICIENT_DATA";
+    trusted = false;
+    fallbackEligible = false;
+    reason = `Zu wenig gemeinsame Preise für einen belastbaren Cross-Check: ${comparedCards}/${FUTBIN_TRUST_MIN_MATCHES}.`;
+  } else if (
+    divergentShare > FUTBIN_MAX_DIVERGENT_SHARE ||
+    outlierShare > FUTBIN_MAX_OUTLIER_SHARE
+  ) {
+    status = "UNTRUSTED";
+    trusted = false;
+    fallbackEligible = false;
+    reason = `FUTBIN-Cross-Check unplausibel: ${(divergentShare * 100).toFixed(1)}% abweichend, ${(outlierShare * 100).toFixed(1)}% Ausreißer.`;
+  } else if (
+    divergentShare > FUTBIN_MAX_DIVERGENT_SHARE * 0.5 ||
+    outlierShare > FUTBIN_MAX_OUTLIER_SHARE * 0.5
+  ) {
+    status = "DEGRADED";
+    trusted = true;
+    fallbackEligible = false;
+    reason = `FUTBIN-Cross-Check noch nutzbar, aber auffällig: ${(divergentShare * 100).toFixed(1)}% abweichend, ${(outlierShare * 100).toFixed(1)}% Ausreißer.`;
+  }
+
+  const nowIso = new Date().toISOString();
+  latestFutbinCrossCheckHealth = {
+    status,
+    trusted,
+    fallbackEligible,
+    comparedCards,
+    matchCards,
+    divergentCards,
+    outlierCards,
+    divergentShare: Number((divergentShare * 100).toFixed(2)),
+    outlierShare: Number((outlierShare * 100).toFixed(2)),
+    medianAbsDiffPct: Number.isFinite(medianAbsDiffPct) ? Number(medianAbsDiffPct.toFixed(2)) : null,
+    reason,
+    lastHealthyAt: status === "HEALTHY" ? nowIso : previousLastHealthyAt,
+    updatedAt: nowIso
+  };
+
+  return latestFutbinCrossCheckHealth;
+}
+
+function futbinCrossCheckCanInfluenceAlerts() {
+  return latestFutbinCrossCheckHealth?.trusted === true &&
+    ["HEALTHY", "DEGRADED"].includes(latestFutbinCrossCheckHealth?.status);
+}
+
+function futbinFallbackAllowed() {
+  if (latestFutbinCrossCheckHealth?.fallbackEligible !== true) return false;
+  const lastHealthyAt = latestFutbinCrossCheckHealth?.lastHealthyAt
+    ? new Date(latestFutbinCrossCheckHealth.lastHealthyAt).getTime()
+    : 0;
+  return Boolean(lastHealthyAt) && Date.now() - lastHealthyAt <= FUTBIN_TRUST_TTL_MS;
 }
 
 function buildFutbinFallbackRows(safeRows, feed) {
@@ -1819,8 +1935,13 @@ function discordAlertShouldSend(state, action, price, confidence, fingerprint) {
 }
 
 function cardDiscordAlertCandidate(row) {
-  // Bei starkem Preis-Widerspruch der autorisierten Zweitquelle kein neuer Kaufalarm.
-  if (row?.aiAction === "JETZT KAUFEN" && row?.futbinCrossCheck === "OUTLIER") {
+  // Nur ein als belastbar eingestufter FUTBIN-Cross-Check darf Kaufalarme blockieren.
+  // Bei marktweit unplausiblen Zweitquellen-Daten ignorieren wir den Einzel-Ausreißer.
+  if (
+    row?.aiAction === "JETZT KAUFEN" &&
+    row?.futbinCrossCheck === "OUTLIER" &&
+    futbinCrossCheckCanInfluenceAlerts()
+  ) {
     return null;
   }
 
@@ -2736,7 +2857,7 @@ async function sendDiscordStartupMessage() {
           { name: "Kaufalarm ab", value: `${DISCORD_MIN_BUY_CONFIDENCE}% KI-Sicherheit`, inline: true },
           { name: "Spam-Schutz", value: `${Math.round(DISCORD_ALERT_COOLDOWN_MS / 60_000)} Min. Cooldown`, inline: true }
         ],
-        footer: { text: "FC Trading Intelligence v10.19" },
+        footer: { text: "FC Trading Intelligence v10.20" },
         timestamp: new Date().toISOString()
       }]
     });
@@ -2772,6 +2893,9 @@ async function monitorOnce() {
     await notifySourceHealthTransition(sourceHealth);
 
     if (!sourceHealthAllowsTradingCycle()) {
+      latestFutbinFallbackRows = futbinFallbackAllowed()
+        ? buildFutbinFallbackRows(latestTradingRows, futbinFeed)
+        : [];
       lastMonitorAt = new Date(at).toISOString();
       lastMonitorError = `Source Health Guard: ${sourceHealth.reason}`;
       console.warn(lastMonitorError);
@@ -2788,6 +2912,7 @@ async function monitorOnce() {
     latestTradingRows = built.rows;
     latestFutbinFallbackRows = [];
     latestRatingStats = built.ratingStats;
+    updateFutbinCrossCheckHealth(latestTradingRows);
 
     await evaluateTraderSignalReliability(latestTradingRows);
     await automaticTraderBrain(latestTradingRows, built.brainWork);
@@ -2803,7 +2928,9 @@ async function monitorOnce() {
     await notifySourceHealthTransition(sourceHealth);
 
     const futbinFeed = await loadAuthorizedFutbinFeedSafe(false);
-    latestFutbinFallbackRows = buildFutbinFallbackRows(latestTradingRows, futbinFeed);
+    latestFutbinFallbackRows = futbinFallbackAllowed()
+      ? buildFutbinFallbackRows(latestTradingRows, futbinFeed)
+      : [];
 
     lastMonitorError = String(error);
     console.error("monitor error:", error);
@@ -5273,7 +5400,7 @@ app.get("/", (req, res) => {
   res.json({
     online: true,
     service: "FC Trading Intelligence",
-    version: "10.19-futbin-authorized-crosscheck",
+    version: "10.20-futbin-trust-guard",
     gameYear: GAME_YEAR,
     marketProfile: marketProfile(),
     refreshSeconds: 60,
@@ -5306,7 +5433,7 @@ app.get("/", (req, res) => {
 app.get("/health", (req, res) => {
   res.json({
     ok: true,
-    version: "10.19-futbin-authorized-crosscheck",
+    version: "10.20-futbin-trust-guard",
     gameYear: GAME_YEAR,
     marketProfile: marketProfile(),
     marketContext: latestMarketContext,
@@ -5426,7 +5553,7 @@ app.get("/api/trader-reliability/status", async (req, res) => {
 
     return res.json({
       enabled: true,
-      version: "10.19-futbin-authorized-crosscheck",
+      version: "10.20-futbin-trust-guard",
       gameYear: GAME_YEAR,
       method: {
         priorAccuracy: TRADER_RELIABILITY_PRIOR_ACCURACY,
@@ -5485,7 +5612,7 @@ app.get("/api/trader-reliability/status", async (req, res) => {
 app.get("/api/trader-confluence/status", (req, res) => {
   res.json({
     enabled: DISCORD_CONFIGURED && dbEnabled,
-    version: "10.19-futbin-authorized-crosscheck",
+    version: "10.20-futbin-trust-guard",
     minCardConfidence: DISCORD_TRADER_CONFLUENCE_MIN_CONFIDENCE,
     minRatingConfidence: DISCORD_TRADER_CONFLUENCE_MIN_RATING_CONFIDENCE,
     minTraderReliability: DISCORD_TRADER_CONFLUENCE_MIN_RELIABILITY,
@@ -5708,7 +5835,7 @@ app.get("/api/trading", async (req, res) => {
 
     res.json({
       ok: true,
-      version: "10.19-futbin-authorized-crosscheck",
+      version: "10.20-futbin-trust-guard",
       refreshSeconds: 60,
       dbEnabled,
       sourceHealth: health,
@@ -5787,7 +5914,7 @@ app.get("/api/source-health", (req, res) => {
   const health = sourceHealthSnapshot();
   res.status(health.status === "UNHEALTHY" ? 503 : 200).json({
     ok: health.status !== "UNHEALTHY",
-    version: "10.19-futbin-authorized-crosscheck",
+    version: "10.20-futbin-trust-guard",
     gameYear: GAME_YEAR,
     refreshSeconds: 60,
     source: "FUT.GG PS5 bulk prices",
@@ -5807,7 +5934,7 @@ app.get("/api/futbin/status", (req, res) => {
 
   res.json({
     ok: true,
-    version: "10.19-futbin-authorized-crosscheck",
+    version: "10.20-futbin-trust-guard",
     gameYear: GAME_YEAR,
     configured: Boolean(FUTBIN_AUTHORIZED_FEED_URL),
     status: latestFutbinStatus,
@@ -5818,8 +5945,13 @@ app.get("/api/futbin/status", (req, res) => {
       divergencePct: FUTBIN_MAX_DIFF_PCT,
       outlierPct: FUTBIN_OUTLIER_DIFF_PCT,
       fallbackMinMatches: FUTBIN_FALLBACK_MIN_MATCHES,
-      note: "FUT.GG bleibt Hauptquelle. FUTBIN wird nur über einen autorisierten/lizenzierten JSON-Feed als Cross-Check und sichere Anzeige-Fallbackquelle verwendet. Bei Fallback werden keine Historie, Lernwerte oder Trading-Alerts erzeugt."
+      trustMinMatches: FUTBIN_TRUST_MIN_MATCHES,
+      maxDivergentSharePct: Number((FUTBIN_MAX_DIVERGENT_SHARE * 100).toFixed(1)),
+      maxOutlierSharePct: Number((FUTBIN_MAX_OUTLIER_SHARE * 100).toFixed(1)),
+      trustTtlMinutes: Math.round(FUTBIN_TRUST_TTL_MS / 60_000),
+      note: "FUT.GG bleibt Hauptquelle. FUTBIN wird nur über einen autorisierten/lizenzierten JSON-Feed verwendet. Der Zweitquellen-Feed darf Alerts nur beeinflussen, wenn sein marktweiter Cross-Check belastbar ist; ein Anzeige-Fallback braucht zusätzlich einen frischen HEALTHY-Vertrauensstatus."
     },
+    crossCheckHealth: latestFutbinCrossCheckHealth,
     currentCrossCheck: {
       matchedCards: matched,
       divergentCards: divergent,
@@ -5831,7 +5963,7 @@ app.get("/api/futbin/status", (req, res) => {
 app.get("/api/market-context", (req, res) => {
   res.json({
     ok: true,
-    version: "10.19-futbin-authorized-crosscheck",
+    version: "10.20-futbin-trust-guard",
     gameYear: GAME_YEAR,
     refreshSeconds: 60,
     context: latestMarketContext,
@@ -5842,7 +5974,7 @@ app.get("/api/market-context", (req, res) => {
 app.get("/api/trader-brain/status", (req, res) => {
   res.json({
     ok: true,
-    version: "10.19-futbin-authorized-crosscheck",
+    version: "10.20-futbin-trust-guard",
     gameYear: GAME_YEAR,
     marketProfile: marketProfile(),
     marketContext: latestMarketContext,
@@ -5852,7 +5984,7 @@ app.get("/api/trader-brain/status", (req, res) => {
     lastBrainError,
     lastGeminiCandidate,
     learning: {
-      version: "10.19-futbin-authorized-crosscheck",
+      version: "10.20-futbin-trust-guard",
       totalMatureDecisions: brainLearningCache.totalMatureDecisions,
       rawMatureDecisions: brainLearningCache.rawMatureDecisions,
       uniqueLearningEpisodes: brainLearningCache.uniqueLearningEpisodes,
@@ -5873,7 +6005,7 @@ app.get("/api/trader-brain/learning/status", async (req, res) => {
     const cache = await loadBrainLearningProfiles(true);
     return res.json({
       enabled: true,
-      version: "10.19-futbin-authorized-crosscheck",
+      version: "10.20-futbin-trust-guard",
       method: {
         windowDays: BRAIN_LEARNING_WINDOW_DAYS,
         priorAccuracy: BRAIN_LEARNING_PRIOR_ACCURACY,
@@ -6992,7 +7124,7 @@ app.listen(
   port,
   () => {
     console.log(
-      `FC Trading Intelligence v10.19 FUTBIN Authorized Cross-Check (FC${GAME_YEAR}) running on ${port}`
+      `FC Trading Intelligence v10.20 FUTBIN Trust Guard (FC${GAME_YEAR}) running on ${port}`
     );
 
     startMonitoring();
