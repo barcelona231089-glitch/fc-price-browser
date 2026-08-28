@@ -55,12 +55,16 @@ const BRAIN_LEARNING_REFRESH_MS = Math.max(5, Number(process.env.BRAIN_LEARNING_
 const BRAIN_LEARNING_PRIOR_ACCURACY = 50;
 const BRAIN_LEARNING_PRIOR_STRENGTH = 12;
 const BRAIN_LEARNING_MAX_CONFIDENCE_ADJUSTMENT = 8;
+const BRAIN_LEARNING_WAIT_POSITIVE_CAP = 4;
+const BRAIN_LEARNING_EPISODE_MS = 6 * 60 * 60_000;
 const BRAIN_LEARNING_WINDOW_DAYS = Math.max(30, Number(process.env.BRAIN_LEARNING_WINDOW_DAYS || 90));
 
 let brainLearningCache = {
   loadedAt: 0,
   updatedAt: null,
   totalMatureDecisions: 0,
+  rawMatureDecisions: 0,
+  uniqueLearningEpisodes: 0,
   exact: new Map(),
   cardType: new Map(),
   action: new Map(),
@@ -2772,6 +2776,37 @@ function brainLearningGroupKey(action, cardType = "*", ratingBand = "*") {
   return `${String(action || "UNKNOWN")}|${String(cardType || "*")}|${String(ratingBand || "*")}`;
 }
 
+function brainLearningMovePct(initialPrice, prices) {
+  const initial = Number(initialPrice);
+  if (!Number.isFinite(initial) || initial <= 0) return null;
+
+  const moves = (prices || [])
+    .map(Number)
+    .filter(value => Number.isFinite(value) && value > 0)
+    .map(value => Math.abs(((value - initial) / initial) * 100));
+
+  return moves.length ? Math.max(...moves) : null;
+}
+
+function brainLearningQualityWeight(row) {
+  // Ein kaum bewegter Markt darf passive WAIT-Entscheidungen nicht als
+  // vollwertigen Treffer aufblasen. Echte Bewegungen behalten Gewicht 1.0.
+  if (row.action === "NOCH WARTEN") {
+    const move = brainLearningMovePct(row.initialPrice, [row.priceAfter5m, row.priceAfter15m]);
+    if (move == null) return 0.1;
+    if (move < 0.25) return 0.05;
+    if (move < 0.5) return 0.15;
+    if (move < 1) return 0.35;
+    if (move < 2) return 0.65;
+    return 1;
+  }
+
+  const move = brainLearningMovePct(row.initialPrice, [row.priceAfter1h, row.priceAfter6h, row.priceAfter24h]);
+  if (move == null) return 0.25;
+  if (move < 0.5) return 0.5;
+  return 1;
+}
+
 function addBrainLearningSample(map, key, row, scope) {
   let group = map.get(key);
   if (!group) {
@@ -2783,52 +2818,74 @@ function addBrainLearningSample(map, key, row, scope) {
       ratingBand: scope === "exact" ? row.ratingBand : "*",
       samples: 0,
       wins: 0,
+      effectiveSamples: 0,
+      weightedWins: 0,
       totalOutcomeScore: 0,
-      scoredOutcomes: 0,
+      scoredOutcomeWeight: 0,
       totalMaxRoi: 0,
-      roiSamples: 0
+      roiWeight: 0
     };
     map.set(key, group);
   }
 
+  const weight = Math.max(0.05, Math.min(1, Number(row.learningWeight || 1)));
   group.samples += 1;
-  if (row.wasCorrect === true) group.wins += 1;
-
-  if (Number.isFinite(row.outcomeScore)) {
-    group.totalOutcomeScore += row.outcomeScore;
-    group.scoredOutcomes += 1;
+  group.effectiveSamples += weight;
+  if (row.wasCorrect === true) {
+    group.wins += 1;
+    group.weightedWins += weight;
   }
 
+  if (Number.isFinite(row.outcomeScore)) {
+    group.totalOutcomeScore += row.outcomeScore * weight;
+    group.scoredOutcomeWeight += weight;
+  }
+
+  // ROI-Ausreißer sind für die Confidence nicht entscheidend. Für die Anzeige
+  // kappen wir sie robust, damit einzelne illiquide Karten das Profil nicht verzerren.
   if (Number.isFinite(row.maxRoi)) {
-    group.totalMaxRoi += row.maxRoi;
-    group.roiSamples += 1;
+    const clippedRoi = Math.max(-100, Math.min(200, row.maxRoi));
+    group.totalMaxRoi += clippedRoi * weight;
+    group.roiWeight += weight;
   }
 }
 
 function finalizeBrainLearningGroup(group) {
   const samples = Number(group.samples || 0);
   const wins = Number(group.wins || 0);
-  const rawAccuracy = samples > 0 ? (wins / samples) * 100 : 50;
+  const effectiveSamples = Number(group.effectiveSamples || 0);
+  const weightedWins = Number(group.weightedWins || 0);
+
+  const rawAccuracy = effectiveSamples > 0
+    ? (weightedWins / effectiveSamples) * 100
+    : 50;
+
   const smoothedAccuracy = (
     BRAIN_LEARNING_PRIOR_ACCURACY * BRAIN_LEARNING_PRIOR_STRENGTH +
-    wins * 100
-  ) / (BRAIN_LEARNING_PRIOR_STRENGTH + samples);
+    weightedWins * 100
+  ) / (BRAIN_LEARNING_PRIOR_STRENGTH + effectiveSamples);
 
-  const averageOutcomeScore = group.scoredOutcomes > 0
-    ? group.totalOutcomeScore / group.scoredOutcomes
+  const averageOutcomeScore = group.scoredOutcomeWeight > 0
+    ? group.totalOutcomeScore / group.scoredOutcomeWeight
     : 0;
 
-  const averageMaxRoi = group.roiSamples > 0
-    ? group.totalMaxRoi / group.roiSamples
+  const averageMaxRoi = group.roiWeight > 0
+    ? group.totalMaxRoi / group.roiWeight
     : null;
 
-  const confidenceAdjustment = Math.max(
+  let confidenceAdjustment = Math.max(
     -BRAIN_LEARNING_MAX_CONFIDENCE_ADJUSTMENT,
     Math.min(
       BRAIN_LEARNING_MAX_CONFIDENCE_ADJUSTMENT,
       Math.round((smoothedAccuracy - 50) / 4)
     )
   );
+
+  // WAIT ist eine passive Aktion und kann bei flachem Markt leicht scheinbar
+  // perfekt aussehen. Positive Verstärkung deshalb bewusst kleiner halten.
+  if (group.action === "NOCH WARTEN" && confidenceAdjustment > BRAIN_LEARNING_WAIT_POSITIVE_CAP) {
+    confidenceAdjustment = BRAIN_LEARNING_WAIT_POSITIVE_CAP;
+  }
 
   return {
     scope: group.scope,
@@ -2837,7 +2894,9 @@ function finalizeBrainLearningGroup(group) {
     cardType: group.cardType,
     ratingBand: group.ratingBand,
     samples,
+    effectiveSamples: Number(effectiveSamples.toFixed(2)),
     wins,
+    weightedWins: Number(weightedWins.toFixed(2)),
     rawAccuracy: Number(rawAccuracy.toFixed(2)),
     smoothedAccuracy: Number(smoothedAccuracy.toFixed(2)),
     averageOutcomeScore: Number(averageOutcomeScore.toFixed(2)),
@@ -2875,12 +2934,16 @@ async function loadBrainLearningProfiles(force = false) {
   try {
     const result = await pool.query(`
       SELECT
+        d.ea_id,
+        d.created_at,
+        d.initial_price,
         d.action,
         d.card_type,
         d.rating,
         e.was_correct,
         e.outcome_score,
         e.max_roi,
+        e.price_after_5m,
         e.price_after_15m,
         e.price_after_1h,
         e.price_after_6h,
@@ -2897,16 +2960,22 @@ async function loadBrainLearningProfiles(force = false) {
     const exactRaw = new Map();
     const cardTypeRaw = new Map();
     const actionRaw = new Map();
+    const seenEpisodes = new Set();
+    let rawMature = 0;
     let mature = 0;
 
     for (const dbRow of result.rows) {
       const row = {
+        eaId: String(dbRow.ea_id || ""),
+        createdAt: new Date(dbRow.created_at).getTime(),
+        initialPrice: dbRow.initial_price == null ? null : Number(dbRow.initial_price),
         action: String(dbRow.action || ""),
         cardType: String(dbRow.card_type || "Unknown"),
         ratingBand: brainLearningRatingBand(Number(dbRow.rating)),
         wasCorrect: dbRow.was_correct,
         outcomeScore: dbRow.outcome_score == null ? null : Number(dbRow.outcome_score),
         maxRoi: dbRow.max_roi == null ? null : Number(dbRow.max_roi),
+        priceAfter5m: dbRow.price_after_5m == null ? null : Number(dbRow.price_after_5m),
         priceAfter15m: dbRow.price_after_15m == null ? null : Number(dbRow.price_after_15m),
         priceAfter1h: dbRow.price_after_1h == null ? null : Number(dbRow.price_after_1h),
         priceAfter6h: dbRow.price_after_6h == null ? null : Number(dbRow.price_after_6h),
@@ -2914,6 +2983,16 @@ async function loadBrainLearningProfiles(force = false) {
       };
 
       if (!brainLearningDecisionIsMature(row)) continue;
+      rawMature += 1;
+
+      // Mehrere fast identische Entscheidungen derselben Karte im selben
+      // Marktfenster sind ein Ereignis, nicht mehrere unabhängige Beweise.
+      const episodeBucket = Math.floor(row.createdAt / BRAIN_LEARNING_EPISODE_MS);
+      const episodeKey = `${row.eaId}|${row.action}|${episodeBucket}`;
+      if (seenEpisodes.has(episodeKey)) continue;
+      seenEpisodes.add(episodeKey);
+
+      row.learningWeight = brainLearningQualityWeight(row);
       mature += 1;
 
       addBrainLearningSample(
@@ -2950,6 +3029,8 @@ async function loadBrainLearningProfiles(force = false) {
       loadedAt: now,
       updatedAt: new Date(now).toISOString(),
       totalMatureDecisions: mature,
+      rawMatureDecisions: rawMature,
+      uniqueLearningEpisodes: mature,
       exact,
       cardType,
       action,
@@ -2998,7 +3079,10 @@ function applyBrainLearningToDecision(decision, profile) {
   const oldConfidence = Number(decision.confidence || 50);
   const confidence = Math.max(10, Math.min(95, oldConfidence + modifier));
   const signed = modifier > 0 ? `+${modifier}` : String(modifier);
-  const learningFactor = `Historie: ${profile.samples} ähnliche Fälle, ${profile.smoothedAccuracy.toFixed(1)}% geglättete Trefferquote, Confidence ${signed}.`;
+  const effectiveText = Number.isFinite(profile.effectiveSamples)
+    ? ` (${profile.effectiveSamples.toFixed(1)} effektiv)`
+    : "";
+  const learningFactor = `Historie: ${profile.samples} unabhängige Fälle${effectiveText}, ${profile.smoothedAccuracy.toFixed(1)}% geglättete Trefferquote, Confidence ${signed}.`;
 
   return {
     ...decision,
@@ -3014,7 +3098,9 @@ function applyBrainLearningToDecision(decision, profile) {
       applied: true,
       scope: profile.scope,
       samples: profile.samples,
+      effectiveSamples: profile.effectiveSamples,
       wins: profile.wins,
+      weightedWins: profile.weightedWins,
       rawAccuracy: profile.rawAccuracy,
       smoothedAccuracy: profile.smoothedAccuracy,
       averageOutcomeScore: profile.averageOutcomeScore,
@@ -3647,7 +3733,7 @@ app.get("/", (req, res) => {
   res.json({
     online: true,
     service: "FC Trading Intelligence",
-    version: "10.7-self-learning",
+    version: "10.7.1-learning-quality-guard",
     refreshSeconds: 60,
     storage:
       dbEnabled
@@ -3673,7 +3759,7 @@ app.get("/", (req, res) => {
 app.get("/health", (req, res) => {
   res.json({
     ok: true,
-    version: "10.7-self-learning",
+    version: "10.7.1-learning-quality-guard",
     monitoringStarted,
     monitoringBusy,
     lastMonitorAt,
@@ -3685,6 +3771,8 @@ app.get("/health", (req, res) => {
     lastBrainError,
     brainLearning: {
       totalMatureDecisions: brainLearningCache.totalMatureDecisions,
+      rawMatureDecisions: brainLearningCache.rawMatureDecisions,
+      uniqueLearningEpisodes: brainLearningCache.uniqueLearningEpisodes,
       updatedAt: brainLearningCache.updatedAt,
       lastError: lastBrainLearningError
     },
@@ -3781,7 +3869,7 @@ app.get("/api/trader-reliability/status", async (req, res) => {
 
     return res.json({
       enabled: true,
-      version: "10.7-self-learning",
+      version: "10.7.1-learning-quality-guard",
       method: {
         priorAccuracy: TRADER_RELIABILITY_PRIOR_ACCURACY,
         priorStrength: TRADER_RELIABILITY_PRIOR_STRENGTH,
@@ -4034,15 +4122,17 @@ app.get("/api/ratings-intelligence", (req, res) => {
 app.get("/api/trader-brain/status", (req, res) => {
   res.json({
     ok: true,
-    version: "10.7-self-learning",
+    version: "10.7.1-learning-quality-guard",
     automatic: true,
     refreshSeconds: 60,
     lastBrainRunAt,
     lastBrainError,
     lastGeminiCandidate,
     learning: {
-      version: "10.7-self-learning",
+      version: "10.7.1-learning-quality-guard",
       totalMatureDecisions: brainLearningCache.totalMatureDecisions,
+      rawMatureDecisions: brainLearningCache.rawMatureDecisions,
+      uniqueLearningEpisodes: brainLearningCache.uniqueLearningEpisodes,
       updatedAt: brainLearningCache.updatedAt,
       lastError: lastBrainLearningError
     },
@@ -4060,18 +4150,22 @@ app.get("/api/trader-brain/learning/status", async (req, res) => {
     const cache = await loadBrainLearningProfiles(true);
     return res.json({
       enabled: true,
-      version: "10.7-self-learning",
+      version: "10.7.1-learning-quality-guard",
       method: {
         windowDays: BRAIN_LEARNING_WINDOW_DAYS,
         priorAccuracy: BRAIN_LEARNING_PRIOR_ACCURACY,
         priorStrength: BRAIN_LEARNING_PRIOR_STRENGTH,
         maxConfidenceAdjustment: BRAIN_LEARNING_MAX_CONFIDENCE_ADJUSTMENT,
+        waitPositiveCap: BRAIN_LEARNING_WAIT_POSITIVE_CAP,
+        episodeHours: Math.round(BRAIN_LEARNING_EPISODE_MS / 60 / 60_000),
         exactMinSamples: 4,
         cardTypeMinSamples: 6,
         actionMinSamples: 10,
-        note: "Historische Trefferquoten kalibrieren die Confidence konservativ. Aktionen werden durch die Lernschicht nicht blind umgedreht."
+        note: "Ähnliche Entscheidungen derselben Karte werden je 6h-Marktphase dedupliziert. Flache WAIT-Märkte zählen nur schwach; positive WAIT-Verstärkung ist gedeckelt."
       },
       totalMatureDecisions: cache.totalMatureDecisions,
+      rawMatureDecisions: cache.rawMatureDecisions,
+      uniqueLearningEpisodes: cache.uniqueLearningEpisodes,
       updatedAt: cache.updatedAt,
       lastError: lastBrainLearningError,
       profiles: cache.profiles.slice(0, 100)
@@ -5146,7 +5240,7 @@ app.listen(
   port,
   () => {
     console.log(
-      `FC Trading Intelligence v10.7 Self Learning running on ${port}`
+      `FC Trading Intelligence v10.7.1 Learning Quality Guard running on ${port}`
     );
 
     startMonitoring();
