@@ -1253,6 +1253,45 @@ async function initDb() {
       ADD COLUMN IF NOT EXISTS initial_reference_at TIMESTAMPTZ
   `);
 
+  // v10.28: echte Signalzeit und Empfangszeit getrennt speichern.
+  // Das verhindert, dass verzögert weitergeleitete Trader-Calls so bewertet werden,
+  // als wären sie erst beim HTTP-/Discord-Eingang entstanden.
+  await pool.query(`
+    ALTER TABLE fc_discord_signals
+      ADD COLUMN IF NOT EXISTS ingest_origin VARCHAR(30) DEFAULT 'legacy'
+  `);
+
+  await pool.query(`
+    ALTER TABLE fc_discord_signals
+      ADD COLUMN IF NOT EXISTS source_event_at TIMESTAMPTZ
+  `);
+
+  await pool.query(`
+    ALTER TABLE fc_discord_signals
+      ADD COLUMN IF NOT EXISTS received_at TIMESTAMPTZ
+  `);
+
+  await pool.query(`
+    ALTER TABLE fc_discord_signals
+      ADD COLUMN IF NOT EXISTS external_event_id VARCHAR(180)
+  `);
+
+  await pool.query(`
+    UPDATE fc_discord_signals
+    SET
+      ingest_origin = COALESCE(NULLIF(ingest_origin, ''), 'legacy'),
+      source_event_at = COALESCE(source_event_at, created_at),
+      received_at = COALESCE(received_at, created_at)
+    WHERE
+      ingest_origin IS NULL OR ingest_origin = '' OR
+      source_event_at IS NULL OR received_at IS NULL
+  `);
+
+  await pool.query(`
+    CREATE INDEX IF NOT EXISTS idx_fc_discord_signals_source_event_time
+    ON fc_discord_signals (source_event_at DESC)
+  `);
+
   await pool.query(`
     CREATE TABLE IF NOT EXISTS fc_trader_signal_outcomes (
       signal_id VARCHAR(120) NOT NULL REFERENCES fc_discord_signals(id) ON DELETE CASCADE,
@@ -1718,6 +1757,22 @@ function currentReferenceForTraderSignal(signal) {
 async function saveIncomingTraderSignal(signal) {
   if (!signal) return false;
 
+  const sourceEventAtMs =
+    Number.isFinite(Number(signal.sourceEventAt)) && Number(signal.sourceEventAt) > 0
+      ? Number(signal.sourceEventAt)
+      : Number.isFinite(Number(signal.timestamp)) && Number(signal.timestamp) > 0
+        ? Number(signal.timestamp)
+        : Date.now();
+
+  const sourceEventAtIso = new Date(sourceEventAtMs).toISOString();
+  const ingestOrigin = compactWhitespace(signal.ingestOrigin || "discord_channel").slice(0, 30) || "discord_channel";
+  const externalEventId = compactWhitespace(signal.externalEventId || "").slice(0, 180) || null;
+
+  signal.sourceEventAt = sourceEventAtMs;
+  signal.timestamp = sourceEventAtMs;
+  signal.ingestOrigin = ingestOrigin;
+  signal.externalEventId = externalEventId;
+
   if (!dbEnabled) {
     if (memoryTraderSignals.some(item => String(item?.id) === String(signal.id))) {
       return false;
@@ -1727,7 +1782,13 @@ async function saveIncomingTraderSignal(signal) {
     return true;
   }
 
-  const initialReferencePrice = currentReferenceForTraderSignal(signal);
+  // Referenzpreis zur echten Signalzeit rekonstruieren. Für ganz neue Signale darf
+  // traderSignalReferencePriceAt() auf den aktuellen Marktpreis zurückfallen.
+  const initialReferencePrice = await traderSignalReferencePriceAt(
+    signal,
+    latestTradingRows,
+    sourceEventAtMs
+  );
 
   const inserted = await pool.query(
     `
@@ -1744,12 +1805,16 @@ async function saveIncomingTraderSignal(signal) {
         target_ea_id,
         initial_reference_price,
         initial_reference_at,
+        ingest_origin,
+        source_event_at,
+        received_at,
+        external_event_id,
         created_at
       )
       VALUES (
         $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,
-        CASE WHEN $11::integer IS NULL THEN NULL ELSE NOW() END,
-        NOW()
+        CASE WHEN $11::integer IS NULL THEN NULL ELSE $12::timestamptz END,
+        $13,$12::timestamptz,NOW(),$14,$12::timestamptz
       )
       ON CONFLICT (id) DO NOTHING
       RETURNING id
@@ -1765,7 +1830,10 @@ async function saveIncomingTraderSignal(signal) {
       signal.sourceReliability,
       signal.category,
       signal.eaId ? String(signal.eaId) : null,
-      Number.isFinite(initialReferencePrice) ? Math.round(initialReferencePrice) : null
+      Number.isFinite(initialReferencePrice) ? Math.round(initialReferencePrice) : null,
+      sourceEventAtIso,
+      ingestOrigin,
+      externalEventId
     ]
   );
 
@@ -1855,6 +1923,11 @@ async function handleTraderSignalMessage(message) {
       }).catch(() => {});
       return;
     }
+
+    parsed.signal.sourceEventAt = Number(message.createdTimestamp) || Date.now();
+    parsed.signal.timestamp = parsed.signal.sourceEventAt;
+    parsed.signal.ingestOrigin = "discord_channel";
+    parsed.signal.externalEventId = compactWhitespace(message.id || "").slice(0, 180) || null;
 
     const inserted = await saveIncomingTraderSignal(parsed.signal);
     if (!inserted) {
@@ -3084,7 +3157,7 @@ async function sendDiscordStartupMessage() {
           { name: "Kaufalarm ab", value: `${DISCORD_MIN_BUY_CONFIDENCE}% KI-Sicherheit`, inline: true },
           { name: "Spam-Schutz", value: `${Math.round(DISCORD_ALERT_COOLDOWN_MS / 60_000)} Min. Cooldown`, inline: true }
         ],
-        footer: { text: "FC Trading Intelligence v10.27" },
+        footer: { text: "FC Trading Intelligence v10.28" },
         timestamp: new Date().toISOString()
       }]
     });
@@ -3518,6 +3591,10 @@ async function loadRecentDiscordSignals() {
       target_ea_id,
       initial_reference_price,
       initial_reference_at,
+      ingest_origin,
+      source_event_at,
+      received_at,
+      external_event_id,
       created_at
     FROM fc_discord_signals
     WHERE created_at >= NOW() - INTERVAL '30 hours'
@@ -3540,7 +3617,11 @@ async function loadRecentDiscordSignals() {
     eaId: row.target_ea_id == null ? null : String(row.target_ea_id),
     initialReferencePrice: row.initial_reference_price == null ? null : Number(row.initial_reference_price),
     initialReferenceAt: row.initial_reference_at ? new Date(row.initial_reference_at).getTime() : null,
-    timestamp: new Date(row.created_at).getTime()
+    ingestOrigin: row.ingest_origin || "legacy",
+    sourceEventAt: row.source_event_at ? new Date(row.source_event_at).getTime() : new Date(row.created_at).getTime(),
+    receivedAt: row.received_at ? new Date(row.received_at).getTime() : new Date(row.created_at).getTime(),
+    externalEventId: row.external_event_id || null,
+    timestamp: row.source_event_at ? new Date(row.source_event_at).getTime() : new Date(row.created_at).getTime()
   }));
 }
 
@@ -5630,7 +5711,7 @@ app.get("/", (req, res) => {
   res.json({
     online: true,
     service: "FC Trading Intelligence",
-    version: "10.27-trader-source-identity-guard",
+    version: "10.28-trader-event-time-integrity",
     gameYear: GAME_YEAR,
     marketProfile: marketProfile(),
     refreshSeconds: 60,
@@ -5666,7 +5747,7 @@ app.get("/", (req, res) => {
 app.get("/health", (req, res) => {
   res.json({
     ok: true,
-    version: "10.27-trader-source-identity-guard",
+    version: "10.28-trader-event-time-integrity",
     gameYear: GAME_YEAR,
     marketProfile: marketProfile(),
     marketContext: latestMarketContext,
@@ -5773,6 +5854,8 @@ app.get("/api/trader-feeds/status", (req, res) => {
       sourceAllowlistRequired: TRADER_FEED_REQUIRE_SOURCE_ALLOWLIST,
       sourceAllowlistConfigured: TRADER_FEED_ALLOWED_SOURCE_MAP.size > 0,
       allowedSources: Array.from(TRADER_FEED_ALLOWED_SOURCE_MAP.values()),
+      eventTimeBasis: "source_event_at; reliability horizons start at the original trader event time",
+      receivedTimeStoredSeparately: true,
       currentWindowCount: traderFeedRateWindowCount,
       windowResetAt: new Date(traderFeedRateWindowStartedAt + 60_000).toISOString()
     },
@@ -5887,6 +5970,10 @@ app.post("/api/trader-signals/ingest", async (req, res) => {
     parsed.signal.source = source;
     parsed.signal.message = text;
     parsed.signal.reason = text.slice(0, 1200);
+    parsed.signal.sourceEventAt = (eventTime || new Date()).getTime();
+    parsed.signal.timestamp = parsed.signal.sourceEventAt;
+    parsed.signal.ingestOrigin = "authorized_feed";
+    parsed.signal.externalEventId = (externalIdRaw || eventKey).slice(0, 180);
 
     const inserted = await saveIncomingTraderSignal(parsed.signal);
     if (!inserted) {
@@ -5911,7 +5998,9 @@ app.post("/api/trader-signals/ingest", async (req, res) => {
         target: parsed.signal.playerOrRating,
         category: parsed.signal.category,
         expectedTimeframe: parsed.signal.expectedTimeframe,
-        eventTime: eventTime ? eventTime.toISOString() : null,
+        eventTime: new Date(parsed.signal.sourceEventAt).toISOString(),
+        receivedAt: lastAuthorizedTraderFeedAt,
+        timingBasis: "source-event-time",
         idempotency: externalIdRaw ? "external-event-id" : "deterministic-fallback"
       },
       nextStep: "Wird beim naechsten 60-Sekunden-Marktcheck gegen FUT.GG und den Trader Brain geprueft."
@@ -5972,13 +6061,13 @@ app.get("/api/trader-reliability/status", async (req, res) => {
 
     return res.json({
       enabled: true,
-      version: "10.27-trader-source-identity-guard",
+      version: "10.28-trader-event-time-integrity",
       gameYear: GAME_YEAR,
       method: {
         priorAccuracy: TRADER_RELIABILITY_PRIOR_ACCURACY,
         priorStrength: TRADER_RELIABILITY_PRIOR_STRENGTH,
         categoryPriorStrength: TRADER_RELIABILITY_CATEGORY_PRIOR_STRENGTH,
-        note: "Zeitfenster werden passend zu Erwartung/Kategorie gewichtet; der Einstiegspreis wird pro Signal einmal eingefroren und für 5m/15m/1h/6h/24h identisch verwendet."
+        note: "Zeitfenster werden passend zu Erwartung/Kategorie gewichtet; der Einstiegspreis wird pro Signal einmal eingefroren und für 5m/15m/1h/6h/24h identisch verwendet. Autorisierte Forwarder werden ab v10.28 anhand der originalen source_event_at-Zeit bewertet, nicht anhand der späteren Empfangszeit."
       },
       horizonsMinutes: TRADER_RELIABILITY_HORIZONS,
       profiles: profiles.rows.map(row => ({
@@ -6031,7 +6120,7 @@ app.get("/api/trader-reliability/status", async (req, res) => {
 app.get("/api/trader-confluence/status", (req, res) => {
   res.json({
     enabled: DISCORD_CONFIGURED && dbEnabled,
-    version: "10.27-trader-source-identity-guard",
+    version: "10.28-trader-event-time-integrity",
     minCardConfidence: DISCORD_TRADER_CONFLUENCE_MIN_CONFIDENCE,
     minRatingConfidence: DISCORD_TRADER_CONFLUENCE_MIN_RATING_CONFIDENCE,
     minTraderReliability: DISCORD_TRADER_CONFLUENCE_MIN_RELIABILITY,
@@ -6266,7 +6355,7 @@ app.get("/api/trading", async (req, res) => {
 
     res.json({
       ok: true,
-      version: "10.27-trader-source-identity-guard",
+      version: "10.28-trader-event-time-integrity",
       refreshSeconds: 60,
       dbEnabled,
       sourceHealth: health,
@@ -6345,7 +6434,7 @@ app.get("/api/source-health", (req, res) => {
   const health = sourceHealthSnapshot();
   res.status(health.status === "UNHEALTHY" ? 503 : 200).json({
     ok: health.status !== "UNHEALTHY",
-    version: "10.27-trader-source-identity-guard",
+    version: "10.28-trader-event-time-integrity",
     gameYear: GAME_YEAR,
     refreshSeconds: 60,
     source: "FUT.GG PS5 bulk prices",
@@ -6365,7 +6454,7 @@ app.get("/api/futbin/status", (req, res) => {
 
   res.json({
     ok: true,
-    version: "10.27-trader-source-identity-guard",
+    version: "10.28-trader-event-time-integrity",
     gameYear: GAME_YEAR,
     configured: Boolean(FUTBIN_AUTHORIZED_FEED_URL),
     status: latestFutbinStatus,
@@ -6394,7 +6483,7 @@ app.get("/api/futbin/status", (req, res) => {
 app.get("/api/market-context", (req, res) => {
   res.json({
     ok: true,
-    version: "10.27-trader-source-identity-guard",
+    version: "10.28-trader-event-time-integrity",
     gameYear: GAME_YEAR,
     refreshSeconds: 60,
     context: latestMarketContext,
@@ -6405,7 +6494,7 @@ app.get("/api/market-context", (req, res) => {
 app.get("/api/trader-brain/status", (req, res) => {
   res.json({
     ok: true,
-    version: "10.27-trader-source-identity-guard",
+    version: "10.28-trader-event-time-integrity",
     gameYear: GAME_YEAR,
     marketProfile: marketProfile(),
     marketContext: latestMarketContext,
@@ -6415,7 +6504,7 @@ app.get("/api/trader-brain/status", (req, res) => {
     lastBrainError,
     lastGeminiCandidate,
     learning: {
-      version: "10.27-trader-source-identity-guard",
+      version: "10.28-trader-event-time-integrity",
       totalMatureDecisions: brainLearningCache.totalMatureDecisions,
       rawMatureDecisions: brainLearningCache.rawMatureDecisions,
       uniqueLearningEpisodes: brainLearningCache.uniqueLearningEpisodes,
@@ -6436,7 +6525,7 @@ app.get("/api/trader-brain/learning/status", async (req, res) => {
     const cache = await loadBrainLearningProfiles(true);
     return res.json({
       enabled: true,
-      version: "10.27-trader-source-identity-guard",
+      version: "10.28-trader-event-time-integrity",
       method: {
         windowDays: BRAIN_LEARNING_WINDOW_DAYS,
         priorAccuracy: BRAIN_LEARNING_PRIOR_ACCURACY,
@@ -7555,7 +7644,7 @@ app.listen(
   port,
   () => {
     console.log(
-      `FC Trading Intelligence v10.27 Trader Source Identity Guard (FC${GAME_YEAR}) running on ${port}`
+      `FC Trading Intelligence v10.28 Trader Event-Time Integrity (FC${GAME_YEAR}) running on ${port}`
     );
 
     startMonitoring();
