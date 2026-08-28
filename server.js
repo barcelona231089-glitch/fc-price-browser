@@ -58,6 +58,12 @@ const BRAIN_LEARNING_MAX_CONFIDENCE_ADJUSTMENT = 8;
 const BRAIN_LEARNING_WAIT_POSITIVE_CAP = 4;
 const BRAIN_LEARNING_EPISODE_MS = 6 * 60 * 60_000;
 const BRAIN_LEARNING_WINDOW_DAYS = Math.max(30, Number(process.env.BRAIN_LEARNING_WINDOW_DAYS || 90));
+const BRAIN_LEARNING_EXACT_MIN_SAMPLES = 4;
+const BRAIN_LEARNING_CARDTYPE_MIN_SAMPLES = 6;
+const BRAIN_LEARNING_ACTION_MIN_SAMPLES = 10;
+const BRAIN_LEARNING_EXACT_MIN_EFFECTIVE = 3;
+const BRAIN_LEARNING_CARDTYPE_MIN_EFFECTIVE = 5;
+const BRAIN_LEARNING_ACTION_MIN_EFFECTIVE = 8;
 
 let brainLearningCache = {
   loadedAt: 0,
@@ -3056,13 +3062,25 @@ function selectBrainLearningProfile(cache, action, cardType, rating) {
 
   const ratingBand = brainLearningRatingBand(rating);
   const exact = cache.exact?.get(brainLearningGroupKey(action, cardType, ratingBand));
-  if (exact && exact.samples >= 4) return exact;
+  if (
+    exact &&
+    exact.samples >= BRAIN_LEARNING_EXACT_MIN_SAMPLES &&
+    exact.effectiveSamples >= BRAIN_LEARNING_EXACT_MIN_EFFECTIVE
+  ) return exact;
 
   const byCardType = cache.cardType?.get(brainLearningGroupKey(action, cardType, "*"));
-  if (byCardType && byCardType.samples >= 6) return byCardType;
+  if (
+    byCardType &&
+    byCardType.samples >= BRAIN_LEARNING_CARDTYPE_MIN_SAMPLES &&
+    byCardType.effectiveSamples >= BRAIN_LEARNING_CARDTYPE_MIN_EFFECTIVE
+  ) return byCardType;
 
   const byAction = cache.action?.get(brainLearningGroupKey(action, "*", "*"));
-  if (byAction && byAction.samples >= 10) return byAction;
+  if (
+    byAction &&
+    byAction.samples >= BRAIN_LEARNING_ACTION_MIN_SAMPLES &&
+    byAction.effectiveSamples >= BRAIN_LEARNING_ACTION_MIN_EFFECTIVE
+  ) return byAction;
 
   return null;
 }
@@ -3738,7 +3756,7 @@ app.get("/", (req, res) => {
   res.json({
     online: true,
     service: "FC Trading Intelligence",
-    version: "10.7.2-mature-outcome-guard",
+    version: "10.7.3-effective-sample-guard",
     refreshSeconds: 60,
     storage:
       dbEnabled
@@ -3764,7 +3782,7 @@ app.get("/", (req, res) => {
 app.get("/health", (req, res) => {
   res.json({
     ok: true,
-    version: "10.7.2-mature-outcome-guard",
+    version: "10.7.3-effective-sample-guard",
     monitoringStarted,
     monitoringBusy,
     lastMonitorAt,
@@ -3874,7 +3892,7 @@ app.get("/api/trader-reliability/status", async (req, res) => {
 
     return res.json({
       enabled: true,
-      version: "10.7.2-mature-outcome-guard",
+      version: "10.7.3-effective-sample-guard",
       method: {
         priorAccuracy: TRADER_RELIABILITY_PRIOR_ACCURACY,
         priorStrength: TRADER_RELIABILITY_PRIOR_STRENGTH,
@@ -4127,14 +4145,14 @@ app.get("/api/ratings-intelligence", (req, res) => {
 app.get("/api/trader-brain/status", (req, res) => {
   res.json({
     ok: true,
-    version: "10.7.2-mature-outcome-guard",
+    version: "10.7.3-effective-sample-guard",
     automatic: true,
     refreshSeconds: 60,
     lastBrainRunAt,
     lastBrainError,
     lastGeminiCandidate,
     learning: {
-      version: "10.7.2-mature-outcome-guard",
+      version: "10.7.3-effective-sample-guard",
       totalMatureDecisions: brainLearningCache.totalMatureDecisions,
       rawMatureDecisions: brainLearningCache.rawMatureDecisions,
       uniqueLearningEpisodes: brainLearningCache.uniqueLearningEpisodes,
@@ -4155,7 +4173,7 @@ app.get("/api/trader-brain/learning/status", async (req, res) => {
     const cache = await loadBrainLearningProfiles(true);
     return res.json({
       enabled: true,
-      version: "10.7.2-mature-outcome-guard",
+      version: "10.7.3-effective-sample-guard",
       method: {
         windowDays: BRAIN_LEARNING_WINDOW_DAYS,
         priorAccuracy: BRAIN_LEARNING_PRIOR_ACCURACY,
@@ -4163,10 +4181,13 @@ app.get("/api/trader-brain/learning/status", async (req, res) => {
         maxConfidenceAdjustment: BRAIN_LEARNING_MAX_CONFIDENCE_ADJUSTMENT,
         waitPositiveCap: BRAIN_LEARNING_WAIT_POSITIVE_CAP,
         episodeHours: Math.round(BRAIN_LEARNING_EPISODE_MS / 60 / 60_000),
-        exactMinSamples: 4,
-        cardTypeMinSamples: 6,
-        actionMinSamples: 10,
-        note: "Ähnliche Entscheidungen derselben Karte werden je 6h-Marktphase dedupliziert. Flache WAIT-Märkte zählen nur schwach; BUY/AVOID/SELL fließen erst ab dem vollständigen 6h-Auswertungspunkt ins Lernen ein."
+        exactMinSamples: BRAIN_LEARNING_EXACT_MIN_SAMPLES,
+        cardTypeMinSamples: BRAIN_LEARNING_CARDTYPE_MIN_SAMPLES,
+        actionMinSamples: BRAIN_LEARNING_ACTION_MIN_SAMPLES,
+        exactMinEffectiveSamples: BRAIN_LEARNING_EXACT_MIN_EFFECTIVE,
+        cardTypeMinEffectiveSamples: BRAIN_LEARNING_CARDTYPE_MIN_EFFECTIVE,
+        actionMinEffectiveSamples: BRAIN_LEARNING_ACTION_MIN_EFFECTIVE,
+        note: "Ähnliche Entscheidungen derselben Karte werden je 6h-Marktphase dedupliziert. Flache WAIT-Märkte zählen nur schwach; BUY/AVOID/SELL fließen erst ab dem vollständigen 6h-Auswertungspunkt ins Lernen ein. Ein Lernprofil darf Confidence erst verändern, wenn zusätzlich genug effektive, qualitätsgewichtete Evidenz vorhanden ist."
       },
       totalMatureDecisions: cache.totalMatureDecisions,
       rawMatureDecisions: cache.rawMatureDecisions,
@@ -5245,7 +5266,7 @@ app.listen(
   port,
   () => {
     console.log(
-      `FC Trading Intelligence v10.7.2 Mature Outcome Guard running on ${port}`
+      `FC Trading Intelligence v10.7.3 Effective Sample Guard running on ${port}`
     );
 
     startMonitoring();
