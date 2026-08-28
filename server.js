@@ -216,6 +216,14 @@ const TRADER_FEED_INGEST_CONFIGURED = Boolean(TRADER_FEED_INGEST_TOKEN);
 const TRADER_FEED_MAX_REQUESTS_PER_MIN = Math.max(5, Math.min(300, Number(process.env.TRADER_FEED_MAX_REQUESTS_PER_MIN || 60)));
 const TRADER_FEED_MAX_EVENT_AGE_MS = Math.max(1, Math.min(1440, Number(process.env.TRADER_FEED_MAX_EVENT_AGE_MIN || 30))) * 60_000;
 const TRADER_FEED_MAX_FUTURE_SKEW_MS = Math.max(1, Math.min(30, Number(process.env.TRADER_FEED_MAX_FUTURE_SKEW_MIN || 3))) * 60_000;
+const TRADER_FEED_REQUIRE_SOURCE_ALLOWLIST = String(process.env.TRADER_FEED_REQUIRE_SOURCE_ALLOWLIST || "true").trim().toLowerCase() !== "false";
+const TRADER_FEED_ALLOWED_SOURCES = String(process.env.TRADER_FEED_ALLOWED_SOURCES || "")
+  .split(/[;,\n]+/)
+  .map(value => compactWhitespace(value).slice(0, 120))
+  .filter(Boolean);
+const TRADER_FEED_ALLOWED_SOURCE_MAP = new Map(
+  TRADER_FEED_ALLOWED_SOURCES.map(source => [traderFeedSourceIdentityKey(source), source])
+);
 const DISCORD_CONFIGURED = Boolean(DISCORD_BOT_TOKEN);
 const DISCORD_ALERT_COOLDOWN_MS = Math.max(5, Number(process.env.DISCORD_ALERT_COOLDOWN_MIN || 30)) * 60_000;
 const DISCORD_MAX_ALERTS_PER_CYCLE = Math.max(1, Math.min(10, Number(process.env.DISCORD_MAX_ALERTS_PER_CYCLE || 5)));
@@ -253,6 +261,7 @@ let authorizedTraderFeedAccepted = 0;
 let authorizedTraderFeedIgnored = 0;
 let authorizedTraderFeedRateLimited = 0;
 let authorizedTraderFeedReplayRejected = 0;
+let authorizedTraderFeedSourceRejected = 0;
 let traderFeedRateWindowStartedAt = Date.now();
 let traderFeedRateWindowCount = 0;
 let lastAuthorizedTraderFeedAt = null;
@@ -1441,6 +1450,21 @@ function traderFeedTokenFromRequest(req) {
   const bearer = auth.match(/^Bearer\s+(.+)$/i);
   if (bearer) return bearer[1].trim();
   return String(req.get("x-trader-feed-token") || "").trim();
+}
+
+function traderFeedSourceIdentityKey(value) {
+  return compactWhitespace(value)
+    .normalize("NFKD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "")
+    .slice(0, 120);
+}
+
+function traderFeedAllowedSource(value) {
+  const key = traderFeedSourceIdentityKey(value);
+  if (!key) return null;
+  return TRADER_FEED_ALLOWED_SOURCE_MAP.get(key) || null;
 }
 
 function traderFeedSafeKey(value, fallback = "event") {
@@ -3060,7 +3084,7 @@ async function sendDiscordStartupMessage() {
           { name: "Kaufalarm ab", value: `${DISCORD_MIN_BUY_CONFIDENCE}% KI-Sicherheit`, inline: true },
           { name: "Spam-Schutz", value: `${Math.round(DISCORD_ALERT_COOLDOWN_MS / 60_000)} Min. Cooldown`, inline: true }
         ],
-        footer: { text: "FC Trading Intelligence v10.26" },
+        footer: { text: "FC Trading Intelligence v10.27" },
         timestamp: new Date().toISOString()
       }]
     });
@@ -5606,7 +5630,7 @@ app.get("/", (req, res) => {
   res.json({
     online: true,
     service: "FC Trading Intelligence",
-    version: "10.26-trader-feed-abuse-guard",
+    version: "10.27-trader-source-identity-guard",
     gameYear: GAME_YEAR,
     marketProfile: marketProfile(),
     refreshSeconds: 60,
@@ -5642,7 +5666,7 @@ app.get("/", (req, res) => {
 app.get("/health", (req, res) => {
   res.json({
     ok: true,
-    version: "10.26-trader-feed-abuse-guard",
+    version: "10.27-trader-source-identity-guard",
     gameYear: GAME_YEAR,
     marketProfile: marketProfile(),
     marketContext: latestMarketContext,
@@ -5689,6 +5713,9 @@ app.get("/health", (req, res) => {
         ignored: authorizedTraderFeedIgnored,
         rateLimited: authorizedTraderFeedRateLimited,
         replayRejected: authorizedTraderFeedReplayRejected,
+        sourceRejected: authorizedTraderFeedSourceRejected,
+        sourceAllowlistRequired: TRADER_FEED_REQUIRE_SOURCE_ALLOWLIST,
+        allowedSourceCount: TRADER_FEED_ALLOWED_SOURCE_MAP.size,
         lastAt: lastAuthorizedTraderFeedAt,
         lastSource: lastAuthorizedTraderFeedSource,
         lastError: lastAuthorizedTraderFeedError
@@ -5729,6 +5756,7 @@ app.get("/api/trader-signals/status", async (req, res) => {
 app.get("/api/trader-feeds/status", (req, res) => {
   res.json({
     enabled: TRADER_FEED_INGEST_CONFIGURED,
+    ready: TRADER_FEED_INGEST_CONFIGURED && (!TRADER_FEED_REQUIRE_SOURCE_ALLOWLIST || TRADER_FEED_ALLOWED_SOURCE_MAP.size > 0),
     authentication: TRADER_FEED_INGEST_CONFIGURED ? "Bearer/x-trader-feed-token" : "NOT_CONFIGURED",
     endpoint: "POST /api/trader-signals/ingest",
     policy: "Nur fuer autorisierte/erlaubte Forwarder oder lizenzierte Feeds. Kein automatisches Umgehen privater Discord-Kanaele.",
@@ -5737,10 +5765,14 @@ app.get("/api/trader-feeds/status", (req, res) => {
     ignored: authorizedTraderFeedIgnored,
     rateLimited: authorizedTraderFeedRateLimited,
     replayRejected: authorizedTraderFeedReplayRejected,
+    sourceRejected: authorizedTraderFeedSourceRejected,
     guard: {
       maxRequestsPerMinute: TRADER_FEED_MAX_REQUESTS_PER_MIN,
       maxEventAgeMinutes: Math.round(TRADER_FEED_MAX_EVENT_AGE_MS / 60_000),
       maxFutureSkewMinutes: Math.round(TRADER_FEED_MAX_FUTURE_SKEW_MS / 60_000),
+      sourceAllowlistRequired: TRADER_FEED_REQUIRE_SOURCE_ALLOWLIST,
+      sourceAllowlistConfigured: TRADER_FEED_ALLOWED_SOURCE_MAP.size > 0,
+      allowedSources: Array.from(TRADER_FEED_ALLOWED_SOURCE_MAP.values()),
       currentWindowCount: traderFeedRateWindowCount,
       windowResetAt: new Date(traderFeedRateWindowStartedAt + 60_000).toISOString()
     },
@@ -5777,17 +5809,36 @@ app.post("/api/trader-signals/ingest", async (req, res) => {
       return res.status(429).json({ ok: false, error: lastAuthorizedTraderFeedError, resetAt: rate.resetAt });
     }
 
-    const source = compactWhitespace(req.body?.source || "").slice(0, 120);
+    const requestedSource = compactWhitespace(req.body?.source || "").slice(0, 120);
     const text = compactWhitespace(req.body?.message ?? req.body?.text ?? "").slice(0, 3000);
     const externalIdRaw = compactWhitespace(req.body?.eventId ?? req.body?.id ?? "");
     const eventTimeRaw = req.body?.eventTime ?? req.body?.timestamp ?? req.body?.createdAt ?? null;
     const eventTime = parseTraderFeedEventTime(eventTimeRaw);
 
-    if (!source || source.length < 2 || !text || text.length < 3) {
+    if (!requestedSource || requestedSource.length < 2 || !text || text.length < 3) {
       authorizedTraderFeedIgnored++;
       lastAuthorizedTraderFeedError = "source und message/text sind erforderlich.";
       return res.status(400).json({ ok: false, error: lastAuthorizedTraderFeedError });
     }
+
+    if (TRADER_FEED_REQUIRE_SOURCE_ALLOWLIST && TRADER_FEED_ALLOWED_SOURCE_MAP.size === 0) {
+      authorizedTraderFeedIgnored++;
+      authorizedTraderFeedSourceRejected++;
+      lastAuthorizedTraderFeedError = "Trader-Feed Source-Allowlist ist erforderlich, aber TRADER_FEED_ALLOWED_SOURCES ist leer.";
+      return res.status(503).json({ ok: false, error: lastAuthorizedTraderFeedError });
+    }
+
+    const allowedSource = traderFeedAllowedSource(requestedSource);
+    if (TRADER_FEED_ALLOWED_SOURCE_MAP.size > 0 && !allowedSource) {
+      authorizedTraderFeedIgnored++;
+      authorizedTraderFeedSourceRejected++;
+      lastAuthorizedTraderFeedError = `Nicht erlaubte Trader-Quelle: ${requestedSource}`;
+      return res.status(403).json({ ok: false, error: "Trader source not allowed" });
+    }
+
+    // Kanonischer Anzeigename aus der Allowlist verhindert, dass kleine Schreibvarianten
+    // mehrere Zuverlaessigkeitsprofile fuer denselben Trader erzeugen.
+    const source = allowedSource || requestedSource;
 
     if (eventTimeRaw != null && !eventTime) {
       authorizedTraderFeedIgnored++;
@@ -5921,7 +5972,7 @@ app.get("/api/trader-reliability/status", async (req, res) => {
 
     return res.json({
       enabled: true,
-      version: "10.26-trader-feed-abuse-guard",
+      version: "10.27-trader-source-identity-guard",
       gameYear: GAME_YEAR,
       method: {
         priorAccuracy: TRADER_RELIABILITY_PRIOR_ACCURACY,
@@ -5980,7 +6031,7 @@ app.get("/api/trader-reliability/status", async (req, res) => {
 app.get("/api/trader-confluence/status", (req, res) => {
   res.json({
     enabled: DISCORD_CONFIGURED && dbEnabled,
-    version: "10.26-trader-feed-abuse-guard",
+    version: "10.27-trader-source-identity-guard",
     minCardConfidence: DISCORD_TRADER_CONFLUENCE_MIN_CONFIDENCE,
     minRatingConfidence: DISCORD_TRADER_CONFLUENCE_MIN_RATING_CONFIDENCE,
     minTraderReliability: DISCORD_TRADER_CONFLUENCE_MIN_RELIABILITY,
@@ -6215,7 +6266,7 @@ app.get("/api/trading", async (req, res) => {
 
     res.json({
       ok: true,
-      version: "10.26-trader-feed-abuse-guard",
+      version: "10.27-trader-source-identity-guard",
       refreshSeconds: 60,
       dbEnabled,
       sourceHealth: health,
@@ -6294,7 +6345,7 @@ app.get("/api/source-health", (req, res) => {
   const health = sourceHealthSnapshot();
   res.status(health.status === "UNHEALTHY" ? 503 : 200).json({
     ok: health.status !== "UNHEALTHY",
-    version: "10.26-trader-feed-abuse-guard",
+    version: "10.27-trader-source-identity-guard",
     gameYear: GAME_YEAR,
     refreshSeconds: 60,
     source: "FUT.GG PS5 bulk prices",
@@ -6314,7 +6365,7 @@ app.get("/api/futbin/status", (req, res) => {
 
   res.json({
     ok: true,
-    version: "10.26-trader-feed-abuse-guard",
+    version: "10.27-trader-source-identity-guard",
     gameYear: GAME_YEAR,
     configured: Boolean(FUTBIN_AUTHORIZED_FEED_URL),
     status: latestFutbinStatus,
@@ -6343,7 +6394,7 @@ app.get("/api/futbin/status", (req, res) => {
 app.get("/api/market-context", (req, res) => {
   res.json({
     ok: true,
-    version: "10.26-trader-feed-abuse-guard",
+    version: "10.27-trader-source-identity-guard",
     gameYear: GAME_YEAR,
     refreshSeconds: 60,
     context: latestMarketContext,
@@ -6354,7 +6405,7 @@ app.get("/api/market-context", (req, res) => {
 app.get("/api/trader-brain/status", (req, res) => {
   res.json({
     ok: true,
-    version: "10.26-trader-feed-abuse-guard",
+    version: "10.27-trader-source-identity-guard",
     gameYear: GAME_YEAR,
     marketProfile: marketProfile(),
     marketContext: latestMarketContext,
@@ -6364,7 +6415,7 @@ app.get("/api/trader-brain/status", (req, res) => {
     lastBrainError,
     lastGeminiCandidate,
     learning: {
-      version: "10.26-trader-feed-abuse-guard",
+      version: "10.27-trader-source-identity-guard",
       totalMatureDecisions: brainLearningCache.totalMatureDecisions,
       rawMatureDecisions: brainLearningCache.rawMatureDecisions,
       uniqueLearningEpisodes: brainLearningCache.uniqueLearningEpisodes,
@@ -6385,7 +6436,7 @@ app.get("/api/trader-brain/learning/status", async (req, res) => {
     const cache = await loadBrainLearningProfiles(true);
     return res.json({
       enabled: true,
-      version: "10.26-trader-feed-abuse-guard",
+      version: "10.27-trader-source-identity-guard",
       method: {
         windowDays: BRAIN_LEARNING_WINDOW_DAYS,
         priorAccuracy: BRAIN_LEARNING_PRIOR_ACCURACY,
@@ -7504,7 +7555,7 @@ app.listen(
   port,
   () => {
     console.log(
-      `FC Trading Intelligence v10.26 Trader Feed Abuse Guard (FC${GAME_YEAR}) running on ${port}`
+      `FC Trading Intelligence v10.27 Trader Source Identity Guard (FC${GAME_YEAR}) running on ${port}`
     );
 
     startMonitoring();
