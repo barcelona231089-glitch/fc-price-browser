@@ -99,6 +99,15 @@ let monitoringStarted = false;
 let monitoringBusy = false;
 let lastMonitorAt = null;
 let lastMonitorError = null;
+let latestProcessingHealth = {
+  status: "STARTING",
+  healthy: false,
+  lastSuccessAt: null,
+  lastFailureAt: null,
+  lastError: null,
+  consecutiveFailures: 0,
+  updatedAt: null
+};
 let latestTradingRows = [];
 let latestRatingStats = {};
 let latestMarketContext = {
@@ -1052,6 +1061,59 @@ function updateSourceHealthFailure(error) {
 
 function sourceHealthAllowsTradingCycle() {
   return sourceHealthSnapshot().tradingAllowed === true;
+}
+
+function processingHealthSnapshot() {
+  const snapshot = { ...latestProcessingHealth };
+  const lastSuccessMs = snapshot.lastSuccessAt ? new Date(snapshot.lastSuccessAt).getTime() : 0;
+  const staleAfterMs = Math.max(PRICE_REFRESH_MS * 5, 5 * 60_000);
+  const staleForMs = lastSuccessMs ? Math.max(0, Date.now() - lastSuccessMs) : null;
+
+  snapshot.staleForSeconds = staleForMs == null ? null : Math.round(staleForMs / 1000);
+  snapshot.staleAfterSeconds = Math.round(staleAfterMs / 1000);
+
+  if (lastSuccessMs && staleForMs > staleAfterMs) {
+    snapshot.status = "UNHEALTHY";
+    snapshot.healthy = false;
+    snapshot.reason = `Verarbeitungspipeline seit ${Math.round(staleForMs / 1000)} Sekunden ohne erfolgreichen Abschluss.`;
+  } else if (!lastSuccessMs) {
+    snapshot.reason = "Noch kein erfolgreicher kompletter Verarbeitungszyklus.";
+  } else if (snapshot.healthy) {
+    snapshot.reason = "Marktdaten wurden erfolgreich verarbeitet, gespeichert und durch den Trader Brain geführt.";
+  } else {
+    snapshot.reason = `Verarbeitungspipeline meldet ${snapshot.consecutiveFailures || 0} Fehler in Folge.`;
+  }
+
+  return snapshot;
+}
+
+function updateProcessingHealthSuccess() {
+  const now = new Date().toISOString();
+  latestProcessingHealth = {
+    status: "HEALTHY",
+    healthy: true,
+    lastSuccessAt: now,
+    lastFailureAt: latestProcessingHealth.lastFailureAt || null,
+    lastError: null,
+    consecutiveFailures: 0,
+    updatedAt: now
+  };
+  return processingHealthSnapshot();
+}
+
+function updateProcessingHealthFailure(error) {
+  const failures = Number(latestProcessingHealth.consecutiveFailures || 0) + 1;
+  const now = new Date().toISOString();
+  latestProcessingHealth = {
+    ...latestProcessingHealth,
+    status: failures >= 2 ? "UNHEALTHY" : "DEGRADED",
+    healthy: false,
+    lastFailureAt: now,
+    lastError: String(error?.message || error),
+    consecutiveFailures: failures,
+    updatedAt: now
+  };
+  return processingHealthSnapshot();
 }
 
 function createDiscordCycleBudget() {
@@ -3157,7 +3219,7 @@ async function sendDiscordStartupMessage() {
           { name: "Kaufalarm ab", value: `${DISCORD_MIN_BUY_CONFIDENCE}% KI-Sicherheit`, inline: true },
           { name: "Spam-Schutz", value: `${Math.round(DISCORD_ALERT_COOLDOWN_MS / 60_000)} Min. Cooldown`, inline: true }
         ],
-        footer: { text: "FC Trading Intelligence v10.29" },
+        footer: { text: "FC Trading Intelligence v10.30" },
         timestamp: new Date().toISOString()
       }]
     });
@@ -3181,18 +3243,47 @@ async function monitorOnce() {
   const cycleAlertBudget = createDiscordCycleBudget();
 
   try {
-    const [cards, bulk, futbinFeed] = await Promise.all([
-      ensureUniverse(false),
-      loadBulkPs5Prices(true),
-      loadAuthorizedFutbinFeedSafe(false)
-    ]);
-
-    const currentRows = currentPricedCards(cards, bulk);
+    let cards;
+    let bulk;
+    let futbinFeed;
+    let currentRows;
     const at = Date.now();
 
-    const sourceHealth = updateSourceHealthSuccess(cards, bulk, currentRows);
-    await notifySourceHealthTransition(sourceHealth, cycleAlertBudget);
+    // v10.30: Nur echte FUT.GG-Lade-/Formatfehler dürfen den Source Health Guard verschlechtern.
+    // Fehler aus DB, Brain oder Discord gehören in eine getrennte Failure Domain.
+    try {
+      [cards, bulk, futbinFeed] = await Promise.all([
+        ensureUniverse(false),
+        loadBulkPs5Prices(true),
+        loadAuthorizedFutbinFeedSafe(false)
+      ]);
 
+      currentRows = currentPricedCards(cards, bulk);
+      updateSourceHealthSuccess(cards, bulk, currentRows);
+    } catch (error) {
+      const sourceHealth = updateSourceHealthFailure(error);
+      try {
+        await notifySourceHealthTransition(sourceHealth, cycleAlertBudget);
+      } catch (notifyError) {
+        console.error("source health Discord notification error:", notifyError);
+      }
+
+      const fallbackFeed = await loadAuthorizedFutbinFeedSafe(false);
+      latestFutbinFallbackRows = futbinFallbackAllowed()
+        ? buildFutbinFallbackRows(latestTradingRows, fallbackFeed)
+        : [];
+
+      lastMonitorError = `FUT.GG source: ${String(error)}`;
+      console.error("FUT.GG source error:", error);
+      return;
+    }
+
+    const sourceHealth = sourceHealthSnapshot();
+    try {
+      await notifySourceHealthTransition(sourceHealth, cycleAlertBudget);
+    } catch (notifyError) {
+      console.error("source health Discord notification error:", notifyError);
+    }
     if (!sourceHealthAllowsTradingCycle()) {
       latestFutbinFallbackRows = futbinFallbackAllowed()
         ? buildFutbinFallbackRows(latestTradingRows, futbinFeed)
@@ -3203,38 +3294,36 @@ async function monitorOnce() {
       return;
     }
 
-    recordMemory(currentRows, at);
+    try {
+      recordMemory(currentRows, at);
 
-    if (dbEnabled) {
-      await recordDb(currentRows, at);
+      if (dbEnabled) {
+        await recordDb(currentRows, at);
+      }
+
+      const built = await buildTradingRows(futbinFeed);
+      latestTradingRows = built.rows;
+      latestFutbinFallbackRows = [];
+      latestRatingStats = built.ratingStats;
+      updateFutbinCrossCheckHealth(latestTradingRows);
+
+      await evaluateTraderSignalReliability(latestTradingRows);
+      await automaticTraderBrain(latestTradingRows, built.brainWork);
+      await processTraderConfluenceAlerts(latestTradingRows, latestRatingStats, built.brainWork, cycleAlertBudget);
+      await processBrainStateChangeAlerts(latestTradingRows, cycleAlertBudget);
+      await processDiscordAlerts(latestTradingRows, latestRatingStats, cycleAlertBudget);
+      await evaluatePendingDecisions();
+
+      updateProcessingHealthSuccess();
+      lastMonitorAt = new Date(at).toISOString();
+      lastMonitorError = null;
+    } catch (error) {
+      updateProcessingHealthFailure(error);
+      lastMonitorError = `Processing pipeline: ${String(error)}`;
+      console.error("processing pipeline error:", error);
+      // Wichtig: FUT.GG bleibt gesund, wenn nur DB/Brain/Discord fehlschlägt.
+      // Dadurch startet keine falsche Source-Recovery-Quarantäne.
     }
-
-    const built = await buildTradingRows(futbinFeed);
-    latestTradingRows = built.rows;
-    latestFutbinFallbackRows = [];
-    latestRatingStats = built.ratingStats;
-    updateFutbinCrossCheckHealth(latestTradingRows);
-
-    await evaluateTraderSignalReliability(latestTradingRows);
-    await automaticTraderBrain(latestTradingRows, built.brainWork);
-    await processTraderConfluenceAlerts(latestTradingRows, latestRatingStats, built.brainWork, cycleAlertBudget);
-    await processBrainStateChangeAlerts(latestTradingRows, cycleAlertBudget);
-    await processDiscordAlerts(latestTradingRows, latestRatingStats, cycleAlertBudget);
-    await evaluatePendingDecisions();
-
-    lastMonitorAt = new Date(at).toISOString();
-    lastMonitorError = null;
-  } catch (error) {
-    const sourceHealth = updateSourceHealthFailure(error);
-    await notifySourceHealthTransition(sourceHealth, cycleAlertBudget);
-
-    const futbinFeed = await loadAuthorizedFutbinFeedSafe(false);
-    latestFutbinFallbackRows = futbinFallbackAllowed()
-      ? buildFutbinFallbackRows(latestTradingRows, futbinFeed)
-      : [];
-
-    lastMonitorError = String(error);
-    console.error("monitor error:", error);
   } finally {
     cycleAlertBudget.finishedAt = new Date().toISOString();
     lastDiscordCycleBudget = { ...cycleAlertBudget };
@@ -5711,7 +5800,7 @@ app.get("/", (req, res) => {
   res.json({
     online: true,
     service: "FC Trading Intelligence",
-    version: "10.29-production-readiness-watchdog",
+    version: "10.30-failure-domain-isolation",
     gameYear: GAME_YEAR,
     marketProfile: marketProfile(),
     refreshSeconds: 60,
@@ -5737,6 +5826,7 @@ app.get("/", (req, res) => {
       traderReliabilityStatus: "GET /api/trader-reliability/status",
       marketContext: "GET /api/market-context",
       sourceHealth: "GET /api/source-health",
+      processingHealth: "GET /api/processing-health",
       futbinStatus: "GET /api/futbin/status",
       safeStaleMode: "GET /api/trading",
       readiness: "GET /api/readiness",
@@ -5769,6 +5859,10 @@ function runtimeReadinessSnapshot() {
       reason: source.reason,
       recoveryPending: source.recoveryPending,
       coveragePct: source.coveragePct
+    },
+    processingPipeline: {
+      ok: processingHealthSnapshot().healthy === true,
+      ...processingHealthSnapshot()
     },
     safeMarketSnapshot: {
       ok: latestTradingRows.length > 0,
@@ -5820,7 +5914,7 @@ app.get("/api/readiness", (req, res) => {
   const readiness = runtimeReadinessSnapshot();
   res.status(readiness.ready ? 200 : 503).json({
     ok: readiness.ready,
-    version: "10.29-production-readiness-watchdog",
+    version: "10.30-failure-domain-isolation",
     gameYear: GAME_YEAR,
     readiness,
     note: "Dieser Endpunkt ist absichtlich strenger als /health. /health zeigt, ob der Webdienst lebt; /api/readiness zeigt, ob Marktquelle, Monitoring, Datenbank, Discord und Trader Brain wirklich produktionsbereit sind."
@@ -5830,11 +5924,12 @@ app.get("/api/readiness", (req, res) => {
 app.get("/health", (req, res) => {
   res.json({
     ok: true,
-    version: "10.29-production-readiness-watchdog",
+    version: "10.30-failure-domain-isolation",
     gameYear: GAME_YEAR,
     marketProfile: marketProfile(),
     marketContext: latestMarketContext,
     sourceHealth: sourceHealthSnapshot(),
+    processingHealth: processingHealthSnapshot(),
     futbin: latestFutbinStatus,
     monitoringStarted,
     monitoringBusy,
@@ -6144,7 +6239,7 @@ app.get("/api/trader-reliability/status", async (req, res) => {
 
     return res.json({
       enabled: true,
-      version: "10.29-production-readiness-watchdog",
+      version: "10.30-failure-domain-isolation",
       gameYear: GAME_YEAR,
       method: {
         priorAccuracy: TRADER_RELIABILITY_PRIOR_ACCURACY,
@@ -6203,7 +6298,7 @@ app.get("/api/trader-reliability/status", async (req, res) => {
 app.get("/api/trader-confluence/status", (req, res) => {
   res.json({
     enabled: DISCORD_CONFIGURED && dbEnabled,
-    version: "10.29-production-readiness-watchdog",
+    version: "10.30-failure-domain-isolation",
     minCardConfidence: DISCORD_TRADER_CONFLUENCE_MIN_CONFIDENCE,
     minRatingConfidence: DISCORD_TRADER_CONFLUENCE_MIN_RATING_CONFIDENCE,
     minTraderReliability: DISCORD_TRADER_CONFLUENCE_MIN_RELIABILITY,
@@ -6438,7 +6533,7 @@ app.get("/api/trading", async (req, res) => {
 
     res.json({
       ok: true,
-      version: "10.29-production-readiness-watchdog",
+      version: "10.30-failure-domain-isolation",
       refreshSeconds: 60,
       dbEnabled,
       sourceHealth: health,
@@ -6513,11 +6608,22 @@ app.get("/api/ratings-intelligence", (req, res) => {
   });
 });
 
+app.get("/api/processing-health", (req, res) => {
+  const health = processingHealthSnapshot();
+  res.status(health.healthy ? 200 : 503).json({
+    ok: health.healthy,
+    version: "10.30-failure-domain-isolation",
+    gameYear: GAME_YEAR,
+    processingHealth: health,
+    note: "DB-, Brain- oder Discord-Fehler werden getrennt von FUT.GG-Quellfehlern bewertet und können den Source Health Guard nicht mehr fälschlich in Quarantäne schicken."
+  });
+});
+
 app.get("/api/source-health", (req, res) => {
   const health = sourceHealthSnapshot();
   res.status(health.status === "UNHEALTHY" ? 503 : 200).json({
     ok: health.status !== "UNHEALTHY",
-    version: "10.29-production-readiness-watchdog",
+    version: "10.30-failure-domain-isolation",
     gameYear: GAME_YEAR,
     refreshSeconds: 60,
     source: "FUT.GG PS5 bulk prices",
@@ -6537,7 +6643,7 @@ app.get("/api/futbin/status", (req, res) => {
 
   res.json({
     ok: true,
-    version: "10.29-production-readiness-watchdog",
+    version: "10.30-failure-domain-isolation",
     gameYear: GAME_YEAR,
     configured: Boolean(FUTBIN_AUTHORIZED_FEED_URL),
     status: latestFutbinStatus,
@@ -6566,7 +6672,7 @@ app.get("/api/futbin/status", (req, res) => {
 app.get("/api/market-context", (req, res) => {
   res.json({
     ok: true,
-    version: "10.29-production-readiness-watchdog",
+    version: "10.30-failure-domain-isolation",
     gameYear: GAME_YEAR,
     refreshSeconds: 60,
     context: latestMarketContext,
@@ -6577,7 +6683,7 @@ app.get("/api/market-context", (req, res) => {
 app.get("/api/trader-brain/status", (req, res) => {
   res.json({
     ok: true,
-    version: "10.29-production-readiness-watchdog",
+    version: "10.30-failure-domain-isolation",
     gameYear: GAME_YEAR,
     marketProfile: marketProfile(),
     marketContext: latestMarketContext,
@@ -6587,7 +6693,7 @@ app.get("/api/trader-brain/status", (req, res) => {
     lastBrainError,
     lastGeminiCandidate,
     learning: {
-      version: "10.29-production-readiness-watchdog",
+      version: "10.30-failure-domain-isolation",
       totalMatureDecisions: brainLearningCache.totalMatureDecisions,
       rawMatureDecisions: brainLearningCache.rawMatureDecisions,
       uniqueLearningEpisodes: brainLearningCache.uniqueLearningEpisodes,
@@ -6608,7 +6714,7 @@ app.get("/api/trader-brain/learning/status", async (req, res) => {
     const cache = await loadBrainLearningProfiles(true);
     return res.json({
       enabled: true,
-      version: "10.29-production-readiness-watchdog",
+      version: "10.30-failure-domain-isolation",
       method: {
         windowDays: BRAIN_LEARNING_WINDOW_DAYS,
         priorAccuracy: BRAIN_LEARNING_PRIOR_ACCURACY,
@@ -7727,7 +7833,7 @@ app.listen(
   port,
   () => {
     console.log(
-      `FC Trading Intelligence v10.29 Production Readiness Watchdog (FC${GAME_YEAR}) running on ${port}`
+      `FC Trading Intelligence v10.30 Failure Domain Isolation (FC${GAME_YEAR}) running on ${port}`
     );
 
     startMonitoring();
