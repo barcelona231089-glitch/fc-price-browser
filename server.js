@@ -2695,7 +2695,7 @@ app.listen(
   port,
   () => {
     console.log(
-      `FC Trading Intelligence v10.0 Google Trader Brain running on ${port}`
+      `FC Trading Intelligence v10.1 Google Trader Brain Signal Fix running on ${port}`
     );
 
     startMonitoring();

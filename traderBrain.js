@@ -103,7 +103,10 @@ export function analyzeMarketPatterns(input) {
   const isNear24hLow = distLowPct <= 10;
   const is1mNotDumping = change1m >= -1;
   const is5mStableOrPositive = change5m >= -0.5;
-  const is15mConfirming = change15m >= -1 || change15m > change1h;
+  // Für ein echtes Kaufsignal müssen 5m und 15m die Erholung positiv bestätigen.
+  // Nur "weniger schlecht als 1h" reicht NICHT aus.
+  const is5mRecoveryConfirmed = change5m >= 1.0;
+  const is15mConfirming = change15m >= 1.0;
   const noHeavyPackSupply = !marketContext.packSupplyActive;
   const isRatingMarketNotDumping =
     ratingMarketFallingPct < 60 && ratingMarketTrend !== "stark_fallend";
@@ -126,6 +129,7 @@ export function analyzeMarketPatterns(input) {
     isNear24hLow &&
     is1mNotDumping &&
     is5mStableOrPositive &&
+    is5mRecoveryConfirmed &&
     is15mConfirming &&
     noHeavyPackSupply &&
     isRatingMarketNotDumping &&
@@ -210,18 +214,24 @@ export function analyzeMarketPatterns(input) {
     keyFactors.push("Widerstandslevel am 24h-Hoch erreicht");
     keyFactors.push("Rücksetzer nach starkem Anstieg möglich");
   } else if (isBroadRatingRally) {
-    if (distHighPct >= 10) {
+    // Eine breite Rating-Rallye allein ist noch KEIN Kaufsignal.
+    // Erst ein bestätigter Nachfrage-Katalysator (z.B. echte SBC) darf daraus JETZT KAUFEN machen.
+    if (marketContext.sbcActive && distHighPct >= 10) {
       suggestedAction = "JETZT KAUFEN";
-      baseConfidence = marketContext.sbcActive ? 85 : 78;
-      risk = marketContext.sbcActive ? "niedrig" : "mittel";
-      marketState = marketContext.sbcActive
-        ? "SBC-Fodder-Rallye im Rating-Markt"
-        : "Breite Rating-Markt-Rallye";
-      primaryReason = marketContext.sbcActive
-        ? `${ratingMarketRisingPct.toFixed(0)}% der ${input.rating}er steigen. Aktive SBC-Nachfrage bestätigt die breite Bewegung.`
-        : `${ratingMarketRisingPct.toFixed(0)}% der ${input.rating}er steigen marktweit. Breite Nachfrage ist sichtbar, die Ursache ist noch nicht als SBC bestätigt.`;
+      baseConfidence = 85;
+      risk = "niedrig";
+      marketState = "SBC-Fodder-Rallye im Rating-Markt";
+      primaryReason = `${ratingMarketRisingPct.toFixed(0)}% der ${input.rating}er steigen. Aktive SBC-Nachfrage bestätigt die breite Bewegung.`;
       keyFactors.push(`Breite Bewegung im ${input.rating}er-Segment`);
-      keyFactors.push("Rating-Markt wird nicht von nur einer Einzelkarte getragen");
+      keyFactors.push("SBC-Katalysator bestätigt die Nachfrage");
+    } else if (distHighPct >= 10) {
+      suggestedAction = "BEOBACHTEN";
+      baseConfidence = 76;
+      risk = "mittel";
+      marketState = "Breite Rating-Markt-Rallye ohne bestätigten Katalysator";
+      primaryReason = `${ratingMarketRisingPct.toFixed(0)}% der ${input.rating}er steigen marktweit. Bewegung ist stark, aber ohne bestätigte SBC-/Content-Ursache noch kein automatischer Einstieg.`;
+      keyFactors.push(`Breite Bewegung im ${input.rating}er-Segment`);
+      keyFactors.push("Katalysator noch nicht bestätigt");
     } else {
       suggestedAction = "HALTEN";
       baseConfidence = 78;
