@@ -1,4 +1,5 @@
 import express from "express";
+import crypto from "crypto";
 import pg from "pg";
 import { Client, GatewayIntentBits, Events } from "discord.js";
 import {
@@ -208,6 +209,10 @@ const GEMINI_CARD_COOLDOWN_MS = Math.max(30, Number(process.env.GEMINI_CARD_COOL
 const DISCORD_BOT_TOKEN = String(process.env.DISCORD_BOT_TOKEN || "").trim();
 const DISCORD_ALERT_CHANNEL_ID = String(process.env.DISCORD_ALERT_CHANNEL_ID || "").trim();
 const TRADER_SIGNAL_CHANNEL_ID = String(process.env.TRADER_SIGNAL_CHANNEL_ID || "").trim();
+// Optionaler, explizit autorisierter Eingang fuer externe Trader-Feeds/Forwarder.
+// Ohne Token bleibt der HTTP-Ingest komplett geschlossen.
+const TRADER_FEED_INGEST_TOKEN = String(process.env.TRADER_FEED_INGEST_TOKEN || "").trim();
+const TRADER_FEED_INGEST_CONFIGURED = Boolean(TRADER_FEED_INGEST_TOKEN);
 const DISCORD_CONFIGURED = Boolean(DISCORD_BOT_TOKEN);
 const DISCORD_ALERT_COOLDOWN_MS = Math.max(5, Number(process.env.DISCORD_ALERT_COOLDOWN_MIN || 30)) * 60_000;
 const DISCORD_MAX_ALERTS_PER_CYCLE = Math.max(1, Math.min(10, Number(process.env.DISCORD_MAX_ALERTS_PER_CYCLE || 5)));
@@ -240,6 +245,12 @@ let traderSignalsAccepted = 0;
 let traderSignalsIgnored = 0;
 let lastTraderSignalAt = null;
 let lastTraderSignalError = null;
+let authorizedTraderFeedReceived = 0;
+let authorizedTraderFeedAccepted = 0;
+let authorizedTraderFeedIgnored = 0;
+let lastAuthorizedTraderFeedAt = null;
+let lastAuthorizedTraderFeedSource = null;
+let lastAuthorizedTraderFeedError = null;
 let traderConfluenceAlertsSent = 0;
 let traderConfluenceInvalidationsSent = 0;
 let traderConfluenceExpirationsSent = 0;
@@ -1411,6 +1422,29 @@ function compactWhitespace(value) {
   return String(value || "").replace(/\s+/g, " ").trim();
 }
 
+function secureTokenEquals(provided, expected) {
+  const a = Buffer.from(String(provided || ""));
+  const b = Buffer.from(String(expected || ""));
+  if (!a.length || a.length !== b.length) return false;
+  return crypto.timingSafeEqual(a, b);
+}
+
+function traderFeedTokenFromRequest(req) {
+  const auth = String(req.get("authorization") || "").trim();
+  const bearer = auth.match(/^Bearer\s+(.+)$/i);
+  if (bearer) return bearer[1].trim();
+  return String(req.get("x-trader-feed-token") || "").trim();
+}
+
+function traderFeedSafeKey(value, fallback = "event") {
+  const clean = String(value || "")
+    .toLowerCase()
+    .replace(/[^a-z0-9_.-]+/g, "_")
+    .replace(/^_+|_+$/g, "")
+    .slice(0, 45);
+  return clean || fallback;
+}
+
 function collectDiscordText(message) {
   const parts = [];
 
@@ -1615,17 +1649,20 @@ function currentReferenceForTraderSignal(signal) {
 }
 
 async function saveIncomingTraderSignal(signal) {
-  if (!signal) return;
+  if (!signal) return false;
 
   if (!dbEnabled) {
+    if (memoryTraderSignals.some(item => String(item?.id) === String(signal.id))) {
+      return false;
+    }
     memoryTraderSignals.unshift(signal);
     if (memoryTraderSignals.length > 500) memoryTraderSignals.length = 500;
-    return;
+    return true;
   }
 
   const initialReferencePrice = currentReferenceForTraderSignal(signal);
 
-  await pool.query(
+  const inserted = await pool.query(
     `
       INSERT INTO fc_discord_signals (
         id,
@@ -1648,6 +1685,7 @@ async function saveIncomingTraderSignal(signal) {
         NOW()
       )
       ON CONFLICT (id) DO NOTHING
+      RETURNING id
     `,
     [
       signal.id,
@@ -1664,6 +1702,10 @@ async function saveIncomingTraderSignal(signal) {
     ]
   );
 
+  // Forwarder duerfen bei Netzwerk-Retries dasselbe Event erneut schicken.
+  // Ein bereits gespeichertes Event zaehlt nicht ein zweites Mal zur Trader-Historie.
+  if (!inserted.rowCount) return false;
+
   const profileId = `trader_${String(signal.source).toLowerCase().replace(/[^a-z0-9]+/g, "_").slice(0, 80)}`;
   await pool.query(
     `
@@ -1671,7 +1713,7 @@ async function saveIncomingTraderSignal(signal) {
         id, source, display_name, overall_accuracy, total_signals,
         reputation_badge, notes, updated_at
       )
-      VALUES ($1,$2,$3,50,1,'Unbewiesen','Automatisch aus #trader-signals angelegt',NOW())
+      VALUES ($1,$2,$3,50,1,'Unbewiesen','Automatisch aus Trader-Signal-Ingest angelegt',NOW())
       ON CONFLICT (source)
       DO UPDATE SET
         total_signals = fc_trader_profiles.total_signals + 1,
@@ -1679,6 +1721,8 @@ async function saveIncomingTraderSignal(signal) {
     `,
     [profileId, signal.source, signal.source]
   );
+
+  return true;
 }
 
 async function resolveTraderSignalChannel() {
@@ -1745,7 +1789,13 @@ async function handleTraderSignalMessage(message) {
       return;
     }
 
-    await saveIncomingTraderSignal(parsed.signal);
+    const inserted = await saveIncomingTraderSignal(parsed.signal);
+    if (!inserted) {
+      traderSignalsIgnored++;
+      lastTraderSignalError = "Doppeltes Signal-Event wurde ignoriert.";
+      return;
+    }
+
     traderSignalsAccepted++;
     lastTraderSignalError = null;
 
@@ -2967,7 +3017,7 @@ async function sendDiscordStartupMessage() {
           { name: "Kaufalarm ab", value: `${DISCORD_MIN_BUY_CONFIDENCE}% KI-Sicherheit`, inline: true },
           { name: "Spam-Schutz", value: `${Math.round(DISCORD_ALERT_COOLDOWN_MS / 60_000)} Min. Cooldown`, inline: true }
         ],
-        footer: { text: "FC Trading Intelligence v10.23" },
+        footer: { text: "FC Trading Intelligence v10.25" },
         timestamp: new Date().toISOString()
       }]
     });
@@ -5513,7 +5563,7 @@ app.get("/", (req, res) => {
   res.json({
     online: true,
     service: "FC Trading Intelligence",
-    version: "10.24-alert-priority-reserve",
+    version: "10.25-authorized-trader-feed-bridge",
     gameYear: GAME_YEAR,
     marketProfile: marketProfile(),
     refreshSeconds: 60,
@@ -5532,6 +5582,9 @@ app.get("/", (req, res) => {
       traderBrainLearning: "GET /api/trader-brain/learning/status",
       geminiHealth: "GET /api/gemini-health",
       discordStatus: "GET /api/discord/status",
+      traderSignalsStatus: "GET /api/trader-signals/status",
+      authorizedTraderFeedStatus: "GET /api/trader-feeds/status",
+      authorizedTraderFeedIngest: "POST /api/trader-signals/ingest",
       traderConfluenceStatus: "GET /api/trader-confluence/status",
       traderReliabilityStatus: "GET /api/trader-reliability/status",
       marketContext: "GET /api/market-context",
@@ -5546,7 +5599,7 @@ app.get("/", (req, res) => {
 app.get("/health", (req, res) => {
   res.json({
     ok: true,
-    version: "10.24-alert-priority-reserve",
+    version: "10.25-authorized-trader-feed-bridge",
     gameYear: GAME_YEAR,
     marketProfile: marketProfile(),
     marketContext: latestMarketContext,
@@ -5586,6 +5639,15 @@ app.get("/health", (req, res) => {
       traderSignalsIgnored,
       lastTraderSignalAt,
       lastTraderSignalError,
+      authorizedTraderFeed: {
+        configured: TRADER_FEED_INGEST_CONFIGURED,
+        received: authorizedTraderFeedReceived,
+        accepted: authorizedTraderFeedAccepted,
+        ignored: authorizedTraderFeedIgnored,
+        lastAt: lastAuthorizedTraderFeedAt,
+        lastSource: lastAuthorizedTraderFeedSource,
+        lastError: lastAuthorizedTraderFeedError
+      },
       traderConfluenceAlertsSent,
       lastTraderConfluenceAlertAt,
       lastTraderConfluenceAlertError,
@@ -5616,6 +5678,108 @@ app.get("/api/trader-signals/status", async (req, res) => {
     });
   } catch (error) {
     return res.status(500).json({ error: String(error) });
+  }
+});
+
+app.get("/api/trader-feeds/status", (req, res) => {
+  res.json({
+    enabled: TRADER_FEED_INGEST_CONFIGURED,
+    authentication: TRADER_FEED_INGEST_CONFIGURED ? "Bearer/x-trader-feed-token" : "NOT_CONFIGURED",
+    endpoint: "POST /api/trader-signals/ingest",
+    policy: "Nur fuer autorisierte/erlaubte Forwarder oder lizenzierte Feeds. Kein automatisches Umgehen privater Discord-Kanaele.",
+    received: authorizedTraderFeedReceived,
+    accepted: authorizedTraderFeedAccepted,
+    ignored: authorizedTraderFeedIgnored,
+    lastAt: lastAuthorizedTraderFeedAt,
+    lastSource: lastAuthorizedTraderFeedSource,
+    lastError: lastAuthorizedTraderFeedError
+  });
+});
+
+app.post("/api/trader-signals/ingest", async (req, res) => {
+  authorizedTraderFeedReceived++;
+  lastAuthorizedTraderFeedAt = new Date().toISOString();
+
+  try {
+    if (!TRADER_FEED_INGEST_CONFIGURED) {
+      authorizedTraderFeedIgnored++;
+      lastAuthorizedTraderFeedError = "TRADER_FEED_INGEST_TOKEN ist nicht konfiguriert.";
+      return res.status(503).json({ ok: false, error: lastAuthorizedTraderFeedError });
+    }
+
+    const providedToken = traderFeedTokenFromRequest(req);
+    if (!secureTokenEquals(providedToken, TRADER_FEED_INGEST_TOKEN)) {
+      authorizedTraderFeedIgnored++;
+      lastAuthorizedTraderFeedError = "Nicht autorisierter Trader-Feed-Aufruf.";
+      return res.status(401).json({ ok: false, error: "Unauthorized" });
+    }
+
+    const source = compactWhitespace(req.body?.source || "").slice(0, 120);
+    const text = compactWhitespace(req.body?.message ?? req.body?.text ?? "").slice(0, 3000);
+    const externalIdRaw = compactWhitespace(req.body?.eventId ?? req.body?.id ?? "");
+
+    if (!source || source.length < 2 || !text || text.length < 3) {
+      authorizedTraderFeedIgnored++;
+      lastAuthorizedTraderFeedError = "source und message/text sind erforderlich.";
+      return res.status(400).json({ ok: false, error: lastAuthorizedTraderFeedError });
+    }
+
+    lastAuthorizedTraderFeedSource = source;
+
+    const eventKey = traderFeedSafeKey(
+      externalIdRaw || `${Date.now()}_${Math.random().toString(36).slice(2, 10)}`
+    );
+    const sourceKey = traderFeedSafeKey(source, "source");
+    const synthetic = {
+      id: `${sourceKey}_${eventKey}`.slice(0, 90),
+      content: `Quelle: ${source}\n${text}`,
+      embeds: [],
+      author: { username: source }
+    };
+
+    const parsed = parseTraderSignalMessage(synthetic);
+    if (!parsed.ok) {
+      authorizedTraderFeedIgnored++;
+      lastAuthorizedTraderFeedError = parsed.reason;
+      return res.status(422).json({ ok: false, error: parsed.reason });
+    }
+
+    parsed.signal.id = `feed_${sourceKey}_${eventKey}`.slice(0, 118);
+    parsed.signal.source = source;
+    parsed.signal.message = text;
+    parsed.signal.reason = text.slice(0, 1200);
+
+    const inserted = await saveIncomingTraderSignal(parsed.signal);
+    if (!inserted) {
+      authorizedTraderFeedIgnored++;
+      lastAuthorizedTraderFeedError = "Doppeltes Feed-Event wurde idempotent ignoriert.";
+      return res.status(200).json({
+        ok: true,
+        duplicate: true,
+        signalId: parsed.signal.id
+      });
+    }
+
+    authorizedTraderFeedAccepted++;
+    lastAuthorizedTraderFeedError = null;
+
+    return res.status(201).json({
+      ok: true,
+      signal: {
+        id: parsed.signal.id,
+        source: parsed.signal.source,
+        call: parsed.signal.call,
+        target: parsed.signal.playerOrRating,
+        category: parsed.signal.category,
+        expectedTimeframe: parsed.signal.expectedTimeframe
+      },
+      nextStep: "Wird beim naechsten 60-Sekunden-Marktcheck gegen FUT.GG und den Trader Brain geprueft."
+    });
+  } catch (error) {
+    authorizedTraderFeedIgnored++;
+    lastAuthorizedTraderFeedError = String(error);
+    console.error("Authorized trader feed ingest error:", error);
+    return res.status(500).json({ ok: false, error: "Trader-Feed-Ingest fehlgeschlagen." });
   }
 });
 
@@ -5667,7 +5831,7 @@ app.get("/api/trader-reliability/status", async (req, res) => {
 
     return res.json({
       enabled: true,
-      version: "10.24-alert-priority-reserve",
+      version: "10.25-authorized-trader-feed-bridge",
       gameYear: GAME_YEAR,
       method: {
         priorAccuracy: TRADER_RELIABILITY_PRIOR_ACCURACY,
@@ -5726,7 +5890,7 @@ app.get("/api/trader-reliability/status", async (req, res) => {
 app.get("/api/trader-confluence/status", (req, res) => {
   res.json({
     enabled: DISCORD_CONFIGURED && dbEnabled,
-    version: "10.24-alert-priority-reserve",
+    version: "10.25-authorized-trader-feed-bridge",
     minCardConfidence: DISCORD_TRADER_CONFLUENCE_MIN_CONFIDENCE,
     minRatingConfidence: DISCORD_TRADER_CONFLUENCE_MIN_RATING_CONFIDENCE,
     minTraderReliability: DISCORD_TRADER_CONFLUENCE_MIN_RELIABILITY,
@@ -5774,6 +5938,15 @@ app.get("/api/discord/status", (req, res) => {
     traderSignalsIgnored,
     lastTraderSignalAt,
     lastTraderSignalError,
+    authorizedTraderFeed: {
+      configured: TRADER_FEED_INGEST_CONFIGURED,
+      received: authorizedTraderFeedReceived,
+      accepted: authorizedTraderFeedAccepted,
+      ignored: authorizedTraderFeedIgnored,
+      lastAt: lastAuthorizedTraderFeedAt,
+      lastSource: lastAuthorizedTraderFeedSource,
+      lastError: lastAuthorizedTraderFeedError
+    },
     traderConfluenceAlertsSent,
     traderConfluenceInvalidationsSent,
     lastTraderConfluenceAlertAt,
@@ -5950,7 +6123,7 @@ app.get("/api/trading", async (req, res) => {
 
     res.json({
       ok: true,
-      version: "10.24-alert-priority-reserve",
+      version: "10.25-authorized-trader-feed-bridge",
       refreshSeconds: 60,
       dbEnabled,
       sourceHealth: health,
@@ -6029,7 +6202,7 @@ app.get("/api/source-health", (req, res) => {
   const health = sourceHealthSnapshot();
   res.status(health.status === "UNHEALTHY" ? 503 : 200).json({
     ok: health.status !== "UNHEALTHY",
-    version: "10.24-alert-priority-reserve",
+    version: "10.25-authorized-trader-feed-bridge",
     gameYear: GAME_YEAR,
     refreshSeconds: 60,
     source: "FUT.GG PS5 bulk prices",
@@ -6049,7 +6222,7 @@ app.get("/api/futbin/status", (req, res) => {
 
   res.json({
     ok: true,
-    version: "10.24-alert-priority-reserve",
+    version: "10.25-authorized-trader-feed-bridge",
     gameYear: GAME_YEAR,
     configured: Boolean(FUTBIN_AUTHORIZED_FEED_URL),
     status: latestFutbinStatus,
@@ -6078,7 +6251,7 @@ app.get("/api/futbin/status", (req, res) => {
 app.get("/api/market-context", (req, res) => {
   res.json({
     ok: true,
-    version: "10.24-alert-priority-reserve",
+    version: "10.25-authorized-trader-feed-bridge",
     gameYear: GAME_YEAR,
     refreshSeconds: 60,
     context: latestMarketContext,
@@ -6089,7 +6262,7 @@ app.get("/api/market-context", (req, res) => {
 app.get("/api/trader-brain/status", (req, res) => {
   res.json({
     ok: true,
-    version: "10.24-alert-priority-reserve",
+    version: "10.25-authorized-trader-feed-bridge",
     gameYear: GAME_YEAR,
     marketProfile: marketProfile(),
     marketContext: latestMarketContext,
@@ -6099,7 +6272,7 @@ app.get("/api/trader-brain/status", (req, res) => {
     lastBrainError,
     lastGeminiCandidate,
     learning: {
-      version: "10.24-alert-priority-reserve",
+      version: "10.25-authorized-trader-feed-bridge",
       totalMatureDecisions: brainLearningCache.totalMatureDecisions,
       rawMatureDecisions: brainLearningCache.rawMatureDecisions,
       uniqueLearningEpisodes: brainLearningCache.uniqueLearningEpisodes,
@@ -6120,7 +6293,7 @@ app.get("/api/trader-brain/learning/status", async (req, res) => {
     const cache = await loadBrainLearningProfiles(true);
     return res.json({
       enabled: true,
-      version: "10.24-alert-priority-reserve",
+      version: "10.25-authorized-trader-feed-bridge",
       method: {
         windowDays: BRAIN_LEARNING_WINDOW_DAYS,
         priorAccuracy: BRAIN_LEARNING_PRIOR_ACCURACY,
@@ -7239,7 +7412,7 @@ app.listen(
   port,
   () => {
     console.log(
-      `FC Trading Intelligence v10.24 Alert Priority Reserve (FC${GAME_YEAR}) running on ${port}`
+      `FC Trading Intelligence v10.25 Authorized Trader Feed Bridge (FC${GAME_YEAR}) running on ${port}`
     );
 
     startMonitoring();
