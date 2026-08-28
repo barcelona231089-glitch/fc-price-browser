@@ -51,6 +51,20 @@ const lastGeminiByCard = new Map();
 const GEMINI_MIN_INTERVAL_MS = Math.max(5, Number(process.env.GEMINI_MIN_INTERVAL_MIN || 30)) * 60_000;
 const GEMINI_CARD_COOLDOWN_MS = Math.max(30, Number(process.env.GEMINI_CARD_COOLDOWN_MIN || 120)) * 60_000;
 
+const DISCORD_BOT_TOKEN = String(process.env.DISCORD_BOT_TOKEN || "").trim();
+const DISCORD_ALERT_CHANNEL_ID = String(process.env.DISCORD_ALERT_CHANNEL_ID || "").trim();
+const DISCORD_CONFIGURED = Boolean(DISCORD_BOT_TOKEN && DISCORD_ALERT_CHANNEL_ID);
+const DISCORD_ALERT_COOLDOWN_MS = Math.max(5, Number(process.env.DISCORD_ALERT_COOLDOWN_MIN || 30)) * 60_000;
+const DISCORD_MAX_ALERTS_PER_CYCLE = Math.max(1, Math.min(10, Number(process.env.DISCORD_MAX_ALERTS_PER_CYCLE || 5)));
+const DISCORD_MIN_BUY_CONFIDENCE = Math.max(70, Math.min(95, Number(process.env.DISCORD_MIN_BUY_CONFIDENCE || 90)));
+const DISCORD_MIN_SELL_CONFIDENCE = Math.max(70, Math.min(95, Number(process.env.DISCORD_MIN_SELL_CONFIDENCE || 84)));
+const DISCORD_MIN_RATING_CONFIDENCE = Math.max(60, Math.min(95, Number(process.env.DISCORD_MIN_RATING_CONFIDENCE || 75)));
+
+let lastDiscordSendAt = null;
+let lastDiscordError = null;
+let discordAlertsSent = 0;
+const memoryDiscordAlertState = new Map();
+
 const memoryHistory = new Map();
 const lastMemoryPrice = new Map();
 const memoryPositions = new Map();
@@ -506,6 +520,18 @@ async function initDb() {
       updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     )
   `);
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS fc_discord_alert_state (
+      alert_key VARCHAR(180) PRIMARY KEY,
+      alert_type VARCHAR(50) NOT NULL,
+      last_action VARCHAR(100) NOT NULL,
+      last_price INTEGER,
+      last_confidence SMALLINT,
+      last_fingerprint VARCHAR(250),
+      last_sent_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+  `);
 }
 
 function recordMemory(rows, at) {
@@ -615,6 +641,328 @@ async function recordDb(rows, at) {
   }
 }
 
+function discordNumber(value) {
+  return Number.isFinite(value)
+    ? Math.round(value).toLocaleString("de-DE")
+    : "-";
+}
+
+function discordPct(value) {
+  if (!Number.isFinite(value)) return "-";
+  const sign = value > 0 ? "+" : "";
+  return `${sign}${Number(value).toFixed(2)}%`;
+}
+
+async function sendDiscordPayload(payload) {
+  if (!DISCORD_CONFIGURED) return { ok: false, skipped: "not_configured" };
+
+  const response = await fetch(
+    `https://discord.com/api/v10/channels/${encodeURIComponent(DISCORD_ALERT_CHANNEL_ID)}/messages`,
+    {
+      method: "POST",
+      headers: {
+        authorization: `Bot ${DISCORD_BOT_TOKEN}`,
+        "content-type": "application/json",
+        "user-agent": "FC-Trader-Brain/10.4"
+      },
+      body: JSON.stringify(payload)
+    }
+  );
+
+  if (!response.ok) {
+    const body = await response.text().catch(() => "");
+    const error = new Error(`Discord HTTP ${response.status}: ${body.slice(0, 500)}`);
+    error.status = response.status;
+    throw error;
+  }
+
+  lastDiscordSendAt = new Date().toISOString();
+  lastDiscordError = null;
+  discordAlertsSent++;
+  return { ok: true };
+}
+
+async function getDiscordAlertState(alertKey) {
+  if (dbEnabled) {
+    const result = await pool.query(`
+      SELECT alert_key, alert_type, last_action, last_price, last_confidence,
+             last_fingerprint, last_sent_at
+      FROM fc_discord_alert_state
+      WHERE alert_key = $1
+      LIMIT 1
+    `, [alertKey]);
+
+    if (!result.rowCount) return null;
+    const row = result.rows[0];
+    return {
+      alertKey: row.alert_key,
+      alertType: row.alert_type,
+      lastAction: row.last_action,
+      lastPrice: row.last_price == null ? null : Number(row.last_price),
+      lastConfidence: row.last_confidence == null ? null : Number(row.last_confidence),
+      lastFingerprint: row.last_fingerprint,
+      lastSentAt: new Date(row.last_sent_at).getTime()
+    };
+  }
+
+  return memoryDiscordAlertState.get(alertKey) || null;
+}
+
+async function saveDiscordAlertState({ alertKey, alertType, action, price = null, confidence = null, fingerprint = "" }) {
+  const state = {
+    alertKey,
+    alertType,
+    lastAction: action,
+    lastPrice: Number.isFinite(price) ? Math.round(price) : null,
+    lastConfidence: Number.isFinite(confidence) ? Math.round(confidence) : null,
+    lastFingerprint: fingerprint,
+    lastSentAt: Date.now()
+  };
+
+  if (dbEnabled) {
+    await pool.query(`
+      INSERT INTO fc_discord_alert_state (
+        alert_key, alert_type, last_action, last_price,
+        last_confidence, last_fingerprint, last_sent_at
+      ) VALUES ($1,$2,$3,$4,$5,$6,NOW())
+      ON CONFLICT (alert_key)
+      DO UPDATE SET
+        alert_type = EXCLUDED.alert_type,
+        last_action = EXCLUDED.last_action,
+        last_price = EXCLUDED.last_price,
+        last_confidence = EXCLUDED.last_confidence,
+        last_fingerprint = EXCLUDED.last_fingerprint,
+        last_sent_at = NOW()
+    `, [
+      state.alertKey,
+      state.alertType,
+      state.lastAction,
+      state.lastPrice,
+      state.lastConfidence,
+      state.lastFingerprint
+    ]);
+  } else {
+    memoryDiscordAlertState.set(alertKey, state);
+  }
+
+  return state;
+}
+
+function discordAlertShouldSend(state, action, price, confidence, fingerprint) {
+  if (!state) return true;
+  if (state.lastAction !== action) return true;
+
+  const age = Date.now() - state.lastSentAt;
+  if (state.lastFingerprint !== fingerprint && age >= 5 * 60_000) return true;
+  if (age < DISCORD_ALERT_COOLDOWN_MS) return false;
+
+  const priceMove =
+    Number.isFinite(price) && Number.isFinite(state.lastPrice) && state.lastPrice > 0
+      ? Math.abs((price - state.lastPrice) / state.lastPrice) * 100
+      : 0;
+
+  const confidenceMove =
+    Number.isFinite(confidence) && Number.isFinite(state.lastConfidence)
+      ? Math.abs(confidence - state.lastConfidence)
+      : 0;
+
+  if (priceMove >= 3 || confidenceMove >= 5) return true;
+  return age >= 2 * 60 * 60_000;
+}
+
+function cardDiscordAlertCandidate(row) {
+  if (row.aiAction === "JETZT KAUFEN" && row.aiConfidence >= DISCORD_MIN_BUY_CONFIDENCE) {
+    return { type: "buy", priority: 100 + row.aiConfidence };
+  }
+
+  if (row.aiAction === "VERKAUF PRÜFEN" && row.aiConfidence >= DISCORD_MIN_SELL_CONFIDENCE) {
+    return { type: "sell", priority: 110 + row.aiConfidence };
+  }
+
+  const crash =
+    row.aiAction === "NOCH WARTEN" &&
+    row.aiConfidence >= 90 &&
+    (
+      (Number.isFinite(row.change1m) && row.change1m <= -7) ||
+      (Number.isFinite(row.change5m) && row.change5m <= -10)
+    );
+
+  if (crash) return { type: "crash", priority: 90 + row.aiConfidence };
+  return null;
+}
+
+function buildCardDiscordPayload(row, type) {
+  const emoji = type === "buy" ? "🟢" : type === "sell" ? "💰" : "🚨";
+  const titleAction = type === "crash" ? "NOCH WARTEN" : row.aiAction;
+  const title = `${emoji} ${titleAction}: ${row.name || `EA ${row.eaId}`} (${row.overall})`;
+
+  const fields = [
+    { name: "Preis", value: `${discordNumber(row.price)} Coins`, inline: true },
+    { name: "KI-Sicherheit", value: `${row.aiConfidence}%`, inline: true },
+    { name: "Kartentyp", value: String(row.cardType || "-"), inline: true },
+    { name: "1m / 5m / 15m", value: `${discordPct(row.change1m)} / ${discordPct(row.change5m)} / ${discordPct(row.change15m)}`, inline: false },
+    { name: "24h Tief / Hoch", value: `${discordNumber(row.low24h)} / ${discordNumber(row.high24h)}`, inline: true },
+    { name: "Rating-Markt", value: `${row.overall}er: ${String(row.ratingMarketTrend || "neutral").replaceAll("_", " ")}`, inline: true }
+  ];
+
+  if (type === "sell" && row.tracked) {
+    fields.push({
+      name: "Deine Position",
+      value:
+        `Kauf ${discordNumber(row.buyPrice)} × ${discordNumber(row.quantity || 1)} | ` +
+        `Netto ${discordNumber(row.netProfitTotal)} Coins | ${discordPct(row.profitPercent)}`,
+      inline: false
+    });
+  }
+
+  fields.push({
+    name: "KI-Grund",
+    value: String(row.aiReason || "Keine Begründung verfügbar.").slice(0, 1000),
+    inline: false
+  });
+
+  return {
+    embeds: [{
+      title,
+      url: row.url || undefined,
+      description:
+        type === "buy"
+          ? "Trader Brain sieht eine bestätigte Kauf-Trendwende."
+          : type === "sell"
+          ? "Eigener Bestand erreicht eine relevante Gewinn-/Ausstiegszone."
+          : "Starker Abverkauf erkannt. Nicht blind in den Fall kaufen.",
+      fields,
+      footer: { text: "FC Trader Brain • automatische 60-Sekunden-Analyse" },
+      timestamp: new Date().toISOString()
+    }]
+  };
+}
+
+function ratingDiscordAlertCandidate(stat) {
+  if (!stat || stat.confidence < DISCORD_MIN_RATING_CONFIDENCE) return false;
+  return ["KAUFZONE", "STARK STEIGEND", "STARK FALLEND"].includes(stat.marketSignal);
+}
+
+function buildRatingDiscordPayload(stat) {
+  const emoji = stat.marketSignal === "KAUFZONE" ? "🟢" : stat.marketSignal === "STARK FALLEND" ? "🔻" : "🚀";
+  return {
+    embeds: [{
+      title: `${emoji} ${stat.rating}ER MARKT: ${stat.marketSignal}`,
+      description: String(stat.reason || "Rating-Markt-Signal erkannt."),
+      fields: [
+        { name: "Rating-Aktion", value: String(stat.marketAdvice), inline: true },
+        { name: "Sicherheit", value: `${stat.confidence}%`, inline: true },
+        { name: "Median", value: `${discordNumber(stat.medianPrice)} Coins`, inline: true },
+        { name: "5m / 15m / 1h", value: `${discordPct(stat.change5m)} / ${discordPct(stat.change15m)} / ${discordPct(stat.change1h)}`, inline: false },
+        { name: "Steigen / Fallen (5m)", value: `${Number(stat.risingPct5m || 0).toFixed(1)}% / ${Number(stat.fallingPct5m || 0).toFixed(1)}%`, inline: true },
+        { name: "Nahe 24h-Tief", value: `${Number(stat.near24hLowPct || 0).toFixed(1)}%`, inline: true }
+      ],
+      footer: { text: "FC Trader Brain • Rating-Markt Intelligence" },
+      timestamp: new Date().toISOString()
+    }]
+  };
+}
+
+async function processDiscordAlerts(rows, ratingStats) {
+  if (!DISCORD_CONFIGURED) return;
+
+  try {
+    const candidates = [];
+
+    for (const row of rows) {
+      const candidate = cardDiscordAlertCandidate(row);
+      if (candidate) candidates.push({ kind: "card", row, ...candidate });
+    }
+
+    for (const stat of Object.values(ratingStats || {})) {
+      if (ratingDiscordAlertCandidate(stat)) {
+        candidates.push({ kind: "rating", stat, type: "rating", priority: 120 + stat.confidence });
+      }
+    }
+
+    candidates.sort((a, b) => b.priority - a.priority);
+    let sentThisCycle = 0;
+
+    for (const item of candidates) {
+      if (sentThisCycle >= DISCORD_MAX_ALERTS_PER_CYCLE) break;
+
+      if (item.kind === "card") {
+        const row = item.row;
+        const alertKey = `card:${row.eaId}`;
+        const fingerprint = `${row.aiAction}|${Math.round((row.change5m ?? 0) * 10)}|${Math.round((row.change15m ?? 0) * 10)}`;
+        const state = await getDiscordAlertState(alertKey);
+        if (!discordAlertShouldSend(state, row.aiAction, row.price, row.aiConfidence, fingerprint)) continue;
+
+        await sendDiscordPayload(buildCardDiscordPayload(row, item.type));
+        await saveDiscordAlertState({
+          alertKey,
+          alertType: item.type,
+          action: row.aiAction,
+          price: row.price,
+          confidence: row.aiConfidence,
+          fingerprint
+        });
+        sentThisCycle++;
+      } else {
+        const stat = item.stat;
+        const alertKey = `rating:${stat.rating}`;
+        const fingerprint = `${stat.marketSignal}|${stat.marketAdvice}|${Math.round((stat.change5m ?? 0) * 10)}`;
+        const state = await getDiscordAlertState(alertKey);
+        if (!discordAlertShouldSend(state, stat.marketSignal, stat.medianPrice, stat.confidence, fingerprint)) continue;
+
+        await sendDiscordPayload(buildRatingDiscordPayload(stat));
+        await saveDiscordAlertState({
+          alertKey,
+          alertType: "rating",
+          action: stat.marketSignal,
+          price: stat.medianPrice,
+          confidence: stat.confidence,
+          fingerprint
+        });
+        sentThisCycle++;
+      }
+    }
+  } catch (error) {
+    lastDiscordError = String(error);
+    console.error("Discord alerts error:", error);
+  }
+}
+
+async function sendDiscordStartupMessage() {
+  if (!DISCORD_CONFIGURED) return;
+
+  try {
+    const alertKey = "system:discord-connected";
+    const state = await getDiscordAlertState(alertKey);
+    const now = Date.now();
+    if (state && now - state.lastSentAt < 12 * 60 * 60_000) return;
+
+    await sendDiscordPayload({
+      embeds: [{
+        title: "✅ FC Trader Brain verbunden",
+        description: "Automatische Trading-Alerts sind aktiv. Du musst die Webseite nicht geöffnet lassen.",
+        fields: [
+          { name: "Markt-Check", value: "alle 60 Sekunden", inline: true },
+          { name: "Kaufalarm ab", value: `${DISCORD_MIN_BUY_CONFIDENCE}% KI-Sicherheit`, inline: true },
+          { name: "Spam-Schutz", value: `${Math.round(DISCORD_ALERT_COOLDOWN_MS / 60_000)} Min. Cooldown`, inline: true }
+        ],
+        footer: { text: "FC Trading Intelligence v10.4" },
+        timestamp: new Date().toISOString()
+      }]
+    });
+
+    await saveDiscordAlertState({
+      alertKey,
+      alertType: "system",
+      action: "CONNECTED",
+      fingerprint: "v10.4"
+    });
+  } catch (error) {
+    lastDiscordError = String(error);
+    console.error("Discord startup message error:", error);
+  }
+}
+
 async function monitorOnce() {
   if (monitoringBusy) return;
 
@@ -640,6 +988,7 @@ async function monitorOnce() {
     latestRatingStats = built.ratingStats;
 
     await automaticTraderBrain(latestTradingRows, built.brainWork);
+    await processDiscordAlerts(latestTradingRows, latestRatingStats);
     await evaluatePendingDecisions();
 
     lastMonitorAt = new Date(at).toISOString();
@@ -1881,7 +2230,7 @@ app.get("/", (req, res) => {
   res.json({
     online: true,
     service: "FC Trading Intelligence",
-    version: "10.3-rating-market-intelligence",
+    version: "10.4-discord-alerts",
     refreshSeconds: 60,
     storage:
       dbEnabled
@@ -1896,6 +2245,7 @@ app.get("/", (req, res) => {
       ratingIntelligence: "GET /api/ratings-intelligence",
       traderBrainHistory: "GET /api/trader-brain/feedback/history",
       geminiHealth: "GET /api/gemini-health",
+      discordStatus: "GET /api/discord/status",
       health: "GET /health"
     }
   });
@@ -1904,7 +2254,7 @@ app.get("/", (req, res) => {
 app.get("/health", (req, res) => {
   res.json({
     ok: true,
-    version: "10.3-rating-market-intelligence",
+    version: "10.4-discord-alerts",
     monitoringStarted,
     monitoringBusy,
     lastMonitorAt,
@@ -1915,7 +2265,31 @@ app.get("/health", (req, res) => {
     lastBrainRunAt,
     lastBrainError,
     geminiQuota: getGeminiQuotaInfo(),
+    discord: {
+      configured: DISCORD_CONFIGURED,
+      channelConfigured: Boolean(DISCORD_ALERT_CHANNEL_ID),
+      tokenConfigured: Boolean(DISCORD_BOT_TOKEN),
+      alertsSent: discordAlertsSent,
+      lastSendAt: lastDiscordSendAt,
+      lastError: lastDiscordError
+    },
     now: new Date().toISOString()
+  });
+});
+
+app.get("/api/discord/status", (req, res) => {
+  res.json({
+    configured: DISCORD_CONFIGURED,
+    channelConfigured: Boolean(DISCORD_ALERT_CHANNEL_ID),
+    tokenConfigured: Boolean(DISCORD_BOT_TOKEN),
+    alertsSent: discordAlertsSent,
+    lastSendAt: lastDiscordSendAt,
+    lastError: lastDiscordError,
+    cooldownMinutes: Math.round(DISCORD_ALERT_COOLDOWN_MS / 60_000),
+    maxAlertsPerCycle: DISCORD_MAX_ALERTS_PER_CYCLE,
+    minBuyConfidence: DISCORD_MIN_BUY_CONFIDENCE,
+    minSellConfidence: DISCORD_MIN_SELL_CONFIDENCE,
+    minRatingConfidence: DISCORD_MIN_RATING_CONFIDENCE
   });
 });
 
@@ -2035,6 +2409,12 @@ app.get("/api/trading", async (req, res) => {
       ratingAlerts: Object.values(latestRatingStats)
         .filter(r => !["NEUTRAL", "ZU WENIG DATEN"].includes(r.marketSignal)).length,
       geminiQuota: getGeminiQuotaInfo(),
+      discord: {
+        configured: DISCORD_CONFIGURED,
+        alertsSent: discordAlertsSent,
+        lastSendAt: lastDiscordSendAt,
+        lastError: lastDiscordError
+      },
       lastBrainRunAt,
       lastBrainError,
       lastGeminiCandidate,
@@ -2082,7 +2462,7 @@ app.get("/api/ratings-intelligence", (req, res) => {
 app.get("/api/trader-brain/status", (req, res) => {
   res.json({
     ok: true,
-    version: "10.3-rating-market-intelligence",
+    version: "10.4-discord-alerts",
     automatic: true,
     refreshSeconds: 60,
     lastBrainRunAt,
@@ -3048,6 +3428,8 @@ async function load() {
         (json.geminiQuota?.usedToday ?? 0) +
         "/" +
         (json.geminiQuota?.dailyBudget ?? 15) +
+        " • Discord: " +
+        (json.discord?.configured ? "AN" : "AUS") +
         " • Aktualisiert " +
         new Date(
           json.updatedAt
@@ -3125,6 +3507,7 @@ async function startMonitoring() {
       String(error);
   }
 
+  await sendDiscordStartupMessage();
   monitorOnce();
 
   setInterval(
@@ -3151,7 +3534,7 @@ app.listen(
   port,
   () => {
     console.log(
-      `FC Trading Intelligence v10.3 Rating Market Intelligence running on ${port}`
+      `FC Trading Intelligence v10.4 Discord Alerts running on ${port}`
     );
 
     startMonitoring();
