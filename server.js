@@ -70,10 +70,20 @@ const SOURCE_HEALTH_DEGRADED_COVERAGE = Math.max(
 const SOURCE_HEALTH_STALE_MS = Math.max(2, Number(process.env.SOURCE_HEALTH_STALE_MIN || 3)) * 60_000;
 const SOURCE_RECOVERY_REQUIRED_CYCLES = Math.max(2, Math.min(10, Number(process.env.SOURCE_RECOVERY_REQUIRED_CYCLES || 3)));
 
-// FUTBIN is optional and must only be connected through an authorized/licensed
-// JSON feed. We intentionally do not scrape futbin.com directly.
+// FUTBIN remains a secondary source. We support either an authorized/licensed
+// bulk JSON feed or the public Parse REST wrapper. We never scrape futbin.com
+// directly from this service.
 const FUTBIN_AUTHORIZED_FEED_URL = String(process.env.FUTBIN_AUTHORIZED_FEED_URL || "").trim();
 const FUTBIN_AUTHORIZED_FEED_TOKEN = String(process.env.FUTBIN_AUTHORIZED_FEED_TOKEN || "").trim();
+const FUTBIN_PARSE_API_KEY = String(process.env.FUTBIN_PARSE_API_KEY || "").trim();
+const FUTBIN_PARSE_BASE_URL = String(
+  process.env.FUTBIN_PARSE_BASE_URL ||
+  "https://api.parse.bot/scraper/21963078-8a17-40ff-a896-9b0b0ec3e828"
+).replace(/\/+$/, "");
+const FUTBIN_PARSE_DAILY_BUDGET = Math.max(1, Math.min(500, Number(process.env.FUTBIN_PARSE_DAILY_BUDGET || 6)));
+const FUTBIN_PARSE_MIN_INTERVAL_MS = Math.max(5, Number(process.env.FUTBIN_PARSE_MIN_INTERVAL_MIN || 240)) * 60_000;
+const FUTBIN_PARSE_CARD_COOLDOWN_MS = Math.max(30, Number(process.env.FUTBIN_PARSE_CARD_COOLDOWN_MIN || 360)) * 60_000;
+const FUTBIN_PARSE_MIN_AI_CONFIDENCE = Math.max(70, Math.min(95, Number(process.env.FUTBIN_PARSE_MIN_AI_CONFIDENCE || 84)));
 const FUTBIN_REFRESH_MS = Math.max(5, Number(process.env.FUTBIN_REFRESH_MIN || 15)) * 60_000;
 const FUTBIN_MAX_DIFF_PCT = Math.max(3, Math.min(35, Number(process.env.FUTBIN_MAX_DIFF_PCT || 12)));
 const FUTBIN_OUTLIER_DIFF_PCT = Math.max(
@@ -174,6 +184,28 @@ let latestFutbinCrossCheckHealth = {
     ? "Noch kein belastbarer FUT.GG/FUTBIN-Cross-Check vorhanden."
     : "Kein autorisierter FUTBIN-Feed konfiguriert.",
   lastHealthyAt: null,
+  updatedAt: null
+};
+const futbinParseCardCache = new Map();
+const futbinParseCardLastCheck = new Map();
+let futbinParseCallsDate = "";
+let futbinParseCallsToday = 0;
+let futbinParseLastCallAt = 0;
+let latestFutbinParseStatus = {
+  configured: Boolean(FUTBIN_PARSE_API_KEY),
+  status: FUTBIN_PARSE_API_KEY ? "IDLE" : "NOT_CONFIGURED",
+  usable: Boolean(FUTBIN_PARSE_API_KEY),
+  provider: "Parse FUTBIN API",
+  reason: FUTBIN_PARSE_API_KEY
+    ? "Öffentliche FUTBIN-API ist konfiguriert und wartet auf einen relevanten Karten-Cross-Check."
+    : "FUTBIN_PARSE_API_KEY ist nicht gesetzt.",
+  callsToday: 0,
+  dailyBudget: FUTBIN_PARSE_DAILY_BUDGET,
+  lastCallAt: null,
+  lastSuccessAt: null,
+  lastFailureAt: null,
+  lastError: null,
+  lastPlayer: null,
   updatedAt: null
 };
 let lastBrainRunAt = null;
@@ -712,7 +744,7 @@ async function loadAuthorizedFutbinFeed(force = false) {
     try {
       const headers = {
         accept: "application/json",
-        "user-agent": "FC-Trader-Brain/10.21"
+        "user-agent": "FC-Trader-Brain/10.32"
       };
       if (FUTBIN_AUTHORIZED_FEED_TOKEN) {
         headers.authorization = `Bearer ${FUTBIN_AUTHORIZED_FEED_TOKEN}`;
@@ -784,6 +816,305 @@ async function loadAuthorizedFutbinFeedSafe(force = false) {
   }
 }
 
+function futbinParseDateKey() {
+  return new Date().toISOString().slice(0, 10);
+}
+
+function refreshFutbinParseDailyBudget() {
+  const key = futbinParseDateKey();
+  if (futbinParseCallsDate !== key) {
+    futbinParseCallsDate = key;
+    futbinParseCallsToday = 0;
+  }
+  latestFutbinParseStatus.callsToday = futbinParseCallsToday;
+  latestFutbinParseStatus.dailyBudget = FUTBIN_PARSE_DAILY_BUDGET;
+  return {
+    used: futbinParseCallsToday,
+    budget: FUTBIN_PARSE_DAILY_BUDGET,
+    remaining: Math.max(0, FUTBIN_PARSE_DAILY_BUDGET - futbinParseCallsToday)
+  };
+}
+
+function parseFutbinCoinValue(value) {
+  if (Number.isFinite(value)) return Math.round(Number(value));
+  const raw = String(value ?? "").trim().toUpperCase().replace(/[,\s]/g, "");
+  if (!raw || ["0", "-", "N/A", "NA", "UNAVAILABLE", "NULL"].includes(raw)) return null;
+  const match = raw.match(/^([0-9]+(?:\.[0-9]+)?)([KMB])?$/);
+  if (!match) return null;
+  const base = Number(match[1]);
+  if (!Number.isFinite(base) || base <= 0) return null;
+  const factor = match[2] === "B" ? 1_000_000_000 : match[2] === "M" ? 1_000_000 : match[2] === "K" ? 1_000 : 1;
+  return Math.round(base * factor);
+}
+
+function futbinComparableText(value) {
+  return compactWhitespace(value)
+    .normalize("NFKD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim();
+}
+
+function futbinParseRows(payload) {
+  const root = payload?.data ?? payload ?? {};
+  const candidates = [
+    root?.players,
+    root?.results,
+    root?.items,
+    payload?.players,
+    payload?.results,
+    payload?.items,
+    Array.isArray(root) ? root : null,
+    Array.isArray(payload) ? payload : null
+  ];
+  return candidates.find(Array.isArray) || [];
+}
+
+function futbinParseMatchForRow(row, items) {
+  const wantedName = futbinComparableText(row?.name);
+  const wantedRating = Number(row?.overall);
+  const wantedPosition = futbinComparableText(row?.position).split(" ")[0] || "";
+  const wantedVersion = futbinComparableText(`${row?.rarityName || ""} ${row?.cardType || ""}`);
+
+  const scored = [];
+  for (const item of Array.isArray(items) ? items : []) {
+    const price = parseFutbinCoinValue(
+      item?.price_ps ?? item?.pricePS ?? item?.prices?.ps ?? item?.prices?.console ?? item?.price_console
+    );
+    if (!Number.isFinite(price) || price <= 0) continue;
+
+    const itemName = futbinComparableText(item?.name ?? item?.full_name ?? item?.player_name);
+    const itemRating = Number(item?.rating ?? item?.overall);
+    if (!wantedName || !itemName) continue;
+    if (!(itemName === wantedName || itemName.includes(wantedName) || wantedName.includes(itemName))) continue;
+    if (Number.isFinite(wantedRating) && Number.isFinite(itemRating) && itemRating !== wantedRating) continue;
+
+    let score = itemName === wantedName ? 60 : 40;
+    if (Number.isFinite(wantedRating) && itemRating === wantedRating) score += 25;
+
+    const itemPosition = futbinComparableText(item?.position);
+    if (wantedPosition && itemPosition.includes(wantedPosition)) score += 5;
+
+    const itemVersion = futbinComparableText(item?.version ?? item?.rarity ?? item?.card_type);
+    if (wantedVersion && itemVersion) {
+      const wantedTokens = new Set(wantedVersion.split(" ").filter(token => token.length >= 3));
+      const itemTokens = new Set(itemVersion.split(" ").filter(token => token.length >= 3));
+      let overlap = 0;
+      for (const token of wantedTokens) if (itemTokens.has(token)) overlap++;
+      if (overlap > 0) score += Math.min(15, overlap * 5);
+    }
+
+    if (Number.isFinite(row?.price) && row.price > 0) {
+      const absDiff = Math.abs((price - row.price) / row.price) * 100;
+      if (absDiff <= 5) score += 5;
+      else if (absDiff <= 15) score += 2;
+    }
+
+    scored.push({ item, price, score });
+  }
+
+  scored.sort((a, b) => b.score - a.score);
+  if (!scored.length || scored[0].score < 70) return null;
+
+  if (scored.length > 1 && scored[1].score === scored[0].score) {
+    const a = scored[0].price;
+    const b = scored[1].price;
+    const spread = Math.abs(a - b) / Math.max(1, Math.min(a, b)) * 100;
+    if (spread > 5) return null;
+  }
+
+  const best = scored[0];
+  return {
+    price: best.price,
+    matchConfidence: Math.max(70, Math.min(99, best.score)),
+    futbinId: best.item?.id ?? best.item?.player_id ?? null,
+    futbinUrl: best.item?.url ?? null,
+    version: best.item?.version ?? best.item?.rarity ?? null
+  };
+}
+
+function futbinParseCandidate(row) {
+  if (!FUTBIN_PARSE_API_KEY) return false;
+  if (!row || Number.isFinite(row.futbinPrice)) return false;
+  const confidence = Number(row.aiConfidence || 0);
+  const movement = Math.max(
+    Math.abs(Number(row.change1m || 0)),
+    Math.abs(Number(row.change5m || 0)),
+    Math.abs(Number(row.change15m || 0))
+  );
+  if (row.tracked && confidence >= 75) return true;
+  if (["JETZT KAUFEN", "VERKAUF PRÜFEN"].includes(row.aiAction) && confidence >= FUTBIN_PARSE_MIN_AI_CONFIDENCE) return true;
+  if (row.aiAction === "NOCH WARTEN" && confidence >= 90 && movement >= 10) return true;
+  return false;
+}
+
+async function fetchFutbinParseCrossCheck(row) {
+  if (!FUTBIN_PARSE_API_KEY || !row?.eaId || !row?.name) return null;
+  const key = String(row.eaId);
+  const now = Date.now();
+  const cached = futbinParseCardCache.get(key);
+  if (cached && now - cached.savedAt < FUTBIN_PARSE_CARD_COOLDOWN_MS) return cached.value;
+
+  const lastCheck = futbinParseCardLastCheck.get(key) || 0;
+  if (now - lastCheck < FUTBIN_PARSE_CARD_COOLDOWN_MS) return null;
+  const budget = refreshFutbinParseDailyBudget();
+  if (budget.remaining <= 0) {
+    latestFutbinParseStatus = {
+      ...latestFutbinParseStatus,
+      configured: true,
+      usable: true,
+      status: "DAILY_BUDGET_REACHED",
+      reason: `Tagesbudget ${FUTBIN_PARSE_DAILY_BUDGET}/${FUTBIN_PARSE_DAILY_BUDGET} erreicht.`,
+      callsToday: futbinParseCallsToday,
+      updatedAt: new Date().toISOString()
+    };
+    return null;
+  }
+  if (now - futbinParseLastCallAt < FUTBIN_PARSE_MIN_INTERVAL_MS) return null;
+
+  const endpoint = GAME_YEAR === "26" ? "search_players_fc26" : "search_players";
+  const params = new URLSearchParams({ query: row.name });
+  if (GAME_YEAR === "26" && endpoint === "search_players") params.set("fc26_only", "true");
+  const url = `${FUTBIN_PARSE_BASE_URL}/${endpoint}?${params.toString()}`;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
+
+  futbinParseCardLastCheck.set(key, now);
+  futbinParseLastCallAt = now;
+  futbinParseCallsToday += 1;
+  refreshFutbinParseDailyBudget();
+  latestFutbinParseStatus = {
+    ...latestFutbinParseStatus,
+    configured: true,
+    usable: true,
+    status: "CHECKING",
+    lastCallAt: new Date(now).toISOString(),
+    lastPlayer: row.name,
+    callsToday: futbinParseCallsToday,
+    updatedAt: new Date().toISOString()
+  };
+
+  try {
+    const response = await fetch(url, {
+      signal: controller.signal,
+      headers: {
+        accept: "application/json",
+        "X-API-Key": FUTBIN_PARSE_API_KEY,
+        "user-agent": "FC-Trader-Brain/10.32"
+      }
+    });
+    if (!response.ok) throw new Error(`Parse FUTBIN API -> HTTP ${response.status}`);
+    const payload = await response.json();
+    const match = futbinParseMatchForRow(row, futbinParseRows(payload));
+    if (!match) throw new Error("Kein eindeutig passender FUTBIN-Kartentreffer gefunden");
+
+    const value = {
+      ...match,
+      provider: "PARSE_PUBLIC_API",
+      checkedAt: new Date().toISOString()
+    };
+    futbinParseCardCache.set(key, { savedAt: Date.now(), value });
+    latestFutbinParseStatus = {
+      ...latestFutbinParseStatus,
+      configured: true,
+      usable: true,
+      status: "READY",
+      reason: `FUTBIN-Cross-Check für ${row.name} erfolgreich.`,
+      callsToday: futbinParseCallsToday,
+      lastSuccessAt: new Date().toISOString(),
+      lastError: null,
+      updatedAt: new Date().toISOString()
+    };
+    return value;
+  } catch (error) {
+    latestFutbinParseStatus = {
+      ...latestFutbinParseStatus,
+      configured: true,
+      usable: true,
+      status: "ERROR",
+      reason: "Öffentliche FUTBIN-API konnte den Kandidaten nicht sicher prüfen.",
+      callsToday: futbinParseCallsToday,
+      lastFailureAt: new Date().toISOString(),
+      lastError: String(error?.message || error),
+      updatedAt: new Date().toISOString()
+    };
+    console.warn("FUTBIN Parse API error:", error?.message || error);
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+function applyFutbinParseCrossCheck(row, match, brainWork) {
+  if (!row || !match || !Number.isFinite(match.price) || !Number.isFinite(row.price) || row.price <= 0) return false;
+  const diffPct = Number((((match.price - row.price) / row.price) * 100).toFixed(2));
+  const absDiff = Math.abs(diffPct);
+  row.futbinPrice = match.price;
+  row.futbinDiffPct = diffPct;
+  row.futbinCrossCheck = absDiff >= FUTBIN_OUTLIER_DIFF_PCT
+    ? "OUTLIER"
+    : absDiff >= FUTBIN_MAX_DIFF_PCT
+    ? "DIVERGENCE"
+    : "MATCH";
+  row.futbinProvider = match.provider;
+  row.futbinMatchConfidence = match.matchConfidence;
+  row.futbinUrl = match.futbinUrl;
+  row.futbinVersion = match.version;
+  row.futbinCheckedAt = match.checkedAt;
+
+  const work = brainWork?.get?.(String(row.eaId));
+  if (work?.input) {
+    work.input.futbinCrossCheck = {
+      provider: match.provider,
+      price: match.price,
+      diffPct,
+      status: row.futbinCrossCheck,
+      matchConfidence: match.matchConfidence,
+      checkedAt: match.checkedAt
+    };
+  }
+  return true;
+}
+
+async function enrichImportantRowsWithFutbinParse(rows, brainWork) {
+  if (!FUTBIN_PARSE_API_KEY || !Array.isArray(rows) || !rows.length) return 0;
+  refreshFutbinParseDailyBudget();
+  const priority = { "JETZT KAUFEN": 100, "VERKAUF PRÜFEN": 95, "NOCH WARTEN": 80, "NICHT KAUFEN": 50, "BEOBACHTEN": 20, "HALTEN": 10 };
+  const candidates = rows
+    .filter(futbinParseCandidate)
+    .sort((a, b) => {
+      if (a.tracked !== b.tracked) return a.tracked ? -1 : 1;
+      const actionDiff = (priority[b.aiAction] || 0) - (priority[a.aiAction] || 0);
+      if (actionDiff) return actionDiff;
+      return Number(b.aiConfidence || 0) - Number(a.aiConfidence || 0);
+    });
+
+  let applied = 0;
+  const now = Date.now();
+  const uncached = [];
+
+  // Bereits geprüfte Karten sofort wieder anreichern, ohne neue API-Credits.
+  for (const row of candidates) {
+    const cached = futbinParseCardCache.get(String(row.eaId));
+    if (cached && now - cached.savedAt < FUTBIN_PARSE_CARD_COOLDOWN_MS) {
+      if (applyFutbinParseCrossCheck(row, cached.value, brainWork)) applied++;
+    } else {
+      uncached.push(row);
+    }
+  }
+
+  // Pro Intervall höchstens einen neuen relevanten Kandidaten abfragen.
+  for (const row of uncached) {
+    const match = await fetchFutbinParseCrossCheck(row);
+    if (!match) continue;
+    if (applyFutbinParseCrossCheck(row, match, brainWork)) applied++;
+    break;
+  }
+
+  return applied;
+}
+
 function futbinCrossCheckFields(eaId, futggPrice, feed) {
   const item = feed?.map?.get(Number(eaId));
   if (!item || !Number.isFinite(item.price) || !Number.isFinite(futggPrice) || futggPrice <= 0) {
@@ -805,7 +1136,8 @@ function futbinCrossCheckFields(eaId, futggPrice, feed) {
   return {
     futbinPrice: item.price,
     futbinDiffPct: diffPct,
-    futbinCrossCheck: status
+    futbinCrossCheck: status,
+    futbinProvider: "AUTHORIZED_JSON_FEED"
   };
 }
 
@@ -891,7 +1223,14 @@ function updateFutbinCrossCheckHealth(rows) {
   return latestFutbinCrossCheckHealth;
 }
 
-function futbinCrossCheckCanInfluenceAlerts() {
+function futbinCrossCheckCanInfluenceAlerts(row = null) {
+  if (
+    row?.futbinProvider === "PARSE_PUBLIC_API" &&
+    Number(row?.futbinMatchConfidence || 0) >= 80 &&
+    latestFutbinParseStatus?.usable === true
+  ) {
+    return true;
+  }
   return latestFutbinCrossCheckHealth?.trusted === true &&
     ["HEALTHY", "DEGRADED"].includes(latestFutbinCrossCheckHealth?.status);
 }
@@ -2283,7 +2622,7 @@ function cardDiscordAlertCandidate(row) {
   if (
     row?.aiAction === "JETZT KAUFEN" &&
     row?.futbinCrossCheck === "OUTLIER" &&
-    futbinCrossCheckCanInfluenceAlerts()
+    futbinCrossCheckCanInfluenceAlerts(row)
   ) {
     return null;
   }
@@ -2342,7 +2681,7 @@ function buildCardDiscordPayload(row, type) {
   if (Number.isFinite(row.futbinPrice)) {
     fields.push({
       name: "FUTBIN Cross-Check",
-      value: `${discordNumber(row.futbinPrice)} Coins • ${row.futbinCrossCheck} • ${discordPct(row.futbinDiffPct)}`,
+      value: `${discordNumber(row.futbinPrice)} Coins • ${row.futbinCrossCheck} • ${discordPct(row.futbinDiffPct)}${row.futbinProvider ? ` • ${row.futbinProvider}` : ""}`,
       inline: false
     });
   }
@@ -3225,7 +3564,7 @@ async function sendDiscordStartupMessage() {
           { name: "Kaufalarm ab", value: `${DISCORD_MIN_BUY_CONFIDENCE}% KI-Sicherheit`, inline: true },
           { name: "Spam-Schutz", value: `${Math.round(DISCORD_ALERT_COOLDOWN_MS / 60_000)} Min. Cooldown`, inline: true }
         ],
-        footer: { text: "FC Trading Intelligence v10.31" },
+        footer: { text: "FC Trading Intelligence v10.32" },
         timestamp: new Date().toISOString()
       }]
     });
@@ -3314,6 +3653,7 @@ async function monitorOnce() {
       updateFutbinCrossCheckHealth(latestTradingRows);
 
       await evaluateTraderSignalReliability(latestTradingRows);
+      await enrichImportantRowsWithFutbinParse(latestTradingRows, built.brainWork);
       await automaticTraderBrain(latestTradingRows, built.brainWork);
       await processTraderConfluenceAlerts(latestTradingRows, latestRatingStats, built.brainWork, cycleAlertBudget);
       await processBrainStateChangeAlerts(latestTradingRows, cycleAlertBudget);
@@ -5806,7 +6146,7 @@ app.get("/", (req, res) => {
   res.json({
     online: true,
     service: "FC Trading Intelligence",
-    version: "10.31-production-freeze-candidate",
+    version: "10.32-public-futbin-api-bridge",
     gameYear: GAME_YEAR,
     marketProfile: marketProfile(),
     refreshSeconds: 60,
@@ -5911,9 +6251,10 @@ function runtimeReadinessSnapshot() {
     failedChecks: failed,
     checks,
     optional: {
-      futbinConfigured: Boolean(FUTBIN_AUTHORIZED_FEED_URL),
-      futbinStatus: latestFutbinStatus.status,
+      futbinConfigured: Boolean(FUTBIN_AUTHORIZED_FEED_URL || FUTBIN_PARSE_API_KEY),
+      futbinStatus: FUTBIN_AUTHORIZED_FEED_URL ? latestFutbinStatus.status : latestFutbinParseStatus.status,
       futbinTrusted: latestFutbinCrossCheckHealth.trusted === true,
+      futbinPublicApi: latestFutbinParseStatus,
       authorizedTraderFeedConfigured: TRADER_FEED_INGEST_CONFIGURED,
       geminiQuota: getGeminiQuotaInfo()
     },
@@ -5926,7 +6267,7 @@ app.get("/api/readiness", (req, res) => {
   const readiness = runtimeReadinessSnapshot();
   res.status(readiness.ready ? 200 : 503).json({
     ok: readiness.ready,
-    version: "10.31-production-freeze-candidate",
+    version: "10.32-public-futbin-api-bridge",
     gameYear: GAME_YEAR,
     readiness,
     note: "Dieser Endpunkt ist absichtlich strenger als /health. /health zeigt, ob der Webdienst lebt; /api/readiness zeigt, ob Marktquelle, Monitoring, Datenbank, Discord und Trader Brain wirklich produktionsbereit sind."
@@ -5936,7 +6277,7 @@ app.get("/api/readiness", (req, res) => {
 app.get("/health", (req, res) => {
   res.json({
     ok: true,
-    version: "10.31-production-freeze-candidate",
+    version: "10.32-public-futbin-api-bridge",
     gameYear: GAME_YEAR,
     marketProfile: marketProfile(),
     marketContext: latestMarketContext,
@@ -5947,7 +6288,10 @@ app.get("/health", (req, res) => {
       shutdownStartedAt,
       shutdownReason
     },
-    futbin: latestFutbinStatus,
+    futbin: {
+      authorizedFeed: latestFutbinStatus,
+      publicApi: latestFutbinParseStatus
+    },
     monitoringStarted,
     monitoringBusy,
     lastMonitorAt,
@@ -6256,7 +6600,7 @@ app.get("/api/trader-reliability/status", async (req, res) => {
 
     return res.json({
       enabled: true,
-      version: "10.31-production-freeze-candidate",
+      version: "10.32-public-futbin-api-bridge",
       gameYear: GAME_YEAR,
       method: {
         priorAccuracy: TRADER_RELIABILITY_PRIOR_ACCURACY,
@@ -6315,7 +6659,7 @@ app.get("/api/trader-reliability/status", async (req, res) => {
 app.get("/api/trader-confluence/status", (req, res) => {
   res.json({
     enabled: DISCORD_CONFIGURED && dbEnabled,
-    version: "10.31-production-freeze-candidate",
+    version: "10.32-public-futbin-api-bridge",
     minCardConfidence: DISCORD_TRADER_CONFLUENCE_MIN_CONFIDENCE,
     minRatingConfidence: DISCORD_TRADER_CONFLUENCE_MIN_RATING_CONFIDENCE,
     minTraderReliability: DISCORD_TRADER_CONFLUENCE_MIN_RELIABILITY,
@@ -6550,7 +6894,7 @@ app.get("/api/trading", async (req, res) => {
 
     res.json({
       ok: true,
-      version: "10.31-production-freeze-candidate",
+      version: "10.32-public-futbin-api-bridge",
       refreshSeconds: 60,
       dbEnabled,
       sourceHealth: health,
@@ -6629,7 +6973,7 @@ app.get("/api/processing-health", (req, res) => {
   const health = processingHealthSnapshot();
   res.status(health.healthy ? 200 : 503).json({
     ok: health.healthy,
-    version: "10.31-production-freeze-candidate",
+    version: "10.32-public-futbin-api-bridge",
     gameYear: GAME_YEAR,
     processingHealth: health,
     note: "DB-, Brain- oder Discord-Fehler werden getrennt von FUT.GG-Quellfehlern bewertet und können den Source Health Guard nicht mehr fälschlich in Quarantäne schicken."
@@ -6640,7 +6984,7 @@ app.get("/api/source-health", (req, res) => {
   const health = sourceHealthSnapshot();
   res.status(health.status === "UNHEALTHY" ? 503 : 200).json({
     ok: health.status !== "UNHEALTHY",
-    version: "10.31-production-freeze-candidate",
+    version: "10.32-public-futbin-api-bridge",
     gameYear: GAME_YEAR,
     refreshSeconds: 60,
     source: "FUT.GG PS5 bulk prices",
@@ -6649,7 +6993,7 @@ app.get("/api/source-health", (req, res) => {
       blocksHistoryWriteWhenUnhealthy: true,
       blocksBrainCycleWhenUnhealthy: true,
       blocksTradingAlertsWhenUnhealthy: true,
-      note: "Bei klar unvollständigen oder ausgefallenen FUT.GG-Daten wird der aktive Trading-Zyklus gestoppt. Ohne autorisierten FUTBIN-Feed zeigt die API nur den letzten geprüften STALE_SAFE-Snapshot. Mit autorisiertem Feed darf sie aktuelle Ersatzpreise im FUTBIN_FALLBACK_SAFE-Modus anzeigen; Historie, Lernen und Trading-Alerts bleiben dabei blockiert."
+      note: "Bei klar unvollständigen oder ausgefallenen FUT.GG-Daten wird der aktive Trading-Zyklus gestoppt. Ohne autorisierten FUTBIN-Feed zeigt die API nur den letzten geprüften STALE_SAFE-Snapshot. Mit belastbar verifiziertem Bulk-Feed darf sie aktuelle Ersatzpreise im FUTBIN_FALLBACK_SAFE-Modus anzeigen; Historie, Lernen und Trading-Alerts bleiben dabei blockiert."
     }
   });
 });
@@ -6660,13 +7004,25 @@ app.get("/api/futbin/status", (req, res) => {
 
   res.json({
     ok: true,
-    version: "10.31-production-freeze-candidate",
+    version: "10.32-public-futbin-api-bridge",
     gameYear: GAME_YEAR,
-    configured: Boolean(FUTBIN_AUTHORIZED_FEED_URL),
+    configured: Boolean(FUTBIN_AUTHORIZED_FEED_URL || FUTBIN_PARSE_API_KEY),
     status: latestFutbinStatus,
+    publicApi: {
+      ...latestFutbinParseStatus,
+      budget: refreshFutbinParseDailyBudget(),
+      baseUrl: FUTBIN_PARSE_BASE_URL,
+      minIntervalMinutes: Math.round(FUTBIN_PARSE_MIN_INTERVAL_MS / 60_000),
+      cardCooldownMinutes: Math.round(FUTBIN_PARSE_CARD_COOLDOWN_MS / 60_000),
+      minAiConfidence: FUTBIN_PARSE_MIN_AI_CONFIDENCE
+    },
     policy: {
       directWebScraping: false,
-      authorizedFeedOnly: true,
+      authorizedFeedOnly: false,
+      providers: [
+        FUTBIN_AUTHORIZED_FEED_URL ? "AUTHORIZED_JSON_FEED" : null,
+        FUTBIN_PARSE_API_KEY ? "PARSE_PUBLIC_API" : null
+      ].filter(Boolean),
       refreshMinutes: Math.round(FUTBIN_REFRESH_MS / 60_000),
       divergencePct: FUTBIN_MAX_DIFF_PCT,
       outlierPct: FUTBIN_OUTLIER_DIFF_PCT,
@@ -6675,7 +7031,7 @@ app.get("/api/futbin/status", (req, res) => {
       maxDivergentSharePct: Number((FUTBIN_MAX_DIVERGENT_SHARE * 100).toFixed(1)),
       maxOutlierSharePct: Number((FUTBIN_MAX_OUTLIER_SHARE * 100).toFixed(1)),
       trustTtlMinutes: Math.round(FUTBIN_TRUST_TTL_MS / 60_000),
-      note: "FUT.GG bleibt Hauptquelle. FUTBIN wird nur über einen autorisierten/lizenzierten JSON-Feed verwendet. Der Zweitquellen-Feed darf Alerts nur beeinflussen, wenn sein marktweiter Cross-Check belastbar ist; ein Anzeige-Fallback braucht zusätzlich einen frischen HEALTHY-Vertrauensstatus."
+      note: "FUT.GG bleibt Hauptquelle. FUTBIN kommt entweder über einen autorisierten Bulk-Feed oder über die öffentliche Parse-API. Parse wird nur sparsam für relevante Einzelkarten geprüft; ein eindeutiger OUTLIER darf einen Kaufalarm blockieren, aber niemals allein einen Kauf auslösen. Anzeige-Fallback bleibt dem belastbar verifizierten Bulk-Feed vorbehalten."
     },
     crossCheckHealth: latestFutbinCrossCheckHealth,
     currentCrossCheck: {
@@ -6689,7 +7045,7 @@ app.get("/api/futbin/status", (req, res) => {
 app.get("/api/market-context", (req, res) => {
   res.json({
     ok: true,
-    version: "10.31-production-freeze-candidate",
+    version: "10.32-public-futbin-api-bridge",
     gameYear: GAME_YEAR,
     refreshSeconds: 60,
     context: latestMarketContext,
@@ -6700,7 +7056,7 @@ app.get("/api/market-context", (req, res) => {
 app.get("/api/trader-brain/status", (req, res) => {
   res.json({
     ok: true,
-    version: "10.31-production-freeze-candidate",
+    version: "10.32-public-futbin-api-bridge",
     gameYear: GAME_YEAR,
     marketProfile: marketProfile(),
     marketContext: latestMarketContext,
@@ -6710,7 +7066,7 @@ app.get("/api/trader-brain/status", (req, res) => {
     lastBrainError,
     lastGeminiCandidate,
     learning: {
-      version: "10.31-production-freeze-candidate",
+      version: "10.32-public-futbin-api-bridge",
       totalMatureDecisions: brainLearningCache.totalMatureDecisions,
       rawMatureDecisions: brainLearningCache.rawMatureDecisions,
       uniqueLearningEpisodes: brainLearningCache.uniqueLearningEpisodes,
@@ -6731,7 +7087,7 @@ app.get("/api/trader-brain/learning/status", async (req, res) => {
     const cache = await loadBrainLearningProfiles(true);
     return res.json({
       enabled: true,
-      version: "10.31-production-freeze-candidate",
+      version: "10.32-public-futbin-api-bridge",
       method: {
         windowDays: BRAIN_LEARNING_WINDOW_DAYS,
         priorAccuracy: BRAIN_LEARNING_PRIOR_ACCURACY,
@@ -7921,7 +8277,7 @@ httpServer = app.listen(
   port,
   () => {
     console.log(
-      `FC Trading Intelligence v10.31 Production Freeze Candidate (FC${GAME_YEAR}) running on ${port}`
+      `FC Trading Intelligence v10.32 Public FUTBIN API Bridge (FC${GAME_YEAR}) running on ${port}`
     );
 
     startMonitoring();
