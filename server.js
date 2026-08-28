@@ -3157,7 +3157,7 @@ async function sendDiscordStartupMessage() {
           { name: "Kaufalarm ab", value: `${DISCORD_MIN_BUY_CONFIDENCE}% KI-Sicherheit`, inline: true },
           { name: "Spam-Schutz", value: `${Math.round(DISCORD_ALERT_COOLDOWN_MS / 60_000)} Min. Cooldown`, inline: true }
         ],
-        footer: { text: "FC Trading Intelligence v10.28" },
+        footer: { text: "FC Trading Intelligence v10.29" },
         timestamp: new Date().toISOString()
       }]
     });
@@ -5711,7 +5711,7 @@ app.get("/", (req, res) => {
   res.json({
     online: true,
     service: "FC Trading Intelligence",
-    version: "10.28-trader-event-time-integrity",
+    version: "10.29-production-readiness-watchdog",
     gameYear: GAME_YEAR,
     marketProfile: marketProfile(),
     refreshSeconds: 60,
@@ -5739,15 +5739,98 @@ app.get("/", (req, res) => {
       sourceHealth: "GET /api/source-health",
       futbinStatus: "GET /api/futbin/status",
       safeStaleMode: "GET /api/trading",
+      readiness: "GET /api/readiness",
       health: "GET /health"
     }
+  });
+});
+
+function runtimeReadinessSnapshot() {
+  const now = Date.now();
+  const source = sourceHealthSnapshot();
+  const monitorAtMs = lastMonitorAt ? new Date(lastMonitorAt).getTime() : 0;
+  const brainAtMs = lastBrainRunAt ? new Date(lastBrainRunAt).getTime() : 0;
+  const monitorMaxAgeMs = Math.max(PRICE_REFRESH_MS * 4, SOURCE_HEALTH_STALE_MS);
+  const brainMaxAgeMs = Math.max(PRICE_REFRESH_MS * 5, 5 * 60_000);
+  const monitorAgeMs = monitorAtMs ? Math.max(0, now - monitorAtMs) : null;
+  const brainAgeMs = brainAtMs ? Math.max(0, now - brainAtMs) : null;
+
+  const checks = {
+    monitoringLoop: {
+      ok: monitoringStarted === true && monitorAtMs > 0 && monitorAgeMs <= monitorMaxAgeMs,
+      lastAt: lastMonitorAt,
+      ageSeconds: monitorAgeMs == null ? null : Math.round(monitorAgeMs / 1000),
+      maxAgeSeconds: Math.round(monitorMaxAgeMs / 1000),
+      busy: monitoringBusy
+    },
+    primaryMarketSource: {
+      ok: source.tradingAllowed === true,
+      status: source.status,
+      reason: source.reason,
+      recoveryPending: source.recoveryPending,
+      coveragePct: source.coveragePct
+    },
+    safeMarketSnapshot: {
+      ok: latestTradingRows.length > 0,
+      cards: latestTradingRows.length,
+      updatedAt: lastMonitorAt || source.lastSuccessAt || null
+    },
+    persistentDatabase: {
+      ok: dbEnabled === true,
+      mode: dbEnabled ? "PostgreSQL" : "memory-only"
+    },
+    discordGateway: {
+      ok: DISCORD_CONFIGURED === true && discordClientReady === true && Boolean(discordResolvedChannelId),
+      configured: DISCORD_CONFIGURED,
+      gatewayReady: discordClientReady,
+      channelId: discordResolvedChannelId,
+      lastError: lastDiscordError
+    },
+    traderBrainLoop: {
+      ok: brainAtMs > 0 && brainAgeMs <= brainMaxAgeMs && !lastBrainError,
+      lastAt: lastBrainRunAt,
+      ageSeconds: brainAgeMs == null ? null : Math.round(brainAgeMs / 1000),
+      maxAgeSeconds: Math.round(brainMaxAgeMs / 1000),
+      lastError: lastBrainError
+    }
+  };
+
+  const failed = Object.entries(checks)
+    .filter(([, value]) => value.ok !== true)
+    .map(([name]) => name);
+
+  return {
+    ready: failed.length === 0,
+    status: failed.length === 0 ? "READY" : "NOT_READY",
+    failedChecks: failed,
+    checks,
+    optional: {
+      futbinConfigured: Boolean(FUTBIN_AUTHORIZED_FEED_URL),
+      futbinStatus: latestFutbinStatus.status,
+      futbinTrusted: latestFutbinCrossCheckHealth.trusted === true,
+      authorizedTraderFeedConfigured: TRADER_FEED_INGEST_CONFIGURED,
+      geminiQuota: getGeminiQuotaInfo()
+    },
+    uptimeSeconds: Math.round(process.uptime()),
+    checkedAt: new Date().toISOString()
+  };
+}
+
+app.get("/api/readiness", (req, res) => {
+  const readiness = runtimeReadinessSnapshot();
+  res.status(readiness.ready ? 200 : 503).json({
+    ok: readiness.ready,
+    version: "10.29-production-readiness-watchdog",
+    gameYear: GAME_YEAR,
+    readiness,
+    note: "Dieser Endpunkt ist absichtlich strenger als /health. /health zeigt, ob der Webdienst lebt; /api/readiness zeigt, ob Marktquelle, Monitoring, Datenbank, Discord und Trader Brain wirklich produktionsbereit sind."
   });
 });
 
 app.get("/health", (req, res) => {
   res.json({
     ok: true,
-    version: "10.28-trader-event-time-integrity",
+    version: "10.29-production-readiness-watchdog",
     gameYear: GAME_YEAR,
     marketProfile: marketProfile(),
     marketContext: latestMarketContext,
@@ -6061,7 +6144,7 @@ app.get("/api/trader-reliability/status", async (req, res) => {
 
     return res.json({
       enabled: true,
-      version: "10.28-trader-event-time-integrity",
+      version: "10.29-production-readiness-watchdog",
       gameYear: GAME_YEAR,
       method: {
         priorAccuracy: TRADER_RELIABILITY_PRIOR_ACCURACY,
@@ -6120,7 +6203,7 @@ app.get("/api/trader-reliability/status", async (req, res) => {
 app.get("/api/trader-confluence/status", (req, res) => {
   res.json({
     enabled: DISCORD_CONFIGURED && dbEnabled,
-    version: "10.28-trader-event-time-integrity",
+    version: "10.29-production-readiness-watchdog",
     minCardConfidence: DISCORD_TRADER_CONFLUENCE_MIN_CONFIDENCE,
     minRatingConfidence: DISCORD_TRADER_CONFLUENCE_MIN_RATING_CONFIDENCE,
     minTraderReliability: DISCORD_TRADER_CONFLUENCE_MIN_RELIABILITY,
@@ -6355,7 +6438,7 @@ app.get("/api/trading", async (req, res) => {
 
     res.json({
       ok: true,
-      version: "10.28-trader-event-time-integrity",
+      version: "10.29-production-readiness-watchdog",
       refreshSeconds: 60,
       dbEnabled,
       sourceHealth: health,
@@ -6434,7 +6517,7 @@ app.get("/api/source-health", (req, res) => {
   const health = sourceHealthSnapshot();
   res.status(health.status === "UNHEALTHY" ? 503 : 200).json({
     ok: health.status !== "UNHEALTHY",
-    version: "10.28-trader-event-time-integrity",
+    version: "10.29-production-readiness-watchdog",
     gameYear: GAME_YEAR,
     refreshSeconds: 60,
     source: "FUT.GG PS5 bulk prices",
@@ -6454,7 +6537,7 @@ app.get("/api/futbin/status", (req, res) => {
 
   res.json({
     ok: true,
-    version: "10.28-trader-event-time-integrity",
+    version: "10.29-production-readiness-watchdog",
     gameYear: GAME_YEAR,
     configured: Boolean(FUTBIN_AUTHORIZED_FEED_URL),
     status: latestFutbinStatus,
@@ -6483,7 +6566,7 @@ app.get("/api/futbin/status", (req, res) => {
 app.get("/api/market-context", (req, res) => {
   res.json({
     ok: true,
-    version: "10.28-trader-event-time-integrity",
+    version: "10.29-production-readiness-watchdog",
     gameYear: GAME_YEAR,
     refreshSeconds: 60,
     context: latestMarketContext,
@@ -6494,7 +6577,7 @@ app.get("/api/market-context", (req, res) => {
 app.get("/api/trader-brain/status", (req, res) => {
   res.json({
     ok: true,
-    version: "10.28-trader-event-time-integrity",
+    version: "10.29-production-readiness-watchdog",
     gameYear: GAME_YEAR,
     marketProfile: marketProfile(),
     marketContext: latestMarketContext,
@@ -6504,7 +6587,7 @@ app.get("/api/trader-brain/status", (req, res) => {
     lastBrainError,
     lastGeminiCandidate,
     learning: {
-      version: "10.28-trader-event-time-integrity",
+      version: "10.29-production-readiness-watchdog",
       totalMatureDecisions: brainLearningCache.totalMatureDecisions,
       rawMatureDecisions: brainLearningCache.rawMatureDecisions,
       uniqueLearningEpisodes: brainLearningCache.uniqueLearningEpisodes,
@@ -6525,7 +6608,7 @@ app.get("/api/trader-brain/learning/status", async (req, res) => {
     const cache = await loadBrainLearningProfiles(true);
     return res.json({
       enabled: true,
-      version: "10.28-trader-event-time-integrity",
+      version: "10.29-production-readiness-watchdog",
       method: {
         windowDays: BRAIN_LEARNING_WINDOW_DAYS,
         priorAccuracy: BRAIN_LEARNING_PRIOR_ACCURACY,
@@ -7644,7 +7727,7 @@ app.listen(
   port,
   () => {
     console.log(
-      `FC Trading Intelligence v10.28 Trader Event-Time Integrity (FC${GAME_YEAR}) running on ${port}`
+      `FC Trading Intelligence v10.29 Production Readiness Watchdog (FC${GAME_YEAR}) running on ${port}`
     );
 
     startMonitoring();
