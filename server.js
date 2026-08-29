@@ -2286,14 +2286,52 @@ function ratingPlayerListOpenComponents(stat) {
   }];
 }
 
-function ratingPlayerListRows(rating) {
-  return (latestTradingRows || [])
-    .filter(row => row?.cardType === "Base Rare" && Number(row.overall) === Number(rating) && Number.isFinite(Number(row.price)) && Number(row.price) > 0)
-    .sort((a, b) => Number(a.price) - Number(b.price) || String(a.name || "").localeCompare(String(b.name || ""), "de"));
+async function ratingPlayerListRows(rating) {
+  const targetRating = Number(rating);
+  let rows = (latestTradingRows || [])
+    .filter(row =>
+      row?.cardType === "Base Rare" &&
+      Number(row.overall) === targetRating &&
+      Number.isFinite(Number(row.price)) &&
+      Number(row.price) > 0
+    );
+
+  // Falls der "sichere" Trading-Snapshot gerade leer/kleiner ist, die Liste
+  // direkt aus der gecachten FUT.GG-Kartenwelt + Bulk-Preisen aufbauen.
+  // So kann ein gültiger Rating-Alert nicht mehr in einer leeren Spieler-Liste enden.
+  if (!rows.length) {
+    try {
+      const [cards, bulk] = await Promise.all([
+        ensureUniverse(false),
+        loadBulkPs5Prices(false)
+      ]);
+      rows = currentPricedCards(cards, bulk)
+        .filter(row =>
+          row?.cardType === "Base Rare" &&
+          Number(row.overall) === targetRating &&
+          Number.isFinite(Number(row.price)) &&
+          Number(row.price) > 0
+        );
+    } catch (error) {
+      console.error("Rating player list fallback error:", error);
+    }
+  }
+
+  const intensiveWatches = await getIntensiveWatchlist().catch(() => new Map());
+
+  return rows
+    .map(row => ({
+      ...row,
+      intensiveWatch: intensiveWatches.has(String(row.eaId))
+    }))
+    .sort((a, b) =>
+      Number(a.price) - Number(b.price) ||
+      String(a.name || "").localeCompare(String(b.name || ""), "de")
+    );
 }
 
-function buildRatingPlayerListPayload(rating, page = 0) {
-  const rows = ratingPlayerListRows(rating);
+async function buildRatingPlayerListPayload(rating, page = 0) {
+  const rows = await ratingPlayerListRows(rating);
   const totalPages = Math.max(1, Math.ceil(rows.length / RATING_LIST_PAGE_SIZE));
   const safePage = Math.max(0, Math.min(totalPages - 1, Number(page) || 0));
   const start = safePage * RATING_LIST_PAGE_SIZE;
@@ -2305,9 +2343,32 @@ function buildRatingPlayerListPayload(rating, page = 0) {
     ? slice.map((row, index) => {
         const name = String(row.name || `EA ${row.eaId}`);
         const label = row.url ? `[${name}](${row.url})` : name;
-        return `${start + index + 1}. ${label} • **${discordNumber(Number(row.price))} Coins**`;
+        const watch = row.intensiveWatch ? " ⭐ **INTENSIV**" : "";
+        return `${start + index + 1}. ${label} • **${discordNumber(Number(row.price))} Coins**${watch}`;
       }).join("\n").slice(0, 3900)
-    : "Aktuell sind keine sicheren Base-Rare-Spieler dieses Ratings im Markt-Snapshot vorhanden.";
+    : "Aktuell sind keine Base-Rare-Spieler dieses Ratings mit gültigem FUT.GG-Preis verfügbar.";
+
+  const components = [];
+
+  // Discord String-Select: aus der Rating-Liste direkt einen konkreten Spieler
+  // für die intensive Überwachung auswählen, ohne Einzelspieler-Spam im Feed.
+  if (slice.length) {
+    components.push({
+      type: 1,
+      components: [{
+        type: 3,
+        custom_id: `rating:watch:${rating}:${safePage}`,
+        placeholder: "⭐ Spieler intensiv überwachen",
+        min_values: 1,
+        max_values: 1,
+        options: slice.slice(0, 25).map(row => ({
+          label: String(row.name || `EA ${row.eaId}`).slice(0, 100),
+          value: String(row.eaId),
+          description: `${discordNumber(Number(row.price))} Coins${row.intensiveWatch ? " • bereits intensiv" : ""}`.slice(0, 100)
+        }))
+      }]
+    });
+  }
 
   const nav = [];
   if (safePage > 0) {
@@ -2317,6 +2378,7 @@ function buildRatingPlayerListPayload(rating, page = 0) {
     nav.push({ type: 2, style: 2, label: "Weiter ▶", custom_id: `rating:page:${rating}:${safePage + 1}` });
   }
   nav.push({ type: 2, style: 4, label: "✖ Schließen", custom_id: `rating:close:${rating}` });
+  components.push({ type: 1, components: nav.slice(0, 5) });
 
   return {
     embeds: [{
@@ -2325,12 +2387,13 @@ function buildRatingPlayerListPayload(rating, page = 0) {
       fields: [
         { name: "Rating-Preis", value: Number.isFinite(referencePrice) ? `${discordNumber(referencePrice)} Coins` : "-", inline: true },
         { name: "Spieler", value: String(rows.length), inline: true },
-        { name: "Seite", value: `${safePage + 1}/${totalPages}`, inline: true }
+        { name: "Seite", value: `${safePage + 1}/${totalPages}`, inline: true },
+        { name: "Intensiv", value: "Spieler unten auswählen. ⭐ markiert bereits überwachte Karten.", inline: false }
       ],
       footer: { text: `FC Trader Brain • nur für dich sichtbar • FC${GAME_YEAR}` },
       timestamp: new Date().toISOString()
     }],
-    components: nav.length ? [{ type: 1, components: nav.slice(0, 5) }] : []
+    components
   };
 }
 
@@ -2948,7 +3011,9 @@ async function resolveIntensiveWatchRow(eaId) {
 }
 
 async function handleDiscordButtonInteraction(interaction) {
-  if (!interaction?.isButton?.()) return;
+  const isButton = interaction?.isButton?.() === true;
+  const isStringSelect = interaction?.isStringSelectMenu?.() === true;
+  if (!isButton && !isStringSelect) return;
 
   const customId = String(interaction.customId || "");
 
@@ -2956,7 +3021,7 @@ async function handleDiscordButtonInteraction(interaction) {
   if (ratingOpen) {
     try {
       await interaction.deferReply({ flags: 64 });
-      await interaction.editReply(buildRatingPlayerListPayload(Number(ratingOpen[1]), 0));
+      await interaction.editReply(await buildRatingPlayerListPayload(Number(ratingOpen[1]), 0));
     } catch (error) {
       console.error("Discord rating list open error:", error);
       if (interaction.deferred || interaction.replied) {
@@ -2969,9 +3034,66 @@ async function handleDiscordButtonInteraction(interaction) {
   const ratingPage = customId.match(/^rating:page:(\d{2}):(\d+)$/);
   if (ratingPage) {
     try {
-      await interaction.update(buildRatingPlayerListPayload(Number(ratingPage[1]), Number(ratingPage[2])));
+      await interaction.deferUpdate();
+      await interaction.editReply(await buildRatingPlayerListPayload(Number(ratingPage[1]), Number(ratingPage[2])));
     } catch (error) {
       console.error("Discord rating list page error:", error);
+    }
+    return;
+  }
+
+  const ratingWatch = customId.match(/^rating:watch:(\d{2}):(\d+)$/);
+  if (ratingWatch && isStringSelect) {
+    const rating = Number(ratingWatch[1]);
+    const page = Number(ratingWatch[2]);
+    const eaId = String(interaction.values?.[0] || "");
+
+    try {
+      // Sofort bestaetigen, dann DB/Watch speichern.
+      await interaction.deferUpdate();
+
+      if (!/^\d+$/.test(eaId)) {
+        await interaction.followUp({
+          content: "⚠️ Dieser Spieler konnte nicht eindeutig erkannt werden.",
+          flags: 64
+        }).catch(() => {});
+        return;
+      }
+
+      const resolved = await resolveIntensiveWatchRow(eaId);
+      if (!resolved?.row) {
+        await interaction.followUp({
+          content: "⚠️ Für diesen Spieler ist gerade kein gültiger Marktpreis verfügbar.",
+          flags: 64
+        }).catch(() => {});
+        return;
+      }
+
+      const before = await getIntensiveWatchlist();
+      const already = before.has(eaId);
+      const watch = await saveIntensiveWatch(
+        resolved.row,
+        interaction.user?.id || null
+      );
+
+      // Die private Rating-Liste direkt aktualisieren, damit ⭐ sofort sichtbar ist.
+      await interaction.editReply(
+        await buildRatingPlayerListPayload(rating, page)
+      ).catch(() => {});
+
+      await interaction.followUp({
+        content: already
+          ? `⭐ **${resolved.row.name}** wird bereits intensiv überwacht.`
+          : `⭐ **${resolved.row.name}** wird jetzt intensiv überwacht. Referenzpreis: **${discordNumber(watch?.startPrice || resolved.row.price)} Coins**.`,
+        flags: 64
+      }).catch(() => {});
+    } catch (error) {
+      lastIntensiveWatchError = String(error);
+      console.error("Discord rating-list intensive watch error:", error);
+      await interaction.followUp({
+        content: `⚠️ Intensive Überwachung konnte nicht aktiviert werden: ${String(error?.message || error).slice(0, 250)}`,
+        flags: 64
+      }).catch(() => {});
     }
     return;
   }
@@ -4767,7 +4889,7 @@ async function sendDiscordStartupMessage() {
       alertKey,
       alertType: "system",
       action: "CONNECTED",
-      fingerprint: "v10.47"
+      fingerprint: "v10.48"
     });
   } catch (error) {
     lastDiscordError = String(error);
@@ -7502,7 +7624,7 @@ async function buildDecisionPerformanceScorecard(limit = 500) {
   return {
     ok: true,
     enabled: true,
-    version: "10.47-decision-performance-lab",
+    version: "10.48-rating-list-intensive",
     sampleSize: total,
     scorecard: {
       accuracy: total ? Number(((wins / total) * 100).toFixed(2)) : null,
@@ -8799,7 +8921,7 @@ app.get("/", (req, res) => {
   res.json({
     online: true,
     service: "FC Trading Intelligence",
-    version: "10.47-decision-performance-lab",
+    version: "10.48-rating-list-intensive",
     gameYear: GAME_YEAR,
     marketProfile: marketProfile(),
     refreshSeconds: 60,
@@ -8927,7 +9049,7 @@ app.get("/api/readiness", (req, res) => {
   const readiness = runtimeReadinessSnapshot();
   res.status(readiness.ready ? 200 : 503).json({
     ok: readiness.ready,
-    version: "10.47-decision-performance-lab",
+    version: "10.48-rating-list-intensive",
     gameYear: GAME_YEAR,
     readiness,
     note: "Dieser Endpunkt ist absichtlich strenger als /health. /health zeigt, ob der Webdienst lebt; /api/readiness zeigt, ob Marktquelle, Monitoring, Datenbank, Discord und Trader Brain wirklich produktionsbereit sind."
@@ -8937,7 +9059,7 @@ app.get("/api/readiness", (req, res) => {
 app.get("/health", (req, res) => {
   res.json({
     ok: true,
-    version: "10.47-decision-performance-lab",
+    version: "10.48-rating-list-intensive",
     gameYear: GAME_YEAR,
     marketProfile: marketProfile(),
     marketContext: latestMarketContext,
@@ -9231,7 +9353,7 @@ app.post("/api/trader-signals/ingest", async (req, res) => {
 
 app.get("/api/trader-sources/status", (req, res) => {
   res.json({
-    ok: true, version: "10.47-decision-performance-lab", mode: "forwarded-or-authorized-only", automaticForeignDiscordReading: false,
+    ok: true, version: "10.48-rating-list-intensive", mode: "forwarded-or-authorized-only", automaticForeignDiscordReading: false,
     sources: CURATED_TRADER_SOURCES.map(source => ({ id: source.id, name: source.displayName, aliases: source.aliases, channels: source.channels.map(channel => ({ channel: channel.name, type: channel.type, category: channel.category, defaultCall: channel.defaultCall, reliabilityWeight: Number(channel.weight || 1) })) })),
     note: "Die Registry normalisiert weitergeleitete/erlaubte Signale. Sie liest keine fremden Discord-Server automatisch oder verdeckt aus."
   });
@@ -9252,7 +9374,7 @@ app.get("/api/alert-sanity/status", (req, res) => {
   }));
   res.json({
     ok: true,
-    version: "10.47-decision-performance-lab",
+    version: "10.48-rating-list-intensive",
     blockedNow: blocked.length,
     thresholds: {
       livePriceDiffPct: ALERT_SANITY_RECHECK_DIFF_PCT,
@@ -9268,7 +9390,7 @@ app.get("/api/buy-guard/status", (req, res) => {
   res.json({
     ok: true,
     enabled: true,
-    version: "10.47-decision-performance-lab",
+    version: "10.48-rating-list-intensive",
     rules: {
       duplicateShortHorizonsCountAsOne: true,
       requiredRecoveryCycles: STRICT_BUY_RECOVERY_CYCLES,
@@ -9301,7 +9423,7 @@ app.get("/api/leak-impact/status", async (req, res) => {
       GROUP BY s.source ORDER BY COUNT(DISTINCT i.signal_id) DESC, s.source ASC
     `);
     return res.json({
-      ok: true, enabled: true, version: "10.47-decision-performance-lab", horizonsMinutes: TRADER_MARKET_IMPACT_HORIZONS,
+      ok: true, enabled: true, version: "10.48-rating-list-intensive", horizonsMinutes: TRADER_MARKET_IMPACT_HORIZONS,
       sourceSummary: sourceSummary.rows.map(row => ({ source: row.source, events: Number(row.events || 0), evaluatedPoints: Number(row.evaluated_points || 0), avgAbsMarketMovePct: Number(row.avg_abs_market_move || 0), avgMarketMovePct: Number(row.avg_market_move || 0) })),
       recent: recent.rows.map(row => ({ signalId: row.signal_id, source: row.source, channel: row.source_channel || null, category: row.category, horizonMinutes: Number(row.horizon_minutes), marketMedianChangePct: Number(row.market_median_change_pct), strongestRating: row.strongest_rating == null ? null : Number(row.strongest_rating), strongestRatingChangePct: row.strongest_rating_change_pct == null ? null : Number(row.strongest_rating_change_pct), affectedRatings: row.affected_ratings || [], direction: row.direction, sourceEventAt: row.source_event_at, evaluatedAt: row.evaluated_at, message: String(row.message || "").slice(0, 500) })),
       note: "Leak/Content-Events loesen keinen Kauf aus. Der Brain misst zuerst, welche Rating-Segmente sich nach 15m/1h/6h/24h real bewegen."
@@ -9345,7 +9467,7 @@ app.get("/api/market-knowledge/status", async (req, res) => {
     return res.json({
       ok: true,
       enabled: true,
-      version: "10.47-decision-performance-lab",
+      version: "10.48-rating-list-intensive",
       policy: {
         hypothesesAreNotTruth: true,
         minimumSamplesBeforeInfluence: MARKET_KNOWLEDGE_MIN_SAMPLES,
@@ -9414,7 +9536,7 @@ app.get("/api/trader-reliability/status", async (req, res) => {
 
     return res.json({
       enabled: true,
-      version: "10.47-decision-performance-lab",
+      version: "10.48-rating-list-intensive",
       gameYear: GAME_YEAR,
       method: {
         priorAccuracy: TRADER_RELIABILITY_PRIOR_ACCURACY,
@@ -9473,7 +9595,7 @@ app.get("/api/trader-reliability/status", async (req, res) => {
 app.get("/api/trader-confluence/status", (req, res) => {
   res.json({
     enabled: DISCORD_CONFIGURED && dbEnabled,
-    version: "10.47-decision-performance-lab",
+    version: "10.48-rating-list-intensive",
     minCardConfidence: DISCORD_TRADER_CONFLUENCE_MIN_CONFIDENCE,
     minRatingConfidence: DISCORD_TRADER_CONFLUENCE_MIN_RATING_CONFIDENCE,
     minTraderReliability: DISCORD_TRADER_CONFLUENCE_MIN_RELIABILITY,
@@ -9506,7 +9628,7 @@ app.get("/api/trader-confluence/status", (req, res) => {
 app.get("/api/discord-rating-mode/status", (req, res) => {
   res.json({
     ok: true,
-    version: "10.47-decision-performance-lab",
+    version: "10.48-rating-list-intensive",
     ratingFirst: DISCORD_RATING_FIRST_BASE_ALERTS,
     strictRatingFeed: true,
     normalPlayerAlerts: false,
@@ -9515,12 +9637,13 @@ app.get("/api/discord-rating-mode/status", (req, res) => {
     ratingPlayerList: {
       enabled: true,
       button: "Spieler anzeigen",
+      intensiveSelector: "Spieler intensiv überwachen",
       privateToClickingUser: true,
       pageSize: RATING_LIST_PAGE_SIZE
     },
     specialCardsRemainIndividual: false,
     traderPlayerConfluencePublic: false,
-    note: "Normale automatische Einzelspieler-Alerts aller Kartentypen sind im öffentlichen Feed aus. Namen erscheinen nur per Spieler-anzeigen-Liste oder bei eigenen Käufen/intensiver Watch."
+    note: "Öffentlicher Feed bleibt Rating-only. In der privaten Spieler-Liste kann ein konkreter Spieler direkt für Intensive Watch ausgewählt werden; leere Listen nutzen einen FUT.GG-Bulk-Fallback."
   });
 });
 
@@ -9681,7 +9804,7 @@ app.get("/api/intensive-watchlist", async (req, res) => {
 
     res.json({
       ok: true,
-      version: "10.47-decision-performance-lab",
+      version: "10.48-rating-list-intensive",
       count: items.length,
       settings: {
         moveAlertPct: INTENSIVE_WATCH_MOVE_PCT,
@@ -9794,7 +9917,7 @@ app.get("/api/trading", async (req, res) => {
 
     res.json({
       ok: true,
-      version: "10.47-decision-performance-lab",
+      version: "10.48-rating-list-intensive",
       refreshSeconds: 60,
       dbEnabled,
       sourceHealth: health,
@@ -9875,7 +9998,7 @@ app.get("/api/processing-health", (req, res) => {
   const health = processingHealthSnapshot();
   res.status(health.healthy ? 200 : 503).json({
     ok: health.healthy,
-    version: "10.47-decision-performance-lab",
+    version: "10.48-rating-list-intensive",
     gameYear: GAME_YEAR,
     processingHealth: health,
     note: "DB-, Brain- oder Discord-Fehler werden getrennt von FUT.GG-Quellfehlern bewertet und können den Source Health Guard nicht mehr fälschlich in Quarantäne schicken."
@@ -9886,7 +10009,7 @@ app.get("/api/source-health", (req, res) => {
   const health = sourceHealthSnapshot();
   res.status(health.status === "UNHEALTHY" ? 503 : 200).json({
     ok: health.status !== "UNHEALTHY",
-    version: "10.47-decision-performance-lab",
+    version: "10.48-rating-list-intensive",
     gameYear: GAME_YEAR,
     refreshSeconds: 60,
     source: "FUT.GG PS5 bulk prices",
@@ -9906,7 +10029,7 @@ app.get("/api/futbin/status", (req, res) => {
 
   res.json({
     ok: true,
-    version: "10.47-decision-performance-lab",
+    version: "10.48-rating-list-intensive",
     gameYear: GAME_YEAR,
     configured: Boolean(FUTBIN_AUTHORIZED_FEED_URL || FUTBIN_PARSE_API_KEY),
     status: latestFutbinStatus,
@@ -9947,7 +10070,7 @@ app.get("/api/futbin/status", (req, res) => {
 app.get("/api/market-context", (req, res) => {
   res.json({
     ok: true,
-    version: "10.47-decision-performance-lab",
+    version: "10.48-rating-list-intensive",
     gameYear: GAME_YEAR,
     refreshSeconds: 60,
     context: latestMarketContext,
@@ -9958,7 +10081,7 @@ app.get("/api/market-context", (req, res) => {
 app.get("/api/trader-brain/status", (req, res) => {
   res.json({
     ok: true,
-    version: "10.47-decision-performance-lab",
+    version: "10.48-rating-list-intensive",
     gameYear: GAME_YEAR,
     marketProfile: marketProfile(),
     marketContext: latestMarketContext,
@@ -9968,7 +10091,7 @@ app.get("/api/trader-brain/status", (req, res) => {
     lastBrainError,
     lastGeminiCandidate,
     learning: {
-      version: "10.47-decision-performance-lab",
+      version: "10.48-rating-list-intensive",
       totalMatureDecisions: brainLearningCache.totalMatureDecisions,
       rawMatureDecisions: brainLearningCache.rawMatureDecisions,
       uniqueLearningEpisodes: brainLearningCache.uniqueLearningEpisodes,
@@ -9989,7 +10112,7 @@ app.get("/api/trader-brain/learning/status", async (req, res) => {
     const cache = await loadBrainLearningProfiles(true);
     return res.json({
       enabled: true,
-      version: "10.47-decision-performance-lab",
+      version: "10.48-rating-list-intensive",
       method: {
         windowDays: BRAIN_LEARNING_WINDOW_DAYS,
         priorAccuracy: BRAIN_LEARNING_PRIOR_ACCURACY,
@@ -10033,7 +10156,7 @@ app.get("/api/trader-brain/performance/status", async (req, res) => {
     res.status(500).json({
       ok: false,
       enabled: dbEnabled,
-      version: "10.47-decision-performance-lab",
+      version: "10.48-rating-list-intensive",
       error: String(error)
     });
   }
