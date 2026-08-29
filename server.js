@@ -96,6 +96,15 @@ const FUTBIN_MAX_DIVERGENT_SHARE = Math.max(0.05, Math.min(0.9, Number(process.e
 const FUTBIN_MAX_OUTLIER_SHARE = Math.max(0.02, Math.min(0.6, Number(process.env.FUTBIN_MAX_OUTLIER_SHARE || 0.12)));
 const FUTBIN_TRUST_TTL_MS = Math.max(5, Number(process.env.FUTBIN_TRUST_TTL_MIN || 30)) * 60_000;
 
+// v10.37: Lauren-James calibration guard. A recovery is not a buy merely because
+// several overlapping horizons show the same first green tick.
+const STRICT_BUY_RECOVERY_CYCLES = Math.max(2, Math.min(5, Number(process.env.STRICT_BUY_RECOVERY_CYCLES || 3)));
+const STRICT_BUY_CYCLE_MIN_GAP_MS = Math.max(30, Math.min(90, Number(process.env.STRICT_BUY_CYCLE_MIN_GAP_SEC || 45))) * 1000;
+const STRICT_BUY_DUPLICATE_HORIZON_EPS = Math.max(0.05, Math.min(1.5, Number(process.env.STRICT_BUY_DUPLICATE_HORIZON_EPS || 0.35)));
+const STRICT_BUY_SPECIAL_MIN_15M = Number(process.env.STRICT_BUY_SPECIAL_MIN_15M || 0.75);
+const STRICT_BUY_SPECIAL_MIN_1H = Number(process.env.STRICT_BUY_SPECIAL_MIN_1H || -1);
+const STRICT_BUY_INVALIDATION_DROP_PCT = Math.max(0.5, Math.min(5, Number(process.env.STRICT_BUY_INVALIDATION_DROP_PCT || 1)));
+
 const cardCache = new Map();
 const cardInflight = new Map();
 
@@ -395,6 +404,23 @@ let lastIntensiveWatchError = null;
 const memoryHistory = new Map();
 const lastMemoryPrice = new Map();
 const memoryPositions = new Map();
+
+// Per-cycle price path used only for bottom/recovery confirmation. Unlike the
+// normal price history, equal prices are intentionally kept because "held for
+// three cycles" is meaningful even without a new price tick.
+const strictBuyCycleHistory = new Map();
+let strictBuyGuardStats = {
+  evaluatedBuyCandidates: 0,
+  allowedBuyCandidates: 0,
+  blockedBuyCandidates: 0,
+  confidenceCapped: 0,
+  duplicateHorizonBlocks: 0,
+  recoveryBlocks: 0,
+  historicalBlocks: 0,
+  futbinBlocks: 0,
+  lastDecision: null,
+  updatedAt: null
+};
 
 const dbEnabled = Boolean(process.env.DATABASE_URL);
 
@@ -1004,7 +1030,12 @@ function futbinParseCandidate(row) {
     Math.abs(Number(row.change5m || 0)),
     Math.abs(Number(row.change15m || 0))
   );
+  const guardedStrongBuy =
+    row?.aiBuyGuard?.originalAction === "JETZT KAUFEN" &&
+    Number(row?.aiBuyGuard?.originalConfidence || 0) >= Math.max(78, FUTBIN_PARSE_MIN_AI_CONFIDENCE - 6);
+
   if (row.tracked && confidence >= 75) return true;
+  if (guardedStrongBuy) return true;
   if (["JETZT KAUFEN", "VERKAUF PRÜFEN", "JETZT VERKAUFEN"].includes(row.aiAction) && confidence >= FUTBIN_PARSE_MIN_AI_CONFIDENCE) return true;
   if (row.aiAction === "NOCH WARTEN" && confidence >= 90 && movement >= 10) return true;
   return false;
@@ -1146,9 +1177,14 @@ async function enrichImportantRowsWithFutbinParse(rows, brainWork) {
     .filter(futbinParseCandidate)
     .sort((a, b) => {
       if (a.tracked !== b.tracked) return a.tracked ? -1 : 1;
-      const actionDiff = (priority[b.aiAction] || 0) - (priority[a.aiAction] || 0);
+      const priorityFor = row =>
+        row?.aiBuyGuard?.originalAction === "JETZT KAUFEN"
+          ? Math.max(98, priority[row.aiAction] || 0)
+          : (priority[row.aiAction] || 0);
+      const actionDiff = priorityFor(b) - priorityFor(a);
       if (actionDiff) return actionDiff;
-      return Number(b.aiConfidence || 0) - Number(a.aiConfidence || 0);
+      const confidenceFor = row => Math.max(Number(row.aiConfidence || 0), Number(row?.aiBuyGuard?.originalConfidence || 0));
+      return confidenceFor(b) - confidenceFor(a);
     });
 
   let applied = 0;
@@ -3548,9 +3584,20 @@ async function processTraderConfluenceAlerts(rows, ratingStats, brainWork, alert
   }
 }
 
-function brainTransitionKind(previousAction, nextAction) {
+function brainTransitionKind(previousAction, nextAction, row = null, previousState = null) {
   const from = String(previousAction || "");
   const to = String(nextAction || "");
+
+  const previousPrice = Number(previousState?.price);
+  const currentPrice = Number(row?.price);
+  if (
+    from === "JETZT KAUFEN" &&
+    ["NOCH WARTEN", "NICHT KAUFEN", "BEOBACHTEN", "HALTEN", "VERKAUF PRÜFEN", "JETZT VERKAUFEN"].includes(to) &&
+    Number.isFinite(previousPrice) && previousPrice > 0 &&
+    Number.isFinite(currentPrice) && currentPrice < previousPrice
+  ) {
+    return "buy_failed";
+  }
 
   if (
     to === "JETZT KAUFEN" &&
@@ -3576,7 +3623,38 @@ function brainTransitionKind(previousAction, nextAction) {
   return null;
 }
 
-function buildBrainTransitionPayload(row, previousAction, kind) {
+function buildBrainTransitionPayload(row, previousAction, kind, previousState = null) {
+  if (kind === "buy_failed") {
+    const previousPrice = Number(previousState?.price);
+    const dropPct = Number.isFinite(previousPrice) && previousPrice > 0
+      ? Number((((Number(row.price) - previousPrice) / previousPrice) * 100).toFixed(2))
+      : null;
+    const ownedAction = row.tracked
+      ? (["JETZT VERKAUFEN", "VERKAUF PRÜFEN"].includes(row.aiAction) ? row.aiAction : "AUSSTIEG PRÜFEN")
+      : "NICHT KAUFEN";
+
+    return {
+      embeds: [{
+        title: `🔴 KAUFSIGNAL GESCHEITERT • ${row.name || `EA ${row.eaId}`}`,
+        url: row.url || undefined,
+        description: row.tracked
+          ? `Das frühere JETZT-KAUFEN-Setup wurde invalidiert. **Eigener Bestand: ${ownedAction}.**`
+          : `Das frühere JETZT-KAUFEN-Setup wurde invalidiert. **Aktuell: NICHT KAUFEN.**`,
+        fields: [
+          { name: "Kaufsignal bei", value: Number.isFinite(previousPrice) ? `${discordNumber(previousPrice)} Coins` : "-", inline: true },
+          { name: "Aktueller Preis", value: `${discordNumber(row.price)} Coins`, inline: true },
+          { name: "Seit Signal", value: dropPct == null ? "-" : discordPct(dropPct), inline: true },
+          { name: "Brain jetzt", value: `${row.aiAction} • ${row.aiConfidence}%`, inline: true },
+          { name: "Aktion", value: ownedAction, inline: true },
+          { name: "Warum invalidiert?", value: String(row.aiReason || "Der bestätigte Boden hat nicht gehalten.").slice(0, 1000), inline: false }
+        ],
+        footer: { text: "FC Trader Brain • v10.37 Buy-Signal Invalidation" },
+        timestamp: new Date().toISOString()
+      }],
+      components: intensiveWatchAddComponents(row)
+    };
+  }
+
   const emoji = kind === "buy" ? "🟢" : "💰";
   const title = `${emoji} SIGNALWECHSEL: ${row.aiAction} • ${row.name || `EA ${row.eaId}`}`;
 
@@ -3678,14 +3756,16 @@ async function processBrainStateChangeAlerts(rows, alertBudget = null) {
   const candidates = [];
 
   for (const row of rows) {
-    if (row.intensiveWatch) continue;
     const previous = previousStates.get(String(row.eaId));
     if (!previous?.action || previous.action === row.aiAction) continue;
 
-    const kind = brainTransitionKind(previous.action, row.aiAction);
+    const kind = brainTransitionKind(previous.action, row.aiAction, row, previous);
     if (!kind) continue;
+    if (row.intensiveWatch && kind !== "buy_failed") continue;
 
-    const minConfidence = kind === "buy"
+    const minConfidence = kind === "buy_failed"
+      ? 0
+      : kind === "buy"
       ? DISCORD_TRANSITION_MIN_BUY_CONFIDENCE
       : DISCORD_TRANSITION_MIN_SELL_CONFIDENCE;
 
@@ -3719,7 +3799,7 @@ async function processBrainStateChangeAlerts(rows, alertBudget = null) {
           continue;
         }
 
-        await sendDiscordPayload(buildBrainTransitionPayload(row, previous.action, kind));
+        await sendDiscordPayload(buildBrainTransitionPayload(row, previous.action, kind, previous));
         discordCycleConsume(alertBudget);
 
         await saveDiscordAlertState({
@@ -3734,7 +3814,7 @@ async function processBrainStateChangeAlerts(rows, alertBudget = null) {
         // Unterdrückt denselben BUY/SELL-Alarm direkt danach im normalen Alert-Lauf.
         await saveDiscordAlertState({
           alertKey: `card:${row.eaId}`,
-          alertType: kind,
+          alertType: kind === "buy_failed" ? "buy_invalidation" : kind,
           action: row.aiAction,
           price: row.price,
           confidence: row.aiConfidence,
@@ -3968,7 +4048,7 @@ async function sendDiscordStartupMessage() {
           { name: "Kaufalarm ab", value: `${DISCORD_MIN_BUY_CONFIDENCE}% KI-Sicherheit`, inline: true },
           { name: "Spam-Schutz", value: `${Math.round(DISCORD_ALERT_COOLDOWN_MS / 60_000)} Min. Cooldown`, inline: true }
         ],
-        footer: { text: "FC Trading Intelligence v10.36" },
+        footer: { text: "FC Trading Intelligence v10.37" },
         timestamp: new Date().toISOString()
       }]
     });
@@ -3977,7 +4057,7 @@ async function sendDiscordStartupMessage() {
       alertKey,
       alertType: "system",
       action: "CONNECTED",
-      fingerprint: "v10.36"
+      fingerprint: "v10.37"
     });
   } catch (error) {
     lastDiscordError = String(error);
@@ -4060,6 +4140,11 @@ async function monitorOnce() {
       await evaluateTraderMarketImpact(latestTradingRows);
       await enrichImportantRowsWithFutbinParse(latestTradingRows, built.brainWork);
       await automaticTraderBrain(latestTradingRows, built.brainWork);
+      for (const row of latestTradingRows) {
+        const work = built.brainWork.get(String(row.eaId));
+        calibrateStrictBuyDecision(row, work);
+        recordStrictBuyGuardOutcome(row);
+      }
       await processIntensiveWatchAlerts(latestTradingRows, cycleAlertBudget);
       await processTraderConfluenceAlerts(latestTradingRows, latestRatingStats, built.brainWork, cycleAlertBudget);
       await processBrainStateChangeAlerts(latestTradingRows, cycleAlertBudget);
@@ -6236,6 +6321,261 @@ function applyDecisionToRow(row, decision) {
   row.aiHistoricalLearning = decision.historical_learning || null;
 }
 
+function registerStrictBuyCycle(row, at = Date.now()) {
+  if (!row || !Number.isFinite(Number(row.eaId)) || !Number.isFinite(Number(row.price)) || Number(row.price) <= 0) return;
+  const key = String(row.eaId);
+  const list = strictBuyCycleHistory.get(key) || [];
+  const last = list[list.length - 1];
+
+  // buildTradingRows can also be called by an HTTP bootstrap. Do not let two
+  // calls in the same market minute fake two independent recovery cycles.
+  if (last && at - last.t < STRICT_BUY_CYCLE_MIN_GAP_MS) {
+    last.price = Number(row.price);
+  } else {
+    list.push({ t: at, price: Number(row.price) });
+  }
+
+  while (list.length > 8) list.shift();
+  strictBuyCycleHistory.set(key, list);
+}
+
+function strictBuyRecoverySnapshot(row) {
+  const list = strictBuyCycleHistory.get(String(row?.eaId)) || [];
+  const recent = list.slice(-Math.max(STRICT_BUY_RECOVERY_CYCLES + 1, 4));
+  if (!recent.length) {
+    return { samples: 0, heldCycles: 0, noNewLow: false, higherLow: false, recoveryLiftPct: 0, currentDecline: false };
+  }
+
+  let heldCycles = 1;
+  for (let i = recent.length - 1; i > 0; i--) {
+    if (recent[i].price >= recent[i - 1].price) heldCycles += 1;
+    else break;
+  }
+
+  const prices = recent.map(point => Number(point.price)).filter(Number.isFinite);
+  const current = prices[prices.length - 1];
+  const previous = prices.length >= 2 ? prices[prices.length - 2] : null;
+  const priorPrices = prices.slice(0, -1);
+  const priorLow = priorPrices.length ? Math.min(...priorPrices) : current;
+  const recentLow = prices.length ? Math.min(...prices) : current;
+  const noNewLow = priorPrices.length ? current >= priorLow : false;
+  const higherLow = priorPrices.length ? current > priorLow : false;
+  const recoveryLiftPct = Number.isFinite(recentLow) && recentLow > 0
+    ? Number((((current - recentLow) / recentLow) * 100).toFixed(2))
+    : 0;
+
+  return {
+    samples: prices.length,
+    heldCycles,
+    noNewLow,
+    higherLow,
+    recoveryLiftPct,
+    currentDecline: Number.isFinite(previous) ? current < previous : false,
+    prices: prices.slice(-4)
+  };
+}
+
+function strictBuyShortHorizonSnapshot(row) {
+  const values = [row?.change1m, row?.change5m, row?.change15m]
+    .map(Number)
+    .filter(Number.isFinite);
+  if (values.length < 3) return { duplicate: false, independentConfirmations: values.length, values };
+
+  const sameDirection = values.every(value => value > 0) || values.every(value => value < 0) || values.every(value => Math.abs(value) < 0.1);
+  const spread = Math.max(...values) - Math.min(...values);
+  const duplicate = sameDirection && spread <= STRICT_BUY_DUPLICATE_HORIZON_EPS;
+
+  return {
+    duplicate,
+    independentConfirmations: duplicate ? 1 : values.length,
+    spreadPct: Number(spread.toFixed(3)),
+    values
+  };
+}
+
+function strictBuyHistoricalConfidenceCap(row) {
+  const learning = row?.aiHistoricalLearning;
+  if (!learning?.applied || !Number.isFinite(Number(learning.smoothedAccuracy))) return null;
+  const accuracy = Number(learning.smoothedAccuracy);
+
+  // The old system could turn ~42% learned hit rate into 87-90% confidence.
+  // v10.37 makes the learned hit rate a real ceiling, not a cosmetic modifier.
+  if (accuracy < 40) return 62;
+  if (accuracy < 45) return 68;
+  if (accuracy < 50) return 72;
+  if (accuracy < 55) return 78;
+  if (accuracy < 60) return 84;
+  return null;
+}
+
+function strictBuyLooksLikeRecoveryAfterSelloff(row, work) {
+  const quantText = `${work?.quant?.marketState || ""} ${work?.quant?.primaryReason || ""}`.toLowerCase();
+  const textSaysRecovery = /(erhol|recovery|abverkauf|selloff|falling knife|boden|bottom|sturz|sell-off)/i.test(quantText);
+  const nearLow = Number.isFinite(Number(row?.distanceFrom24hLow)) && Number(row.distanceFrom24hLow) <= 4;
+  const recentSelloff =
+    Number(row?.change15m || 0) <= -4 ||
+    Number(row?.change1h || 0) <= -7 ||
+    Number(row?.change24h || 0) <= -12 ||
+    (nearLow && Number(row?.change1h || 0) < -2) ||
+    (nearLow && Number(row?.change24h || 0) < -8);
+  return textSaysRecovery || recentSelloff;
+}
+
+function strictBuyFutbinBlock(row) {
+  if (!futbinCrossCheckCanInfluenceAlerts(row)) return null;
+  if (row?.futbinCrossCheck === "OUTLIER") return "OUTLIER";
+  if (row?.futbinCrossCheck === "DIVERGENCE") return "DIVERGENCE";
+  return null;
+}
+
+function calibrateStrictBuyDecision(row, work) {
+  if (!row || row.aiAction !== "JETZT KAUFEN") return row;
+
+  const originalAction = row.aiAction;
+  const originalConfidence = Number(row.aiConfidence || 50);
+  const short = strictBuyShortHorizonSnapshot(row);
+  const recovery = strictBuyRecoverySnapshot(row);
+  const recoveryAfterSelloff = strictBuyLooksLikeRecoveryAfterSelloff(row, work);
+  const special = String(row.cardType || "").toLowerCase() === "special";
+  const historyAccuracy = row?.aiHistoricalLearning?.applied && Number.isFinite(Number(row?.aiHistoricalLearning?.smoothedAccuracy))
+    ? Number(row.aiHistoricalLearning.smoothedAccuracy)
+    : NaN;
+  const historyCap = strictBuyHistoricalConfidenceCap(row);
+  const futbinBlock = strictBuyFutbinBlock(row);
+  const change15m = Number(row.change15m || 0);
+  const change1h = Number(row.change1h || 0);
+  const recoveryPrices = Array.isArray(recovery.prices) ? recovery.prices : [];
+  const previousCyclePrice = recoveryPrices.length >= 2 ? Number(recoveryPrices[recoveryPrices.length - 2]) : null;
+  const cycleDropPct = Number.isFinite(previousCyclePrice) && previousCyclePrice > 0
+    ? Number((((Number(row.price) - previousCyclePrice) / previousCyclePrice) * 100).toFixed(2))
+    : 0;
+  const atFresh24hLow = Number.isFinite(Number(row.low24h)) && Number(row.low24h) > 0
+    ? Number(row.price) <= Number(row.low24h) * 1.002
+    : false;
+  const brokeConfirmedFloor = recovery.currentDecline && atFresh24hLow && cycleDropPct <= -STRICT_BUY_INVALIDATION_DROP_PCT;
+  const strongIndependentRecovery =
+    recovery.heldCycles >= STRICT_BUY_RECOVERY_CYCLES &&
+    recovery.noNewLow &&
+    recovery.recoveryLiftPct >= 0.5 &&
+    change15m >= 1 &&
+    change1h >= 0 &&
+    !short.duplicate;
+
+  const blockers = [];
+  let severeBlock = false;
+  let confidence = originalConfidence;
+
+  if (historyCap != null && confidence > historyCap) confidence = historyCap;
+
+  if (brokeConfirmedFloor) {
+    blockers.push(`Der Preis hat den zuletzt bestätigten Boden im nächsten Zyklus um ${Math.abs(cycleDropPct).toFixed(2)}% unterschritten.`);
+    severeBlock = true;
+  }
+
+  if (short.duplicate && change1h < 1) {
+    blockers.push(`1m/5m/15m bewegen sich nahezu identisch und zählen deshalb nur als 1 Bestätigung statt 3.`);
+  }
+
+  if (recoveryAfterSelloff) {
+    if (recovery.samples < STRICT_BUY_RECOVERY_CYCLES || recovery.heldCycles < STRICT_BUY_RECOVERY_CYCLES) {
+      blockers.push(`Erholung erst ${recovery.heldCycles}/${STRICT_BUY_RECOVERY_CYCLES} Marktzyklen gehalten.`);
+    }
+    if (!recovery.noNewLow) {
+      blockers.push("Noch kein bestätigtes Higher-Low/kein neues Tief.");
+    }
+    if (recovery.currentDecline) {
+      blockers.push("Der aktuelle 60-Sekunden-Zyklus macht wieder ein tieferes Preisniveau.");
+    }
+  }
+
+  if (special && recoveryAfterSelloff) {
+    if (change15m < STRICT_BUY_SPECIAL_MIN_15M) {
+      blockers.push(`Special-Karte: 15m-Bestätigung zu schwach (${change15m.toFixed(2)}%).`);
+    }
+    if (change1h < STRICT_BUY_SPECIAL_MIN_1H) {
+      blockers.push(`Special-Karte: 1h-Trend noch zu negativ (${change1h.toFixed(2)}%).`);
+    }
+  }
+
+  if (Number.isFinite(historyAccuracy) && historyAccuracy < 45 && !strongIndependentRecovery) {
+    blockers.push(`Historische Trefferquote nur ${historyAccuracy.toFixed(1)}%; ohne starke unabhängige Recovery kein Sofort-Kauf.`);
+  }
+
+  if (futbinBlock === "OUTLIER") {
+    blockers.push(`FUTBIN-Cross-Check ist ein belastbarer OUTLIER (${Number(row.futbinDiffPct || 0).toFixed(2)}%).`);
+    severeBlock = true;
+  } else if (futbinBlock === "DIVERGENCE") {
+    blockers.push(`FUTBIN-Cross-Check weicht deutlich ab (${Number(row.futbinDiffPct || 0).toFixed(2)}%).`);
+  }
+
+  if (blockers.length) {
+    row.aiAction = severeBlock ? "NICHT KAUFEN" : "NOCH WARTEN";
+    row.aiConfidence = Math.min(confidence, severeBlock ? 82 : 78);
+    row.aiRisk = severeBlock ? "hoch" : "mittel";
+    row.aiMarketState = severeBlock ? "Kaufsignal durch Cross-Check invalidiert" : "Recovery noch nicht ausreichend bestätigt";
+    row.aiReason = `v10.37 Kauf-Guard: ${blockers.join(" ")} Der frühere erste grüne Tick reicht nicht mehr für JETZT KAUFEN.`.slice(0, 1800);
+    row.aiRecommendedHorizon = `Noch ${Math.max(0, STRICT_BUY_RECOVERY_CYCLES - recovery.heldCycles)} Recovery-Zyklen bzw. 15m/1h-Bestätigung abwarten`;
+  } else {
+    row.aiConfidence = Math.max(10, Math.min(95, confidence));
+    if (historyCap != null && originalConfidence > historyCap) {
+      row.aiReason = `${row.aiReason} Historische Trefferquote deckelt die Confidence auf ${historyCap}%.`.slice(0, 1800);
+    }
+  }
+
+  row.aiBuyGuard = {
+    version: "10.37",
+    originalAction,
+    originalConfidence,
+    finalAction: row.aiAction,
+    finalConfidence: row.aiConfidence,
+    blocked: blockers.length > 0,
+    blockers,
+    duplicateShortHorizons: short.duplicate,
+    independentShortConfirmations: short.independentConfirmations,
+    recoveryAfterSelloff,
+    requiredRecoveryCycles: STRICT_BUY_RECOVERY_CYCLES,
+    recoveryHeldCycles: recovery.heldCycles,
+    recoverySamples: recovery.samples,
+    noNewLow: recovery.noNewLow,
+    higherLow: recovery.higherLow,
+    recoveryLiftPct: recovery.recoveryLiftPct,
+    historicalAccuracy: Number.isFinite(historyAccuracy) ? Number(historyAccuracy.toFixed(2)) : null,
+    historicalConfidenceCap: historyCap,
+    brokeConfirmedFloor,
+    cycleDropPct,
+    futbinStatus: row.futbinCrossCheck || "NO_DATA",
+    futbinDiffPct: Number.isFinite(Number(row.futbinDiffPct)) ? Number(row.futbinDiffPct) : null,
+    checkedAt: new Date().toISOString()
+  };
+
+  return row;
+}
+
+function recordStrictBuyGuardOutcome(row) {
+  const guard = row?.aiBuyGuard;
+  if (!guard || guard.recorded) return;
+  guard.recorded = true;
+  strictBuyGuardStats.evaluatedBuyCandidates += 1;
+  if (guard.blocked) strictBuyGuardStats.blockedBuyCandidates += 1;
+  else strictBuyGuardStats.allowedBuyCandidates += 1;
+  if (Number.isFinite(guard.historicalConfidenceCap) && guard.originalConfidence > guard.historicalConfidenceCap) strictBuyGuardStats.confidenceCapped += 1;
+  if (guard.blocked && guard.duplicateShortHorizons) strictBuyGuardStats.duplicateHorizonBlocks += 1;
+  if (guard.blocked && guard.recoveryAfterSelloff && guard.recoveryHeldCycles < guard.requiredRecoveryCycles) strictBuyGuardStats.recoveryBlocks += 1;
+  if (guard.blocked && Number.isFinite(guard.historicalAccuracy) && guard.historicalAccuracy < 45) strictBuyGuardStats.historicalBlocks += 1;
+  if (guard.blocked && ["DIVERGENCE", "OUTLIER"].includes(String(guard.futbinStatus))) strictBuyGuardStats.futbinBlocks += 1;
+  strictBuyGuardStats.lastDecision = {
+    eaId: row.eaId,
+    player: row.name,
+    originalAction: guard.originalAction,
+    finalAction: guard.finalAction,
+    originalConfidence: guard.originalConfidence,
+    finalConfidence: guard.finalConfidence,
+    blockers: guard.blockers,
+    at: guard.checkedAt
+  };
+  strictBuyGuardStats.updatedAt = new Date().toISOString();
+}
+
 function normalizeDecisionForPosition(row, decision) {
   if (!decision || decision.action !== "VERKAUF PRÜFEN") return decision;
 
@@ -6437,6 +6777,8 @@ async function buildTradingRows(futbinFeedOverride = null) {
   const brainWork = new Map();
 
   for (const row of rows) {
+    registerStrictBuyCycle(row, now);
+
     const rating = ratingStats[row.overall] || {
       trend: "neutral",
       risingPct: 0,
@@ -6487,6 +6829,7 @@ async function buildTradingRows(futbinFeedOverride = null) {
     );
     const decision = applyBrainLearningToDecision(normalizedDecision, learningProfile);
     applyDecisionToRow(row, decision);
+    calibrateStrictBuyDecision(row, { input, quant, confluence, learningProfile });
 
     row.ratingMarketTrend = rating.trend;
     row.ratingMarketRisingPct = rating.risingPct;
@@ -6651,6 +6994,10 @@ async function automaticTraderBrain(rows, brainWork) {
       );
       const decision = applyBrainLearningToDecision(normalizedDecision, learningProfile);
       applyDecisionToRow(geminiCandidate.row, decision);
+      calibrateStrictBuyDecision(geminiCandidate.row, {
+        ...geminiCandidate.work,
+        learningProfile
+      });
       lastGeminiCandidate = {
         eaId: geminiCandidate.row.eaId,
         player: geminiCandidate.row.name,
@@ -6665,10 +7012,21 @@ async function automaticTraderBrain(rows, brainWork) {
         now
       );
 
+      const calibratedGeminiDecision = {
+        ...decision,
+        action: geminiCandidate.row.aiAction,
+        confidence: geminiCandidate.row.aiConfidence,
+        reason: geminiCandidate.row.aiReason,
+        risk: geminiCandidate.row.aiRisk,
+        market_state: geminiCandidate.row.aiMarketState,
+        recommended_horizon: geminiCandidate.row.aiRecommendedHorizon,
+        buy_guard: geminiCandidate.row.aiBuyGuard || null
+      };
+
       await saveDecisionIfNeeded(
         geminiCandidate.row,
         geminiCandidate.work,
-        decision,
+        calibratedGeminiDecision,
         String(decision.ai_model_used || "").includes("Gemini")
       );
     }
@@ -6846,7 +7204,7 @@ app.get("/", (req, res) => {
   res.json({
     online: true,
     service: "FC Trading Intelligence",
-    version: "10.36-curated-trader-impact-learning",
+    version: "10.37-strict-buy-calibration",
     gameYear: GAME_YEAR,
     marketProfile: marketProfile(),
     refreshSeconds: 60,
@@ -6972,7 +7330,7 @@ app.get("/api/readiness", (req, res) => {
   const readiness = runtimeReadinessSnapshot();
   res.status(readiness.ready ? 200 : 503).json({
     ok: readiness.ready,
-    version: "10.36-curated-trader-impact-learning",
+    version: "10.37-strict-buy-calibration",
     gameYear: GAME_YEAR,
     readiness,
     note: "Dieser Endpunkt ist absichtlich strenger als /health. /health zeigt, ob der Webdienst lebt; /api/readiness zeigt, ob Marktquelle, Monitoring, Datenbank, Discord und Trader Brain wirklich produktionsbereit sind."
@@ -6982,7 +7340,7 @@ app.get("/api/readiness", (req, res) => {
 app.get("/health", (req, res) => {
   res.json({
     ok: true,
-    version: "10.36-curated-trader-impact-learning",
+    version: "10.37-strict-buy-calibration",
     gameYear: GAME_YEAR,
     marketProfile: marketProfile(),
     marketContext: latestMarketContext,
@@ -7269,9 +7627,30 @@ app.post("/api/trader-signals/ingest", async (req, res) => {
 
 app.get("/api/trader-sources/status", (req, res) => {
   res.json({
-    ok: true, version: "10.36-curated-trader-impact-learning", mode: "forwarded-or-authorized-only", automaticForeignDiscordReading: false,
+    ok: true, version: "10.37-strict-buy-calibration", mode: "forwarded-or-authorized-only", automaticForeignDiscordReading: false,
     sources: CURATED_TRADER_SOURCES.map(source => ({ id: source.id, name: source.displayName, aliases: source.aliases, channels: source.channels.map(channel => ({ channel: channel.name, type: channel.type, category: channel.category, defaultCall: channel.defaultCall, reliabilityWeight: Number(channel.weight || 1) })) })),
     note: "Die Registry normalisiert weitergeleitete/erlaubte Signale. Sie liest keine fremden Discord-Server automatisch oder verdeckt aus."
+  });
+});
+
+app.get("/api/buy-guard/status", (req, res) => {
+  res.json({
+    ok: true,
+    enabled: true,
+    version: "10.37-strict-buy-calibration",
+    rules: {
+      duplicateShortHorizonsCountAsOne: true,
+      requiredRecoveryCycles: STRICT_BUY_RECOVERY_CYCLES,
+      higherLowOrNoNewLowRequiredAfterSelloff: true,
+      specialMin15mPctAfterSelloff: STRICT_BUY_SPECIAL_MIN_15M,
+      specialMin1hPctAfterSelloff: STRICT_BUY_SPECIAL_MIN_1H,
+      failedBottomInvalidationPct: STRICT_BUY_INVALIDATION_DROP_PCT,
+      historicalConfidenceCaps: { under40: 62, under45: 68, under50: 72, under55: 78, under60: 84 },
+      futbinCanBlockBuy: true,
+      failedBuySignalAlert: true
+    },
+    stats: strictBuyGuardStats,
+    note: "v10.37 verhindert den Lauren-James-Fehler: ein erster gruener Tick oder identische 1m/5m/15m-Werte reichen nach einem Selloff nicht mehr fuer JETZT KAUFEN."
   });
 });
 
@@ -7291,7 +7670,7 @@ app.get("/api/leak-impact/status", async (req, res) => {
       GROUP BY s.source ORDER BY COUNT(DISTINCT i.signal_id) DESC, s.source ASC
     `);
     return res.json({
-      ok: true, enabled: true, version: "10.36-curated-trader-impact-learning", horizonsMinutes: TRADER_MARKET_IMPACT_HORIZONS,
+      ok: true, enabled: true, version: "10.37-strict-buy-calibration", horizonsMinutes: TRADER_MARKET_IMPACT_HORIZONS,
       sourceSummary: sourceSummary.rows.map(row => ({ source: row.source, events: Number(row.events || 0), evaluatedPoints: Number(row.evaluated_points || 0), avgAbsMarketMovePct: Number(row.avg_abs_market_move || 0), avgMarketMovePct: Number(row.avg_market_move || 0) })),
       recent: recent.rows.map(row => ({ signalId: row.signal_id, source: row.source, channel: row.source_channel || null, category: row.category, horizonMinutes: Number(row.horizon_minutes), marketMedianChangePct: Number(row.market_median_change_pct), strongestRating: row.strongest_rating == null ? null : Number(row.strongest_rating), strongestRatingChangePct: row.strongest_rating_change_pct == null ? null : Number(row.strongest_rating_change_pct), affectedRatings: row.affected_ratings || [], direction: row.direction, sourceEventAt: row.source_event_at, evaluatedAt: row.evaluated_at, message: String(row.message || "").slice(0, 500) })),
       note: "Leak/Content-Events loesen keinen Kauf aus. Der Brain misst zuerst, welche Rating-Segmente sich nach 15m/1h/6h/24h real bewegen."
@@ -7347,7 +7726,7 @@ app.get("/api/trader-reliability/status", async (req, res) => {
 
     return res.json({
       enabled: true,
-      version: "10.36-curated-trader-impact-learning",
+      version: "10.37-strict-buy-calibration",
       gameYear: GAME_YEAR,
       method: {
         priorAccuracy: TRADER_RELIABILITY_PRIOR_ACCURACY,
@@ -7406,7 +7785,7 @@ app.get("/api/trader-reliability/status", async (req, res) => {
 app.get("/api/trader-confluence/status", (req, res) => {
   res.json({
     enabled: DISCORD_CONFIGURED && dbEnabled,
-    version: "10.36-curated-trader-impact-learning",
+    version: "10.37-strict-buy-calibration",
     minCardConfidence: DISCORD_TRADER_CONFLUENCE_MIN_CONFIDENCE,
     minRatingConfidence: DISCORD_TRADER_CONFLUENCE_MIN_RATING_CONFIDENCE,
     minTraderReliability: DISCORD_TRADER_CONFLUENCE_MIN_RELIABILITY,
@@ -7593,7 +7972,7 @@ app.get("/api/intensive-watchlist", async (req, res) => {
 
     res.json({
       ok: true,
-      version: "10.36-curated-trader-impact-learning",
+      version: "10.37-strict-buy-calibration",
       count: items.length,
       settings: {
         moveAlertPct: INTENSIVE_WATCH_MOVE_PCT,
@@ -7706,7 +8085,7 @@ app.get("/api/trading", async (req, res) => {
 
     res.json({
       ok: true,
-      version: "10.36-curated-trader-impact-learning",
+      version: "10.37-strict-buy-calibration",
       refreshSeconds: 60,
       dbEnabled,
       sourceHealth: health,
@@ -7787,7 +8166,7 @@ app.get("/api/processing-health", (req, res) => {
   const health = processingHealthSnapshot();
   res.status(health.healthy ? 200 : 503).json({
     ok: health.healthy,
-    version: "10.36-curated-trader-impact-learning",
+    version: "10.37-strict-buy-calibration",
     gameYear: GAME_YEAR,
     processingHealth: health,
     note: "DB-, Brain- oder Discord-Fehler werden getrennt von FUT.GG-Quellfehlern bewertet und können den Source Health Guard nicht mehr fälschlich in Quarantäne schicken."
@@ -7798,7 +8177,7 @@ app.get("/api/source-health", (req, res) => {
   const health = sourceHealthSnapshot();
   res.status(health.status === "UNHEALTHY" ? 503 : 200).json({
     ok: health.status !== "UNHEALTHY",
-    version: "10.36-curated-trader-impact-learning",
+    version: "10.37-strict-buy-calibration",
     gameYear: GAME_YEAR,
     refreshSeconds: 60,
     source: "FUT.GG PS5 bulk prices",
@@ -7818,7 +8197,7 @@ app.get("/api/futbin/status", (req, res) => {
 
   res.json({
     ok: true,
-    version: "10.36-curated-trader-impact-learning",
+    version: "10.37-strict-buy-calibration",
     gameYear: GAME_YEAR,
     configured: Boolean(FUTBIN_AUTHORIZED_FEED_URL || FUTBIN_PARSE_API_KEY),
     status: latestFutbinStatus,
@@ -7859,7 +8238,7 @@ app.get("/api/futbin/status", (req, res) => {
 app.get("/api/market-context", (req, res) => {
   res.json({
     ok: true,
-    version: "10.36-curated-trader-impact-learning",
+    version: "10.37-strict-buy-calibration",
     gameYear: GAME_YEAR,
     refreshSeconds: 60,
     context: latestMarketContext,
@@ -7870,7 +8249,7 @@ app.get("/api/market-context", (req, res) => {
 app.get("/api/trader-brain/status", (req, res) => {
   res.json({
     ok: true,
-    version: "10.36-curated-trader-impact-learning",
+    version: "10.37-strict-buy-calibration",
     gameYear: GAME_YEAR,
     marketProfile: marketProfile(),
     marketContext: latestMarketContext,
@@ -7880,7 +8259,7 @@ app.get("/api/trader-brain/status", (req, res) => {
     lastBrainError,
     lastGeminiCandidate,
     learning: {
-      version: "10.36-curated-trader-impact-learning",
+      version: "10.37-strict-buy-calibration",
       totalMatureDecisions: brainLearningCache.totalMatureDecisions,
       rawMatureDecisions: brainLearningCache.rawMatureDecisions,
       uniqueLearningEpisodes: brainLearningCache.uniqueLearningEpisodes,
@@ -7901,7 +8280,7 @@ app.get("/api/trader-brain/learning/status", async (req, res) => {
     const cache = await loadBrainLearningProfiles(true);
     return res.json({
       enabled: true,
-      version: "10.36-curated-trader-impact-learning",
+      version: "10.37-strict-buy-calibration",
       method: {
         windowDays: BRAIN_LEARNING_WINDOW_DAYS,
         priorAccuracy: BRAIN_LEARNING_PRIOR_ACCURACY,
@@ -9092,7 +9471,7 @@ httpServer = app.listen(
   port,
   () => {
     console.log(
-      `FC Trading Intelligence v10.36 Curated Trader Impact Learning (FC${GAME_YEAR}) running on ${port}`
+      `FC Trading Intelligence v10.37 Strict Buy Calibration (FC${GAME_YEAR}) running on ${port}`
     );
 
     startMonitoring();
