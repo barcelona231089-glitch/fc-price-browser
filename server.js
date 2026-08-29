@@ -1111,6 +1111,55 @@ async function discoverBaseRareCardsForRating(rating, force = false) {
     `https://www.fut.gg/api/fut/players/v2/${GAME_YEAR}/` +
     `?overall__gte=${targetRating}&overall__lte=${targetRating}`;
 
+  // Fast path: FUT.GG's rarity_slug=rare currently returns the exact base-rare
+  // universe for the rating. This avoids dozens of redundant requests.
+  try {
+    const exactUrl = `${base}&rarity_slug=rare&sorts=current_price&limit=100&page_size=100`;
+    const exactJson = await fetchJson(exactUrl);
+    const exactRows = futggApiRows(exactJson);
+    const exactCards = [];
+    const exactSeen = new Set();
+
+    for (const p of exactRows) {
+      const card = futggCardFromDiscoveryRow(p, targetRating);
+      if (!card || card.cardType !== "Base Rare") continue;
+      const key = String(card.itemId);
+      if (exactSeen.has(key)) continue;
+      exactSeen.add(key);
+      exactCards.push(card);
+    }
+
+    if (exactCards.length) {
+      ratingBaseRareDiscoveryCache.set(cacheKey, {
+        savedAt: Date.now(),
+        cards: exactCards
+      });
+
+      latestRatingListDiagnostics = {
+        rating: targetRating,
+        discoveryMode: "rarity_slug_fast_path",
+        discoveredBaseRare: exactCards.length,
+        players: exactCards.map(card => ({
+          eaId: card.eaId,
+          sourceEaId: card.sourceEaId ?? null,
+          name: card.name,
+          rarityName: card.rarityName,
+          rarityGroupName: card.rarityGroupName,
+          qualityName: card.qualityName,
+          club: card.club,
+          discoveryPrice: card.price ?? null,
+          canonicalBaseItem: isCanonicalBaseItem(card)
+        })),
+        queries: [{ url: exactUrl, ok: true, rows: exactRows.length }],
+        updatedAt: new Date().toISOString()
+      };
+
+      return exactCards;
+    }
+  } catch (error) {
+    console.error("Rating rare fast-path discovery error:", error);
+  }
+
   const starts = [
     `${base}&sorts=current_price&limit=100&page_size=100`,
     `${base}&sorts=-current_price&limit=100&page_size=100`,
@@ -2820,6 +2869,69 @@ function ratingPlayerListOpenComponents(stat) {
   }];
 }
 
+function isCanonicalBaseItem(row) {
+  const itemId = Number(row?.itemId ?? row?.eaId);
+  const sourceEaId = Number(row?.sourceEaId ?? row?.id ?? row?.eaId);
+  return (
+    Number.isFinite(itemId) &&
+    Number.isFinite(sourceEaId) &&
+    itemId > 0 &&
+    sourceEaId > 0 &&
+    itemId === sourceEaId
+  );
+}
+
+async function loadStoredPricesForIds(ids) {
+  const clean = [...new Set(
+    (ids || [])
+      .map(Number)
+      .filter(value => Number.isFinite(value) && value > 0)
+  )];
+
+  const map = new Map();
+  if (!clean.length) return map;
+
+  // First use the persistent last-known price. This is especially useful when
+  // FUT.GG temporarily reports PR/no BIN for a normally tradeable base card.
+  if (dbEnabled) {
+    try {
+      const result = await pool.query(`
+        SELECT ea_id::text AS ea_id, price, recorded_at
+        FROM fc_price_state
+        WHERE ea_id = ANY($1::bigint[])
+      `, [clean.map(String)]);
+
+      for (const row of result.rows) {
+        const id = Number(row.ea_id);
+        const price = Number(row.price);
+        if (Number.isFinite(id) && Number.isFinite(price) && price > 0) {
+          map.set(id, {
+            price: Math.round(price),
+            recordedAt: row.recorded_at || null,
+            source: "FUTGG_LAST_KNOWN"
+          });
+        }
+      }
+    } catch (error) {
+      console.error("Rating stored-price recovery error:", error);
+    }
+  }
+
+  for (const id of clean) {
+    if (map.has(id)) continue;
+    const memory = Number(lastMemoryPrice.get(id));
+    if (Number.isFinite(memory) && memory > 0) {
+      map.set(id, {
+        price: Math.round(memory),
+        recordedAt: null,
+        source: "MEMORY_LAST_KNOWN"
+      });
+    }
+  }
+
+  return map;
+}
+
 async function ratingPlayerListRows(rating) {
   const targetRating = Number(rating);
 
@@ -2952,18 +3064,67 @@ async function ratingPlayerListRows(rating) {
     }
   }
 
+  // One more source: our own persistent last-known market state.
+  const missingIds = Array.from(candidates.values())
+    .filter(card => !Number.isFinite(Number(card.price)) || Number(card.price) <= 0)
+    .flatMap(card => [card.itemId, card.eaId, card.sourceEaId, card.id]);
+
+  const storedPrices = await loadStoredPricesForIds(missingIds);
+
+  for (const card of candidates.values()) {
+    if (Number.isFinite(Number(card.price)) && Number(card.price) > 0) continue;
+
+    const ids = [
+      Number(card.itemId),
+      Number(card.eaId),
+      Number(card.sourceEaId),
+      Number(card.id)
+    ].filter(value => Number.isFinite(value) && value > 0);
+
+    for (const id of [...new Set(ids)]) {
+      const hit = storedPrices.get(id);
+      if (hit && Number.isFinite(Number(hit.price)) && Number(hit.price) > 0) {
+        card.price = Number(hit.price);
+        card.priceLookupId = id;
+        card.priceSource = hit.source;
+        card.priceRecordedAt = hit.recordedAt || null;
+        card.priceStale = true;
+        break;
+      }
+    }
+  }
+
   const intensiveWatches = await getIntensiveWatchlist().catch(() => new Map());
 
   return Array.from(candidates.values())
-    .filter(row => Number.isFinite(Number(row.price)) && Number(row.price) > 0)
+    .filter(row => {
+      // A numeric-priced item is always useful.
+      if (Number.isFinite(Number(row.price)) && Number(row.price) > 0) return true;
+
+      // If FUT.GG currently has no BIN/PR, still show the canonical base item
+      // (item id == player id). This keeps cards such as Graham Hansen visible.
+      // A newly-created transfer duplicate with a different item id and no price
+      // stays hidden until it actually gets a market price.
+      return isCanonicalBaseItem(row);
+    })
     .map(row => ({
       ...row,
+      priceAvailable: Number.isFinite(Number(row.price)) && Number(row.price) > 0,
+      priceDisplay:
+        Number.isFinite(Number(row.price)) && Number(row.price) > 0
+          ? `${discordNumber(Number(row.price))} Coins`
+          : "PR / kein aktueller BIN",
       intensiveWatch: intensiveWatches.has(String(row.eaId))
     }))
-    .sort((a, b) =>
-      Number(a.price) - Number(b.price) ||
-      String(a.name || "").localeCompare(String(b.name || ""), "de")
-    );
+    .sort((a, b) => {
+      const aPriced = Number.isFinite(Number(a.price)) && Number(a.price) > 0;
+      const bPriced = Number.isFinite(Number(b.price)) && Number(b.price) > 0;
+      if (aPriced !== bPriced) return aPriced ? -1 : 1;
+      if (aPriced && bPriced && Number(a.price) !== Number(b.price)) {
+        return Number(a.price) - Number(b.price);
+      }
+      return String(a.name || "").localeCompare(String(b.name || ""), "de");
+    });
 }
 
 async function buildRatingPlayerListPayload(rating, page = 0) {
@@ -2973,7 +3134,14 @@ async function buildRatingPlayerListPayload(rating, page = 0) {
   const start = safePage * RATING_LIST_PAGE_SIZE;
   const slice = rows.slice(start, start + RATING_LIST_PAGE_SIZE);
   const stat = latestRatingStats?.[rating] || latestRatingStats?.[String(rating)] || null;
-  const listMedian = rows.length ? median(rows.map(row => Number(row.price)).filter(Number.isFinite)) : null;
+  const listMedian = rows.length
+    ? median(
+        rows
+          .filter(row => row.priceAvailable)
+          .map(row => Number(row.price))
+          .filter(value => Number.isFinite(value) && value > 0)
+      )
+    : null;
   const referencePrice = Number.isFinite(Number(listMedian))
     ? Number(listMedian)
     : Number(stat?.ratingReferencePrice ?? stat?.medianPrice);
@@ -2985,7 +3153,10 @@ async function buildRatingPlayerListPayload(rating, page = 0) {
         const name = duplicateName && row.club ? `${baseName} (${row.club})` : baseName;
         const label = row.url ? `[${name}](${row.url})` : name;
         const watch = row.intensiveWatch ? " ⭐ **INTENSIV**" : "";
-        return `${start + index + 1}. ${label} • **${discordNumber(Number(row.price))} Coins**${watch}`;
+        const priceText = row.priceAvailable
+          ? `${discordNumber(Number(row.price))} Coins`
+          : "PR / kein aktueller BIN";
+        return `${start + index + 1}. ${label} • **${priceText}**${watch}`;
       }).join("\n").slice(0, 3900)
     : "Aktuell sind keine Base-Rare-Spieler dieses Ratings mit gültigem FUT.GG-Preis verfügbar.";
 
@@ -3004,20 +3175,29 @@ async function buildRatingPlayerListPayload(rating, page = 0) {
         max_values: 1,
         options: [
           {
-            label: `⭐ ALLE ${rating}er intensiv überwachen`.slice(0, 100),
+            label: `⭐ ALLE verfügbaren ${rating}er überwachen`.slice(0, 100),
             value: "__ALL__",
-            description: `Alle ${rows.length} Spieler dieses Ratings überwachen`.slice(0, 100)
+            description: `${
+              rows.filter(row => row.priceAvailable).length
+            } mit Preis${
+              rows.some(row => !row.priceAvailable)
+                ? ` • ${rows.filter(row => !row.priceAvailable).length} PR warten auf BIN`
+                : ""
+            }`.slice(0, 100)
           },
-          ...slice.slice(0, 24).map(row => {
-            const baseName = String(row.name || `EA ${row.eaId}`);
-            const duplicateName = rows.filter(item => String(item.name || "") === String(row.name || "")).length > 1;
-            const label = duplicateName && row.club ? `${baseName} (${row.club})` : baseName;
-            return {
-              label: label.slice(0, 100),
-              value: String(row.eaId),
-              description: `${discordNumber(Number(row.price))} Coins${row.intensiveWatch ? " • bereits intensiv" : ""}`.slice(0, 100)
-            };
-          })
+          ...slice
+            .filter(row => row.priceAvailable)
+            .slice(0, 24)
+            .map(row => {
+              const baseName = String(row.name || `EA ${row.eaId}`);
+              const duplicateName = rows.filter(item => String(item.name || "") === String(row.name || "")).length > 1;
+              const label = duplicateName && row.club ? `${baseName} (${row.club})` : baseName;
+              return {
+                label: label.slice(0, 100),
+                value: String(row.eaId),
+                description: `${discordNumber(Number(row.price))} Coins${row.intensiveWatch ? " • bereits intensiv" : ""}`.slice(0, 100)
+              };
+            })
         ]
       }]
     });
@@ -3041,7 +3221,7 @@ async function buildRatingPlayerListPayload(rating, page = 0) {
         { name: "Rating-Preis", value: Number.isFinite(referencePrice) ? `${discordNumber(referencePrice)} Coins` : "-", inline: true },
         { name: "Spieler", value: String(rows.length), inline: true },
         { name: "Seite", value: `${safePage + 1}/${totalPages}`, inline: true },
-        { name: "Intensiv", value: "Einzelnen Spieler oder ⭐ ALLE auswählen. ⭐ markiert bereits überwachte Karten.", inline: false }
+        { name: "Intensiv", value: "Einzelnen Spieler oder ⭐ ALLE verfügbaren auswählen. Karten mit PR/ohne BIN bleiben sichtbar und werden automatisch wieder preisfähig, sobald FUT.GG einen Preis liefert.", inline: false }
       ],
       footer: { text: `FC Trader Brain • nur für dich sichtbar • FC${GAME_YEAR}` },
       timestamp: new Date().toISOString()
@@ -3707,9 +3887,12 @@ async function handleDiscordButtonInteraction(interaction) {
 
       if (eaId === "__ALL__") {
         const allRows = await ratingPlayerListRows(rating);
+        const watchableRows = allRows.filter(row => row.priceAvailable);
+        const prRows = allRows.filter(row => !row.priceAvailable);
+
         if (!allRows.length) {
           await interaction.followUp({
-            content: `⚠️ Für ${rating}er sind gerade keine gültigen Marktpreise verfügbar.`,
+            content: `⚠️ Für ${rating}er sind gerade keine Base-Rare-Karten verfügbar.`,
             flags: 64
           }).catch(() => {});
           return;
@@ -3720,7 +3903,7 @@ async function handleDiscordButtonInteraction(interaction) {
         let already = 0;
         let failed = 0;
 
-        await mapLimit(allRows, 4, async row => {
+        await mapLimit(watchableRows, 4, async row => {
           try {
             const key = String(row.eaId);
             if (before.has(key)) {
@@ -3740,8 +3923,9 @@ async function handleDiscordButtonInteraction(interaction) {
 
         await interaction.followUp({
           content:
-            `⭐ **${rating}ER KOMPLETT INTENSIV** • ${added} neu aktiviert` +
+            `⭐ **${rating}ER INTENSIV** • ${added} neu aktiviert` +
             `${already ? ` • ${already} bereits aktiv` : ""}` +
+            `${prRows.length ? ` • ${prRows.length} PR/ohne BIN noch nicht startbar` : ""}` +
             `${failed ? ` • ${failed} konnten nicht aktiviert werden` : ""}.`,
           flags: 64
         }).catch(() => {});
@@ -5585,7 +5769,7 @@ async function sendDiscordStartupMessage() {
       alertKey,
       alertType: "system",
       action: "CONNECTED",
-      fingerprint: "v10.53"
+      fingerprint: "v10.54"
     });
   } catch (error) {
     lastDiscordError = String(error);
@@ -8320,7 +8504,7 @@ async function buildDecisionPerformanceScorecard(limit = 500) {
   return {
     ok: true,
     enabled: true,
-    version: "10.53-discovery-price-capture",
+    version: "10.54-canonical-pr-rating-list",
     sampleSize: total,
     scorecard: {
       accuracy: total ? Number(((wins / total) * 100).toFixed(2)) : null,
@@ -9617,7 +9801,7 @@ app.get("/", (req, res) => {
   res.json({
     online: true,
     service: "FC Trading Intelligence",
-    version: "10.53-discovery-price-capture",
+    version: "10.54-canonical-pr-rating-list",
     gameYear: GAME_YEAR,
     marketProfile: marketProfile(),
     refreshSeconds: 60,
@@ -9746,7 +9930,7 @@ app.get("/api/readiness", (req, res) => {
   const readiness = runtimeReadinessSnapshot();
   res.status(readiness.ready ? 200 : 503).json({
     ok: readiness.ready,
-    version: "10.53-discovery-price-capture",
+    version: "10.54-canonical-pr-rating-list",
     gameYear: GAME_YEAR,
     readiness,
     note: "Dieser Endpunkt ist absichtlich strenger als /health. /health zeigt, ob der Webdienst lebt; /api/readiness zeigt, ob Marktquelle, Monitoring, Datenbank, Discord und Trader Brain wirklich produktionsbereit sind."
@@ -9756,7 +9940,7 @@ app.get("/api/readiness", (req, res) => {
 app.get("/health", (req, res) => {
   res.json({
     ok: true,
-    version: "10.53-discovery-price-capture",
+    version: "10.54-canonical-pr-rating-list",
     gameYear: GAME_YEAR,
     marketProfile: marketProfile(),
     marketContext: latestMarketContext,
@@ -10050,7 +10234,7 @@ app.post("/api/trader-signals/ingest", async (req, res) => {
 
 app.get("/api/trader-sources/status", (req, res) => {
   res.json({
-    ok: true, version: "10.53-discovery-price-capture", mode: "forwarded-or-authorized-only", automaticForeignDiscordReading: false,
+    ok: true, version: "10.54-canonical-pr-rating-list", mode: "forwarded-or-authorized-only", automaticForeignDiscordReading: false,
     sources: CURATED_TRADER_SOURCES.map(source => ({ id: source.id, name: source.displayName, aliases: source.aliases, channels: source.channels.map(channel => ({ channel: channel.name, type: channel.type, category: channel.category, defaultCall: channel.defaultCall, reliabilityWeight: Number(channel.weight || 1) })) })),
     note: "Die Registry normalisiert weitergeleitete/erlaubte Signale. Sie liest keine fremden Discord-Server automatisch oder verdeckt aus."
   });
@@ -10071,7 +10255,7 @@ app.get("/api/alert-sanity/status", (req, res) => {
   }));
   res.json({
     ok: true,
-    version: "10.53-discovery-price-capture",
+    version: "10.54-canonical-pr-rating-list",
     blockedNow: blocked.length,
     thresholds: {
       livePriceDiffPct: ALERT_SANITY_RECHECK_DIFF_PCT,
@@ -10087,7 +10271,7 @@ app.get("/api/buy-guard/status", (req, res) => {
   res.json({
     ok: true,
     enabled: true,
-    version: "10.53-discovery-price-capture",
+    version: "10.54-canonical-pr-rating-list",
     rules: {
       duplicateShortHorizonsCountAsOne: true,
       requiredRecoveryCycles: STRICT_BUY_RECOVERY_CYCLES,
@@ -10120,7 +10304,7 @@ app.get("/api/leak-impact/status", async (req, res) => {
       GROUP BY s.source ORDER BY COUNT(DISTINCT i.signal_id) DESC, s.source ASC
     `);
     return res.json({
-      ok: true, enabled: true, version: "10.53-discovery-price-capture", horizonsMinutes: TRADER_MARKET_IMPACT_HORIZONS,
+      ok: true, enabled: true, version: "10.54-canonical-pr-rating-list", horizonsMinutes: TRADER_MARKET_IMPACT_HORIZONS,
       sourceSummary: sourceSummary.rows.map(row => ({ source: row.source, events: Number(row.events || 0), evaluatedPoints: Number(row.evaluated_points || 0), avgAbsMarketMovePct: Number(row.avg_abs_market_move || 0), avgMarketMovePct: Number(row.avg_market_move || 0) })),
       recent: recent.rows.map(row => ({ signalId: row.signal_id, source: row.source, channel: row.source_channel || null, category: row.category, horizonMinutes: Number(row.horizon_minutes), marketMedianChangePct: Number(row.market_median_change_pct), strongestRating: row.strongest_rating == null ? null : Number(row.strongest_rating), strongestRatingChangePct: row.strongest_rating_change_pct == null ? null : Number(row.strongest_rating_change_pct), affectedRatings: row.affected_ratings || [], direction: row.direction, sourceEventAt: row.source_event_at, evaluatedAt: row.evaluated_at, message: String(row.message || "").slice(0, 500) })),
       note: "Leak/Content-Events loesen keinen Kauf aus. Der Brain misst zuerst, welche Rating-Segmente sich nach 15m/1h/6h/24h real bewegen."
@@ -10164,7 +10348,7 @@ app.get("/api/market-knowledge/status", async (req, res) => {
     return res.json({
       ok: true,
       enabled: true,
-      version: "10.53-discovery-price-capture",
+      version: "10.54-canonical-pr-rating-list",
       policy: {
         hypothesesAreNotTruth: true,
         minimumSamplesBeforeInfluence: MARKET_KNOWLEDGE_MIN_SAMPLES,
@@ -10233,7 +10417,7 @@ app.get("/api/trader-reliability/status", async (req, res) => {
 
     return res.json({
       enabled: true,
-      version: "10.53-discovery-price-capture",
+      version: "10.54-canonical-pr-rating-list",
       gameYear: GAME_YEAR,
       method: {
         priorAccuracy: TRADER_RELIABILITY_PRIOR_ACCURACY,
@@ -10292,7 +10476,7 @@ app.get("/api/trader-reliability/status", async (req, res) => {
 app.get("/api/trader-confluence/status", (req, res) => {
   res.json({
     enabled: DISCORD_CONFIGURED && dbEnabled,
-    version: "10.53-discovery-price-capture",
+    version: "10.54-canonical-pr-rating-list",
     minCardConfidence: DISCORD_TRADER_CONFLUENCE_MIN_CONFIDENCE,
     minRatingConfidence: DISCORD_TRADER_CONFLUENCE_MIN_RATING_CONFIDENCE,
     minTraderReliability: DISCORD_TRADER_CONFLUENCE_MIN_RELIABILITY,
@@ -10325,7 +10509,7 @@ app.get("/api/trader-confluence/status", (req, res) => {
 app.get("/api/discord-rating-mode/status", (req, res) => {
   res.json({
     ok: true,
-    version: "10.53-discovery-price-capture",
+    version: "10.54-canonical-pr-rating-list",
     ratingFirst: DISCORD_RATING_FIRST_BASE_ALERTS,
     strictRatingFeed: true,
     normalPlayerAlerts: false,
@@ -10341,7 +10525,7 @@ app.get("/api/discord-rating-mode/status", (req, res) => {
     },
     specialCardsRemainIndividual: false,
     traderPlayerConfluencePublic: false,
-    note: "Öffentlicher Feed bleibt Rating-only. Discovery-Preise aus der FUT.GG-Spielerliste werden jetzt direkt übernommen; Bulk/Direct dienen nur noch als Preis-Fallback. ALLE intensiv bleibt verfügbar."
+    note: "Öffentlicher Feed bleibt Rating-only. Canonical Base-Rare-Karten bleiben auch bei FUT.GG PR/ohne BIN sichtbar; Transfer-Duplikate ohne Preis bleiben verborgen. Last-known DB-Preis wird vor PR genutzt."
   });
 });
 
@@ -10502,7 +10686,7 @@ app.get("/api/intensive-watchlist", async (req, res) => {
 
     res.json({
       ok: true,
-      version: "10.53-discovery-price-capture",
+      version: "10.54-canonical-pr-rating-list",
       count: items.length,
       settings: {
         moveAlertPct: INTENSIVE_WATCH_MOVE_PCT,
@@ -10615,7 +10799,7 @@ app.get("/api/trading", async (req, res) => {
 
     res.json({
       ok: true,
-      version: "10.53-discovery-price-capture",
+      version: "10.54-canonical-pr-rating-list",
       refreshSeconds: 60,
       dbEnabled,
       sourceHealth: health,
@@ -10696,7 +10880,7 @@ app.get("/api/processing-health", (req, res) => {
   const health = processingHealthSnapshot();
   res.status(health.healthy ? 200 : 503).json({
     ok: health.healthy,
-    version: "10.53-discovery-price-capture",
+    version: "10.54-canonical-pr-rating-list",
     gameYear: GAME_YEAR,
     processingHealth: health,
     note: "DB-, Brain- oder Discord-Fehler werden getrennt von FUT.GG-Quellfehlern bewertet und können den Source Health Guard nicht mehr fälschlich in Quarantäne schicken."
@@ -10707,7 +10891,7 @@ app.get("/api/source-health", (req, res) => {
   const health = sourceHealthSnapshot();
   res.status(health.status === "UNHEALTHY" ? 503 : 200).json({
     ok: health.status !== "UNHEALTHY",
-    version: "10.53-discovery-price-capture",
+    version: "10.54-canonical-pr-rating-list",
     gameYear: GAME_YEAR,
     refreshSeconds: 60,
     source: "FUT.GG PS5 bulk prices",
@@ -10727,7 +10911,7 @@ app.get("/api/futbin/status", (req, res) => {
 
   res.json({
     ok: true,
-    version: "10.53-discovery-price-capture",
+    version: "10.54-canonical-pr-rating-list",
     gameYear: GAME_YEAR,
     configured: Boolean(FUTBIN_AUTHORIZED_FEED_URL || FUTBIN_PARSE_API_KEY),
     status: latestFutbinStatus,
@@ -10768,7 +10952,7 @@ app.get("/api/futbin/status", (req, res) => {
 app.get("/api/market-context", (req, res) => {
   res.json({
     ok: true,
-    version: "10.53-discovery-price-capture",
+    version: "10.54-canonical-pr-rating-list",
     gameYear: GAME_YEAR,
     refreshSeconds: 60,
     context: latestMarketContext,
@@ -10779,7 +10963,7 @@ app.get("/api/market-context", (req, res) => {
 app.get("/api/trader-brain/status", (req, res) => {
   res.json({
     ok: true,
-    version: "10.53-discovery-price-capture",
+    version: "10.54-canonical-pr-rating-list",
     gameYear: GAME_YEAR,
     marketProfile: marketProfile(),
     marketContext: latestMarketContext,
@@ -10789,7 +10973,7 @@ app.get("/api/trader-brain/status", (req, res) => {
     lastBrainError,
     lastGeminiCandidate,
     learning: {
-      version: "10.53-discovery-price-capture",
+      version: "10.54-canonical-pr-rating-list",
       totalMatureDecisions: brainLearningCache.totalMatureDecisions,
       rawMatureDecisions: brainLearningCache.rawMatureDecisions,
       uniqueLearningEpisodes: brainLearningCache.uniqueLearningEpisodes,
@@ -10810,7 +10994,7 @@ app.get("/api/trader-brain/learning/status", async (req, res) => {
     const cache = await loadBrainLearningProfiles(true);
     return res.json({
       enabled: true,
-      version: "10.53-discovery-price-capture",
+      version: "10.54-canonical-pr-rating-list",
       method: {
         windowDays: BRAIN_LEARNING_WINDOW_DAYS,
         priorAccuracy: BRAIN_LEARNING_PRIOR_ACCURACY,
@@ -10854,7 +11038,7 @@ app.get("/api/trader-brain/performance/status", async (req, res) => {
     res.status(500).json({
       ok: false,
       enabled: dbEnabled,
-      version: "10.53-discovery-price-capture",
+      version: "10.54-canonical-pr-rating-list",
       error: String(error)
     });
   }
@@ -10872,7 +11056,7 @@ app.get("/api/rating-list/debug/:rating", async (req, res) => {
 
     res.json({
       ok: true,
-      version: "10.53-discovery-price-capture",
+      version: "10.54-canonical-pr-rating-list",
       rating,
       discoveredBaseRare: discovered.length,
       pricedBaseRare: priced.length,
@@ -10893,19 +11077,22 @@ app.get("/api/rating-list/debug/:rating", async (req, res) => {
         discoveryPriceSource: row.priceSource || null
       })),
       unpricedDiscovered: discovered
-        .filter(row => !priced.some(p => String(p.eaId) === String(row.eaId)))
+        .filter(row => !Number.isFinite(Number(row.price)) || Number(row.price) <= 0)
         .map(row => ({
           eaId: row.eaId,
+          sourceEaId: row.sourceEaId ?? null,
           name: row.name,
           club: row.club,
-          discoveryPrice: row.price ?? null
+          canonicalBaseItem: isCanonicalBaseItem(row),
+          discoveryPrice: row.price ?? null,
+          shownInList: priced.some(p => String(p.eaId) === String(row.eaId))
         })),
       diagnostics: latestRatingListDiagnostics
     });
   } catch (error) {
     res.status(500).json({
       ok: false,
-      version: "10.53-discovery-price-capture",
+      version: "10.54-canonical-pr-rating-list",
       error: String(error)
     });
   }
