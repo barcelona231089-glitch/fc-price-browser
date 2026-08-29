@@ -341,7 +341,7 @@ for (const source of CURATED_TRADER_SOURCES) {
 
 const TRADER_MARKET_IMPACT_HORIZONS = [15, 60, 360, 1440];
 
-// v10.42: Discord alert sanity + live price recheck. Keeps the v10.41 watch-stop fix.
+// v10.43: Rating-first Discord alerts + Base-card noise reduction + watch-button sync. Keeps v10.42 sanity guard.
 // Keeps v10.38 Market Knowledge Learning and all previous features. Öffentliche Trading-Grundsätze werden
 // nicht als Wahrheit behandelt. Lernbare Regeln starten als Hypothesen und
 // dürfen erst nach genügend echten FC26-Beobachtungen die Entscheidung leicht
@@ -473,6 +473,12 @@ const DISCORD_MAX_ALERTS_PER_CYCLE = Math.max(1, Math.min(10, Number(process.env
 const DISCORD_MIN_BUY_CONFIDENCE = Math.max(70, Math.min(95, Number(process.env.DISCORD_MIN_BUY_CONFIDENCE || 90)));
 const DISCORD_MIN_SELL_CONFIDENCE = Math.max(70, Math.min(95, Number(process.env.DISCORD_MIN_SELL_CONFIDENCE || 84)));
 const DISCORD_MIN_RATING_CONFIDENCE = Math.max(60, Math.min(95, Number(process.env.DISCORD_MIN_RATING_CONFIDENCE || 75)));
+// v10.43 Rating-first: normale Base-Karten werden im Discord nach Rating gebündelt.
+// Einzelne Base-Spielernamen erscheinen nicht als eigener Alarm. Nur bis zu drei
+// klar teurere Ausnahmen werden kompakt innerhalb des Rating-Alarms genannt.
+const DISCORD_RATING_FIRST_BASE_ALERTS = String(process.env.DISCORD_RATING_FIRST_BASE_ALERTS || "true").toLowerCase() !== "false";
+const RATING_PRICE_EXCEPTION_PCT = Math.max(5, Math.min(50, Number(process.env.RATING_PRICE_EXCEPTION_PCT || 12)));
+const RATING_PRICE_EXCEPTION_MAX_NAMES = Math.max(1, Math.min(3, Number(process.env.RATING_PRICE_EXCEPTION_MAX_NAMES || 3)));
 const DISCORD_TRANSITION_MIN_BUY_CONFIDENCE = Math.max(70, Math.min(95, Number(process.env.DISCORD_TRANSITION_MIN_BUY_CONFIDENCE || 84)));
 const DISCORD_TRANSITION_MIN_SELL_CONFIDENCE = Math.max(70, Math.min(95, Number(process.env.DISCORD_TRANSITION_MIN_SELL_CONFIDENCE || 82)));
 const DISCORD_TRADER_CONFLUENCE_MIN_CONFIDENCE = Math.max(70, Math.min(95, Number(process.env.DISCORD_TRADER_CONFLUENCE_MIN_CONFIDENCE || 82)));
@@ -2840,14 +2846,16 @@ async function handleDiscordButtonInteraction(interaction) {
     if (mode === "remove") {
       await deleteIntensiveWatch(eaId);
 
-      // The stop button lives on a personal intensive-watch update. Once the
-      // watch is removed, clear that stale UI as well so Discord does not keep
-      // showing a card that looks active. Prefer deleting the update entirely;
-      // if Discord refuses deletion, at least remove its components.
       if (interaction.message) {
-        const deleted = await interaction.message.delete().then(() => true).catch(() => false);
-        if (!deleted) {
-          await interaction.message.edit({ components: [] }).catch(() => {});
+        const title = String(interaction.message.embeds?.[0]?.title || "");
+        const isPersonalWatchUpdate = title.includes("INTENSIV:");
+        if (isPersonalWatchUpdate) {
+          const deleted = await interaction.message.delete().then(() => true).catch(() => false);
+          if (!deleted) await interaction.message.edit({ components: [] }).catch(() => {});
+        } else {
+          // Auf dem ursprünglichen Markt-Alert den roten Stop-Button wieder in
+          // den grünen Start-Button zurücksetzen, statt den ganzen Alert zu löschen.
+          await interaction.message.edit({ components: intensiveWatchAddComponents({ eaId: Number(eaId) }) }).catch(() => {});
         }
       }
 
@@ -2869,6 +2877,11 @@ async function handleDiscordButtonInteraction(interaction) {
     const before = await getIntensiveWatchlist();
     const already = before.has(String(eaId));
     const watch = await saveIntensiveWatch(row, interaction.user?.id || null);
+
+    // Der gedrückte grüne Button muss sofort sichtbar in STOP wechseln.
+    if (interaction.message) {
+      await interaction.message.edit({ components: intensiveWatchStopComponents(row) }).catch(() => {});
+    }
 
     const fallbackNote = resolved.source === "live"
       ? ""
@@ -3411,6 +3424,83 @@ function buildCardDiscordPayload(row, type) {
   };
 }
 
+function ratingPriceBucket(value) {
+  const price = Number(value);
+  if (!Number.isFinite(price) || price <= 0) return null;
+  const step = price < 1_000 ? 50 : price < 10_000 ? 100 : price < 50_000 ? 500 : price < 250_000 ? 1_000 : 5_000;
+  return Math.max(step, Math.round(price / step) * step);
+}
+
+function ratingPriceProfile(cards) {
+  const valid = (cards || []).filter(card => Number.isFinite(Number(card?.price)) && Number(card.price) > 0);
+  if (!valid.length) {
+    return {
+      referencePrice: null,
+      dominantPrice: null,
+      dominantSharePct: 0,
+      exceptionCount: 0,
+      namedExceptions: []
+    };
+  }
+
+  const counts = new Map();
+  for (const card of valid) {
+    const bucket = ratingPriceBucket(card.price);
+    if (!Number.isFinite(bucket)) continue;
+    counts.set(bucket, (counts.get(bucket) || 0) + 1);
+  }
+
+  let dominantPrice = null;
+  let dominantCount = -1;
+  for (const [bucket, count] of counts.entries()) {
+    if (count > dominantCount || (count === dominantCount && (dominantPrice == null || bucket < dominantPrice))) {
+      dominantPrice = bucket;
+      dominantCount = count;
+    }
+  }
+
+  const med = median(valid.map(card => Number(card.price)));
+  const medianBucket = ratingPriceBucket(med);
+  const dominantSharePct = valid.length && dominantCount > 0 ? Number(((dominantCount / valid.length) * 100).toFixed(1)) : 0;
+
+  // Wenn es einen klaren Fodder-Preiscluster gibt, ist dieser die Referenz.
+  // Bei verstreuten Preisen ist der gerundete Median robuster.
+  const referencePrice = dominantSharePct >= 35 && Number.isFinite(dominantPrice)
+    ? dominantPrice
+    : medianBucket;
+
+  const minimumGap = Number.isFinite(referencePrice)
+    ? Math.max(referencePrice < 2_000 ? 150 : referencePrice < 10_000 ? 250 : 500, referencePrice * (RATING_PRICE_EXCEPTION_PCT / 100))
+    : Infinity;
+  const threshold = Number.isFinite(referencePrice) ? referencePrice + minimumGap : Infinity;
+
+  const expensive = valid
+    .filter(card => Number(card.price) >= threshold)
+    .sort((a, b) => Number(b.price) - Number(a.price));
+
+  const namedExceptions = expensive.length >= 1 && expensive.length <= RATING_PRICE_EXCEPTION_MAX_NAMES
+    ? expensive.map(card => ({
+        eaId: Number(card.eaId),
+        name: String(card.name || `EA ${card.eaId}`),
+        price: Number(card.price),
+        url: card.url || null
+      }))
+    : [];
+
+  return {
+    referencePrice,
+    dominantPrice,
+    dominantSharePct,
+    exceptionCount: expensive.length,
+    namedExceptions
+  };
+}
+
+function isBaseRatingCard(row) {
+  const type = String(row?.cardType || row?.type || "");
+  return type === "Base Rare" || type === "Base Common";
+}
+
 function ratingUnusualMoveValue(stat) {
   if (!stat) return 0;
   const values = [stat.change5m, stat.change15m, stat.change1h]
@@ -3471,9 +3561,24 @@ function buildRatingDiscordPayload(stat) {
   else if (stat.marketSignal === "STARK STEIGEND") emoji = "🚀";
   else if (stat.marketSignal === "STARK FALLEND") emoji = "🔻";
 
+  const ratingPrice = Number(stat.ratingReferencePrice ?? stat.medianPrice);
+  const priceText = Number.isFinite(ratingPrice) ? `${discordNumber(ratingPrice)} Coins` : "-";
   const actionTitle = lowWatch
-    ? `${emoji} ${stat.rating}ER RATING: ${discordPct(unusualMove)}`
-    : `${emoji} ${stat.rating}ER RATING: ${advice}`;
+    ? `${emoji} ${stat.rating}ER • ${priceText} • ${discordPct(unusualMove)}`
+    : `${emoji} ${stat.rating}ER • ${priceText} • ${advice}`;
+
+  const namedExceptions = Array.isArray(stat.namedPriceExceptions) ? stat.namedPriceExceptions : [];
+  const exceptionFields = namedExceptions.length
+    ? [{
+        name: namedExceptions.length === 1 ? "Teurere Ausnahme" : "Teurere Ausnahmen",
+        value: namedExceptions.map(card => {
+          const name = String(card.name || `EA ${card.eaId}`);
+          const label = card.url ? `[${name}](${card.url})` : name;
+          return `${label}: ${discordNumber(Number(card.price))} Coins`;
+        }).join("\n").slice(0, 1000),
+        inline: false
+      }]
+    : [];
 
   return {
     embeds: [{
@@ -3485,7 +3590,9 @@ function buildRatingDiscordPayload(stat) {
         { name: "Klare Aktion", value: advice, inline: true },
         { name: "Marktsignal", value: String(stat.marketSignal || "NEUTRAL"), inline: true },
         { name: "Sicherheit", value: `${stat.confidence}%`, inline: true },
-        { name: "Median", value: `${discordNumber(stat.medianPrice)} Coins`, inline: true },
+        { name: "Rating-Preis", value: `${discordNumber(ratingPrice)} Coins`, inline: true },
+        { name: "Preiscluster", value: `${Number(stat.dominantPriceSharePct || 0).toFixed(0)}% beim Hauptpreis${Number(stat.priceExceptionCount || 0) > 0 ? ` • ${stat.priceExceptionCount} teurer` : ""}`, inline: true },
+        ...exceptionFields,
         { name: "1m / 5m / 15m / 1h", value: `${discordPct(stat.change1m)} / ${discordPct(stat.change5m)} / ${discordPct(stat.change15m)} / ${discordPct(stat.change1h)}`, inline: false },
         { name: "Steigen / Fallen (5m)", value: `${Number(stat.risingPct5m || 0).toFixed(1)}% / ${Number(stat.fallingPct5m || 0).toFixed(1)}%`, inline: true },
         { name: "Nahe 24h-Tief / Hoch", value: `${Number(stat.near24hLowPct || 0).toFixed(1)}% / ${Number(stat.near24hHighPct || 0).toFixed(1)}%`, inline: true },
@@ -4164,6 +4271,7 @@ async function processBrainStateChangeAlerts(rows, alertBudget = null) {
 
   for (const row of rows) {
     if (row?.aiAlertSanity?.blocked) continue;
+    if (DISCORD_RATING_FIRST_BASE_ALERTS && isBaseRatingCard(row) && !row.tracked && !row.intensiveWatch) continue;
     const previous = previousStates.get(String(row.eaId));
     if (!previous?.action || previous.action === row.aiAction) continue;
 
@@ -4382,6 +4490,10 @@ async function processDiscordAlerts(rows, ratingStats, alertBudget = null) {
 
     for (const row of rows) {
       if (row.intensiveWatch) continue;
+      // Rating-first: Base Rare/Common laufen im normalen Discord nicht mehr als
+      // tausende Einzelspieler-Alarme. Eigene gekaufte Positionen bleiben eine
+      // Ausnahme, damit konkrete Exit-/Profit-Signale weiterhin namentlich kommen.
+      if (DISCORD_RATING_FIRST_BASE_ALERTS && isBaseRatingCard(row) && !row.tracked) continue;
       const candidate = cardDiscordAlertCandidate(row);
       if (candidate) candidates.push({ kind: "card", row, ...candidate });
     }
@@ -4442,9 +4554,13 @@ async function processDiscordAlerts(rows, ratingStats, alertBudget = null) {
       } else {
         const stat = item.stat;
         const alertKey = `rating:${stat.rating}`;
-        const fingerprint = `${stat.marketSignal}|${stat.marketAdvice}|${Math.round((stat.change5m ?? 0) * 10)}`;
+        const ratingAlertPrice = Number(stat.ratingReferencePrice ?? stat.medianPrice);
+        const exceptionFingerprint = (stat.namedPriceExceptions || [])
+          .map(card => `${card.eaId}:${Math.round(Number(card.price || 0))}`)
+          .join(",");
+        const fingerprint = `${stat.marketSignal}|${stat.marketAdvice}|${Math.round((stat.change5m ?? 0) * 10)}|${Math.round(ratingAlertPrice || 0)}|${stat.priceExceptionCount || 0}|${exceptionFingerprint}`;
         const state = await getDiscordAlertState(alertKey);
-        if (!discordAlertShouldSend(state, stat.marketSignal, stat.medianPrice, stat.confidence, fingerprint)) continue;
+        if (!discordAlertShouldSend(state, stat.marketSignal, ratingAlertPrice, stat.confidence, fingerprint)) continue;
 
         await sendDiscordPayload(buildRatingDiscordPayload(stat));
         discordCycleConsume(alertBudget);
@@ -4452,7 +4568,7 @@ async function processDiscordAlerts(rows, ratingStats, alertBudget = null) {
           alertKey,
           alertType: "rating",
           action: stat.marketSignal,
-          price: stat.medianPrice,
+          price: ratingAlertPrice,
           confidence: stat.confidence,
           fingerprint
         });
@@ -4482,7 +4598,7 @@ async function sendDiscordStartupMessage() {
           { name: "Kaufalarm ab", value: `${DISCORD_MIN_BUY_CONFIDENCE}% KI-Sicherheit`, inline: true },
           { name: "Spam-Schutz", value: `${Math.round(DISCORD_ALERT_COOLDOWN_MS / 60_000)} Min. Cooldown`, inline: true }
         ],
-        footer: { text: "FC Trading Intelligence v10.42" },
+        footer: { text: "FC Trading Intelligence v10.43" },
         timestamp: new Date().toISOString()
       }]
     });
@@ -4491,7 +4607,7 @@ async function sendDiscordStartupMessage() {
       alertKey,
       alertType: "system",
       action: "CONNECTED",
-      fingerprint: "v10.42"
+      fingerprint: "v10.43"
     });
   } catch (error) {
     lastDiscordError = String(error);
@@ -5313,6 +5429,7 @@ function buildRatingStats(rows) {
 
   for (const [rating, cards] of byRating.entries()) {
     const currentMedian = median(cards.map(card => card.price));
+    const priceProfile = ratingPriceProfile(cards);
     const w1m = ratingWindowStats(cards, "change1m");
     const w5m = ratingWindowStats(cards, "change5m");
     const w15m = ratingWindowStats(cards, "change15m");
@@ -5492,6 +5609,11 @@ function buildRatingStats(rows) {
       cardCount: cards.length,
       measuredCards: w5m.measuredCards,
       medianPrice: currentMedian,
+      ratingReferencePrice: priceProfile.referencePrice,
+      dominantRatingPrice: priceProfile.dominantPrice,
+      dominantPriceSharePct: priceProfile.dominantSharePct,
+      priceExceptionCount: priceProfile.exceptionCount,
+      namedPriceExceptions: priceProfile.namedExceptions,
       medianPrice1mAgo: w1m.previousMedianPrice,
       medianPrice5mAgo: w5m.previousMedianPrice,
       medianPrice15mAgo: w15m.previousMedianPrice,
@@ -7982,7 +8104,7 @@ app.get("/", (req, res) => {
   res.json({
     online: true,
     service: "FC Trading Intelligence",
-    version: "10.42-alert-sanity-guard",
+    version: "10.43-rating-first-alerts",
     gameYear: GAME_YEAR,
     marketProfile: marketProfile(),
     refreshSeconds: 60,
@@ -8109,7 +8231,7 @@ app.get("/api/readiness", (req, res) => {
   const readiness = runtimeReadinessSnapshot();
   res.status(readiness.ready ? 200 : 503).json({
     ok: readiness.ready,
-    version: "10.42-alert-sanity-guard",
+    version: "10.43-rating-first-alerts",
     gameYear: GAME_YEAR,
     readiness,
     note: "Dieser Endpunkt ist absichtlich strenger als /health. /health zeigt, ob der Webdienst lebt; /api/readiness zeigt, ob Marktquelle, Monitoring, Datenbank, Discord und Trader Brain wirklich produktionsbereit sind."
@@ -8119,7 +8241,7 @@ app.get("/api/readiness", (req, res) => {
 app.get("/health", (req, res) => {
   res.json({
     ok: true,
-    version: "10.42-alert-sanity-guard",
+    version: "10.43-rating-first-alerts",
     gameYear: GAME_YEAR,
     marketProfile: marketProfile(),
     marketContext: latestMarketContext,
@@ -8406,7 +8528,7 @@ app.post("/api/trader-signals/ingest", async (req, res) => {
 
 app.get("/api/trader-sources/status", (req, res) => {
   res.json({
-    ok: true, version: "10.42-alert-sanity-guard", mode: "forwarded-or-authorized-only", automaticForeignDiscordReading: false,
+    ok: true, version: "10.43-rating-first-alerts", mode: "forwarded-or-authorized-only", automaticForeignDiscordReading: false,
     sources: CURATED_TRADER_SOURCES.map(source => ({ id: source.id, name: source.displayName, aliases: source.aliases, channels: source.channels.map(channel => ({ channel: channel.name, type: channel.type, category: channel.category, defaultCall: channel.defaultCall, reliabilityWeight: Number(channel.weight || 1) })) })),
     note: "Die Registry normalisiert weitergeleitete/erlaubte Signale. Sie liest keine fremden Discord-Server automatisch oder verdeckt aus."
   });
@@ -8427,7 +8549,7 @@ app.get("/api/alert-sanity/status", (req, res) => {
   }));
   res.json({
     ok: true,
-    version: "10.42-alert-sanity-guard",
+    version: "10.43-rating-first-alerts",
     blockedNow: blocked.length,
     thresholds: {
       livePriceDiffPct: ALERT_SANITY_RECHECK_DIFF_PCT,
@@ -8443,7 +8565,7 @@ app.get("/api/buy-guard/status", (req, res) => {
   res.json({
     ok: true,
     enabled: true,
-    version: "10.42-alert-sanity-guard",
+    version: "10.43-rating-first-alerts",
     rules: {
       duplicateShortHorizonsCountAsOne: true,
       requiredRecoveryCycles: STRICT_BUY_RECOVERY_CYCLES,
@@ -8476,7 +8598,7 @@ app.get("/api/leak-impact/status", async (req, res) => {
       GROUP BY s.source ORDER BY COUNT(DISTINCT i.signal_id) DESC, s.source ASC
     `);
     return res.json({
-      ok: true, enabled: true, version: "10.42-alert-sanity-guard", horizonsMinutes: TRADER_MARKET_IMPACT_HORIZONS,
+      ok: true, enabled: true, version: "10.43-rating-first-alerts", horizonsMinutes: TRADER_MARKET_IMPACT_HORIZONS,
       sourceSummary: sourceSummary.rows.map(row => ({ source: row.source, events: Number(row.events || 0), evaluatedPoints: Number(row.evaluated_points || 0), avgAbsMarketMovePct: Number(row.avg_abs_market_move || 0), avgMarketMovePct: Number(row.avg_market_move || 0) })),
       recent: recent.rows.map(row => ({ signalId: row.signal_id, source: row.source, channel: row.source_channel || null, category: row.category, horizonMinutes: Number(row.horizon_minutes), marketMedianChangePct: Number(row.market_median_change_pct), strongestRating: row.strongest_rating == null ? null : Number(row.strongest_rating), strongestRatingChangePct: row.strongest_rating_change_pct == null ? null : Number(row.strongest_rating_change_pct), affectedRatings: row.affected_ratings || [], direction: row.direction, sourceEventAt: row.source_event_at, evaluatedAt: row.evaluated_at, message: String(row.message || "").slice(0, 500) })),
       note: "Leak/Content-Events loesen keinen Kauf aus. Der Brain misst zuerst, welche Rating-Segmente sich nach 15m/1h/6h/24h real bewegen."
@@ -8520,7 +8642,7 @@ app.get("/api/market-knowledge/status", async (req, res) => {
     return res.json({
       ok: true,
       enabled: true,
-      version: "10.42-alert-sanity-guard",
+      version: "10.43-rating-first-alerts",
       policy: {
         hypothesesAreNotTruth: true,
         minimumSamplesBeforeInfluence: MARKET_KNOWLEDGE_MIN_SAMPLES,
@@ -8589,7 +8711,7 @@ app.get("/api/trader-reliability/status", async (req, res) => {
 
     return res.json({
       enabled: true,
-      version: "10.42-alert-sanity-guard",
+      version: "10.43-rating-first-alerts",
       gameYear: GAME_YEAR,
       method: {
         priorAccuracy: TRADER_RELIABILITY_PRIOR_ACCURACY,
@@ -8648,7 +8770,7 @@ app.get("/api/trader-reliability/status", async (req, res) => {
 app.get("/api/trader-confluence/status", (req, res) => {
   res.json({
     enabled: DISCORD_CONFIGURED && dbEnabled,
-    version: "10.42-alert-sanity-guard",
+    version: "10.43-rating-first-alerts",
     minCardConfidence: DISCORD_TRADER_CONFLUENCE_MIN_CONFIDENCE,
     minRatingConfidence: DISCORD_TRADER_CONFLUENCE_MIN_RATING_CONFIDENCE,
     minTraderReliability: DISCORD_TRADER_CONFLUENCE_MIN_RELIABILITY,
@@ -8835,7 +8957,7 @@ app.get("/api/intensive-watchlist", async (req, res) => {
 
     res.json({
       ok: true,
-      version: "10.42-alert-sanity-guard",
+      version: "10.43-rating-first-alerts",
       count: items.length,
       settings: {
         moveAlertPct: INTENSIVE_WATCH_MOVE_PCT,
@@ -8948,7 +9070,7 @@ app.get("/api/trading", async (req, res) => {
 
     res.json({
       ok: true,
-      version: "10.42-alert-sanity-guard",
+      version: "10.43-rating-first-alerts",
       refreshSeconds: 60,
       dbEnabled,
       sourceHealth: health,
@@ -9029,7 +9151,7 @@ app.get("/api/processing-health", (req, res) => {
   const health = processingHealthSnapshot();
   res.status(health.healthy ? 200 : 503).json({
     ok: health.healthy,
-    version: "10.42-alert-sanity-guard",
+    version: "10.43-rating-first-alerts",
     gameYear: GAME_YEAR,
     processingHealth: health,
     note: "DB-, Brain- oder Discord-Fehler werden getrennt von FUT.GG-Quellfehlern bewertet und können den Source Health Guard nicht mehr fälschlich in Quarantäne schicken."
@@ -9040,7 +9162,7 @@ app.get("/api/source-health", (req, res) => {
   const health = sourceHealthSnapshot();
   res.status(health.status === "UNHEALTHY" ? 503 : 200).json({
     ok: health.status !== "UNHEALTHY",
-    version: "10.42-alert-sanity-guard",
+    version: "10.43-rating-first-alerts",
     gameYear: GAME_YEAR,
     refreshSeconds: 60,
     source: "FUT.GG PS5 bulk prices",
@@ -9060,7 +9182,7 @@ app.get("/api/futbin/status", (req, res) => {
 
   res.json({
     ok: true,
-    version: "10.42-alert-sanity-guard",
+    version: "10.43-rating-first-alerts",
     gameYear: GAME_YEAR,
     configured: Boolean(FUTBIN_AUTHORIZED_FEED_URL || FUTBIN_PARSE_API_KEY),
     status: latestFutbinStatus,
@@ -9101,7 +9223,7 @@ app.get("/api/futbin/status", (req, res) => {
 app.get("/api/market-context", (req, res) => {
   res.json({
     ok: true,
-    version: "10.42-alert-sanity-guard",
+    version: "10.43-rating-first-alerts",
     gameYear: GAME_YEAR,
     refreshSeconds: 60,
     context: latestMarketContext,
@@ -9112,7 +9234,7 @@ app.get("/api/market-context", (req, res) => {
 app.get("/api/trader-brain/status", (req, res) => {
   res.json({
     ok: true,
-    version: "10.42-alert-sanity-guard",
+    version: "10.43-rating-first-alerts",
     gameYear: GAME_YEAR,
     marketProfile: marketProfile(),
     marketContext: latestMarketContext,
@@ -9122,7 +9244,7 @@ app.get("/api/trader-brain/status", (req, res) => {
     lastBrainError,
     lastGeminiCandidate,
     learning: {
-      version: "10.42-alert-sanity-guard",
+      version: "10.43-rating-first-alerts",
       totalMatureDecisions: brainLearningCache.totalMatureDecisions,
       rawMatureDecisions: brainLearningCache.rawMatureDecisions,
       uniqueLearningEpisodes: brainLearningCache.uniqueLearningEpisodes,
@@ -9143,7 +9265,7 @@ app.get("/api/trader-brain/learning/status", async (req, res) => {
     const cache = await loadBrainLearningProfiles(true);
     return res.json({
       enabled: true,
-      version: "10.42-alert-sanity-guard",
+      version: "10.43-rating-first-alerts",
       method: {
         windowDays: BRAIN_LEARNING_WINDOW_DAYS,
         priorAccuracy: BRAIN_LEARNING_PRIOR_ACCURACY,
@@ -10334,7 +10456,7 @@ httpServer = app.listen(
   port,
   () => {
     console.log(
-      `FC Trading Intelligence v10.42 Alert Sanity Guard (FC${GAME_YEAR}) running on ${port}`
+      `FC Trading Intelligence v10.43 Rating First Alerts (FC${GAME_YEAR}) running on ${port}`
     );
 
     startMonitoring();
