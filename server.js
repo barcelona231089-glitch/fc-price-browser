@@ -271,6 +271,60 @@ const TRADER_FEED_ALLOWED_SOURCES = String(process.env.TRADER_FEED_ALLOWED_SOURC
 const TRADER_FEED_ALLOWED_SOURCE_MAP = new Map(
   TRADER_FEED_ALLOWED_SOURCES.map(source => [traderFeedSourceIdentityKey(source), source])
 );
+
+// v10.36: kuratierte kostenlose Trader-/Content-Quellen.
+// Diese Registry liest KEINE fremden Discord-Server automatisch aus. Sie
+// normalisiert nur weitergeleitete oder explizit autorisierte Signale.
+const CURATED_TRADER_SOURCES = [
+  { id: "john_fut_universe", displayName: "John FUT Universe", aliases: ["john fut universe", "john fut", "fut universe", "johnfut"], channels: [
+    { name: "investments", type: "INVESTMENT", category: "SHORT_TERM_FLIPS", defaultCall: "KAUFEN" },
+    { name: "sell-time", type: "SELL", category: "SHORT_TERM_FLIPS", defaultCall: "VERKAUFEN" },
+    { name: "low-budget", type: "INVESTMENT", category: "SHORT_TERM_FLIPS", defaultCall: "KAUFEN" },
+    { name: "flipping", type: "FLIP", category: "SHORT_TERM_FLIPS", defaultCall: null },
+    { name: "marquee-matchups", type: "SBC_CONTENT", category: "SBC_FODDER", defaultCall: "BEOBACHTEN" },
+    { name: "news", type: "NEWS_LEAK", category: "LEAKS_CONTENT", defaultCall: "BEOBACHTEN" }
+  ]},
+  { id: "rickth21", displayName: "Rickth21", aliases: ["rickth21", "rick th21", "rickth"], channels: [
+    { name: "free-tips", type: "TRADER_CALL", category: "SHORT_TERM_FLIPS", defaultCall: null },
+    { name: "sells", type: "SELL", category: "SHORT_TERM_FLIPS", defaultCall: "VERKAUFEN" },
+    { name: "leaks", type: "LEAK", category: "LEAKS_CONTENT", defaultCall: "BEOBACHTEN" },
+    { name: "6pm-content", type: "CONTENT", category: "LEAKS_CONTENT", defaultCall: "BEOBACHTEN" },
+    { name: "evo-sbc-expires", type: "EXPIRY", category: "SBC_FODDER", defaultCall: "BEOBACHTEN" },
+    { name: "evolutions", type: "EVO_CONTENT", category: "LEAKS_CONTENT", defaultCall: "BEOBACHTEN" }
+  ]},
+  { id: "fifa_beat", displayName: "FIFA BEAT", aliases: ["fifa beat", "fifabeat"], channels: [
+    { name: "leaks", type: "LEAK", category: "LEAKS_CONTENT", defaultCall: "BEOBACHTEN" },
+    { name: "sbc-reminder", type: "SBC_CONTENT", category: "SBC_FODDER", defaultCall: "BEOBACHTEN" },
+    { name: "packs", type: "SUPPLY", category: "PROMO_CARDS", defaultCall: "BEOBACHTEN" },
+    { name: "evolution", type: "EVO_CONTENT", category: "LEAKS_CONTENT", defaultCall: "BEOBACHTEN" },
+    { name: "trading-bot", type: "TRADER_CALL", category: "SHORT_TERM_FLIPS", defaultCall: null },
+    { name: "community-calls", type: "COMMUNITY_CALL", category: "SHORT_TERM_FLIPS", defaultCall: null, weight: 0.5 }
+  ]},
+  { id: "trade_to_glory", displayName: "Trade To Glory", aliases: ["trade to glory", "trade-to-glory", "tradetoglory", "ttg"], channels: [
+    { name: "tips-of-the-day", type: "TRADER_CALL", category: "SHORT_TERM_FLIPS", defaultCall: null },
+    { name: "live-trading", type: "LIVE_CALL", category: "SHORT_TERM_FLIPS", defaultCall: null },
+    { name: "leaks", type: "LEAK", category: "LEAKS_CONTENT", defaultCall: "BEOBACHTEN" },
+    { name: "new-packs", type: "SUPPLY", category: "PROMO_CARDS", defaultCall: "BEOBACHTEN" },
+    { name: "sbc-updates", type: "SBC_CONTENT", category: "SBC_FODDER", defaultCall: "BEOBACHTEN" },
+    { name: "objective-updates", type: "CONTENT", category: "LEAKS_CONTENT", defaultCall: "BEOBACHTEN" }
+  ]},
+  { id: "birke", displayName: "BIRKE", aliases: ["birke", "birke trading"], channels: [
+    { name: "probe-vip-tipp", type: "TRADER_CALL", category: "SHORT_TERM_FLIPS", defaultCall: null },
+    { name: "auscashbenachrichtigung", type: "SELL", category: "SHORT_TERM_FLIPS", defaultCall: "VERKAUFEN" },
+    { name: "leaks", type: "LEAK", category: "LEAKS_CONTENT", defaultCall: "BEOBACHTEN" },
+    { name: "neuer-content", type: "CONTENT", category: "LEAKS_CONTENT", defaultCall: "BEOBACHTEN" },
+    { name: "community-trading-ideen", type: "COMMUNITY_CALL", category: "SHORT_TERM_FLIPS", defaultCall: null, weight: 0.5 }
+  ]}
+];
+
+const CURATED_TRADER_ALIAS_MAP = new Map();
+for (const source of CURATED_TRADER_SOURCES) {
+  for (const alias of [source.displayName, source.id, ...(source.aliases || [])]) {
+    CURATED_TRADER_ALIAS_MAP.set(traderFeedSourceIdentityKey(alias), source);
+  }
+}
+
+const TRADER_MARKET_IMPACT_HORIZONS = [15, 60, 360, 1440];
 const DISCORD_CONFIGURED = Boolean(DISCORD_BOT_TOKEN);
 const DISCORD_ALERT_COOLDOWN_MS = Math.max(5, Number(process.env.DISCORD_ALERT_COOLDOWN_MIN || 30)) * 60_000;
 const DISCORD_MAX_ALERTS_PER_CYCLE = Math.max(1, Math.min(10, Number(process.env.DISCORD_MAX_ALERTS_PER_CYCLE || 5)));
@@ -1701,9 +1755,44 @@ async function initDb() {
       source_event_at IS NULL OR received_at IS NULL
   `);
 
+  // v10.36: Quelle/Kanaltyp getrennt speichern.
+  await pool.query(`
+    ALTER TABLE fc_discord_signals
+      ADD COLUMN IF NOT EXISTS source_channel VARCHAR(120)
+  `);
+
+  await pool.query(`
+    ALTER TABLE fc_discord_signals
+      ADD COLUMN IF NOT EXISTS signal_kind VARCHAR(40) DEFAULT 'TRADER_CALL'
+  `);
+
+  await pool.query(`
+    ALTER TABLE fc_discord_signals
+      ADD COLUMN IF NOT EXISTS source_channel_weight NUMERIC(5,2) DEFAULT 1.00
+  `);
+
   await pool.query(`
     CREATE INDEX IF NOT EXISTS idx_fc_discord_signals_source_event_time
     ON fc_discord_signals (source_event_at DESC)
+  `);
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS fc_trader_market_impacts (
+      signal_id VARCHAR(120) NOT NULL REFERENCES fc_discord_signals(id) ON DELETE CASCADE,
+      horizon_minutes SMALLINT NOT NULL,
+      market_median_change_pct NUMERIC(10,4),
+      strongest_rating SMALLINT,
+      strongest_rating_change_pct NUMERIC(10,4),
+      affected_ratings JSONB,
+      direction VARCHAR(20),
+      evaluated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      PRIMARY KEY (signal_id, horizon_minutes)
+    )
+  `);
+
+  await pool.query(`
+    CREATE INDEX IF NOT EXISTS idx_fc_trader_market_impacts_time
+    ON fc_trader_market_impacts (evaluated_at DESC)
   `);
 
   await pool.query(`
@@ -2008,6 +2097,21 @@ function traderFeedFallbackEventKey(source, text, eventTime) {
     .slice(0, 32);
 }
 
+function discordSourceEventTimestamp(message) {
+  let timestamp = Number(message?.createdTimestamp) || Date.now();
+  try {
+    const snapshots = message?.messageSnapshots;
+    const values = snapshots?.values ? Array.from(snapshots.values()) : [];
+    const candidates = values
+      .map(snapshot => Number(snapshot?.createdTimestamp || snapshot?.createdAt?.getTime?.() || 0))
+      .filter(value => Number.isFinite(value) && value > 0);
+    if (candidates.length) timestamp = Math.min(...candidates);
+  } catch {
+    // Forward-Metadaten sind optional. Empfangszeit bleibt sicherer Fallback.
+  }
+  return timestamp;
+}
+
 function collectDiscordText(message) {
   const parts = [];
 
@@ -2027,6 +2131,10 @@ function collectDiscordText(message) {
     const snapshots = message?.messageSnapshots;
     const values = snapshots?.values ? Array.from(snapshots.values()) : [];
     for (const snapshot of values) {
+      if (snapshot?.author?.username) parts.push(`ForwardedAuthor: ${snapshot.author.username}`);
+      if (snapshot?.author?.globalName) parts.push(`ForwardedAuthorName: ${snapshot.author.globalName}`);
+      if (snapshot?.guildName) parts.push(`ForwardedGuild: ${snapshot.guildName}`);
+      if (snapshot?.channelName) parts.push(`ForwardedChannel: #${snapshot.channelName}`);
       if (snapshot?.content) parts.push(snapshot.content);
       for (const embed of snapshot?.embeds || []) {
         if (embed?.title) parts.push(embed.title);
@@ -2095,14 +2203,59 @@ function detectExpectedTimeframe(text) {
   return "nicht angegeben";
 }
 
+function curatedTraderSourceFor(value) {
+  const raw = compactWhitespace(value || "");
+  if (!raw) return null;
+  const direct = CURATED_TRADER_ALIAS_MAP.get(traderFeedSourceIdentityKey(raw));
+  if (direct) return direct;
+  const normalized = ` ${traderFeedSourceIdentityKey(raw).replace(/_/g, " ")} `;
+  for (const source of CURATED_TRADER_SOURCES) {
+    for (const alias of [source.displayName, source.id, ...(source.aliases || [])]) {
+      const needle = traderFeedSourceIdentityKey(alias).replace(/_/g, " ");
+      if (needle && normalized.includes(` ${needle} `)) return source;
+    }
+  }
+  return null;
+}
+
+function canonicalTraderSourceName(value) {
+  const source = curatedTraderSourceFor(value);
+  return source?.displayName || compactWhitespace(value || "discord_signal") || "discord_signal";
+}
+
+function detectKnownTraderChannel(text, sourceName = null) {
+  const raw = String(text || "").toLowerCase();
+  const source = curatedTraderSourceFor(sourceName) || curatedTraderSourceFor(raw);
+  if (!source) return null;
+  for (const channel of source.channels || []) {
+    const name = String(channel.name || "").toLowerCase();
+    if (!name) continue;
+    const markers = [
+      `#${name}`,
+      `kanal: ${name}`,
+      `kanal: #${name}`,
+      `channel: ${name}`,
+      `channel: #${name}`,
+      `forwardedchannel: #${name}`
+    ];
+    if (markers.some(value => raw.includes(value))) {
+      return { sourceId: source.id, source: source.displayName, channel: channel.name, type: channel.type || "TRADER_CALL", category: channel.category || "SHORT_TERM_FLIPS", defaultCall: channel.defaultCall || null, weight: Number.isFinite(Number(channel.weight)) ? Number(channel.weight) : 1 };
+    }
+  }
+  return { sourceId: source.id, source: source.displayName, channel: null, type: "UNKNOWN", category: null, defaultCall: null, weight: 1 };
+}
+
 function detectSignalSource(message, text) {
-  const explicit = String(text || "").match(/(?:source|quelle|trader)\s*[:\-]\s*@?([a-z0-9_.\-]{2,50})/i);
-  if (explicit) return explicit[1];
-
-  const atName = String(text || "").match(/@([a-z0-9_.\-]{3,50})/i);
-  if (atName) return atName[1];
-
-  return message?.author?.username || message?.author?.tag || "discord_signal";
+  const raw = String(text || "");
+  const explicit = raw.match(/(?:source|quelle|trader)\s*[:\-]\s*@?([^\n|]{2,80})/i);
+  if (explicit) return canonicalTraderSourceName(explicit[1]);
+  const curatedFromText = curatedTraderSourceFor(raw);
+  if (curatedFromText) return curatedFromText.displayName;
+  const forwardedAuthor = raw.match(/ForwardedAuthor(?:Name)?\s*:\s*([^\n|]{2,80})/i);
+  if (forwardedAuthor) return canonicalTraderSourceName(forwardedAuthor[1]);
+  const atName = raw.match(/@([a-z0-9_.\-]{3,50})/i);
+  if (atName) return canonicalTraderSourceName(atName[1]);
+  return canonicalTraderSourceName(message?.author?.username || message?.author?.tag || "discord_signal");
 }
 
 function detectSignalTarget(text) {
@@ -2154,40 +2307,26 @@ function detectSignalTarget(text) {
 
 function parseTraderSignalMessage(message) {
   const text = collectDiscordText(message);
-  if (!text || text.length < 3) {
-    return { ok: false, reason: "Keine auswertbare Nachricht" };
-  }
-
-  const call = detectTraderCall(text);
-  if (!call) {
-    return { ok: false, reason: "Keine klare Aktion KAUFEN / VERKAUFEN / WARTEN erkannt" };
-  }
-
-  const targetInfo = detectSignalTarget(text);
-  if (!targetInfo) {
-    return { ok: false, reason: "Kein eindeutiger FUT.GG-Spieler oder Rating erkannt" };
-  }
-
+  if (!text || text.length < 3) return { ok: false, reason: "Keine auswertbare Nachricht" };
   const source = detectSignalSource(message, text);
-  const category = detectTraderCategory(text);
+  const channelMeta = detectKnownTraderChannel(text, source);
+  const category = channelMeta?.category || detectTraderCategory(text);
+  const observationOnlyTypes = new Set(["LEAK", "NEWS_LEAK", "CONTENT", "SBC_CONTENT", "SUPPLY", "EVO_CONTENT", "EXPIRY"]);
+  const call = observationOnlyTypes.has(channelMeta?.type)
+    ? "BEOBACHTEN"
+    : (detectTraderCall(text) || channelMeta?.defaultCall || (category === "LEAKS_CONTENT" ? "BEOBACHTEN" : null));
+  if (!call) return { ok: false, reason: "Keine klare Aktion oder beobachtbares Leak/Content-Event erkannt" };
+  let targetInfo = detectSignalTarget(text);
+  if (!targetInfo && call === "BEOBACHTEN") targetInfo = { target: "MARKT", eaId: null, kind: "market" };
+  if (!targetInfo) return { ok: false, reason: "Kein eindeutiger FUT.GG-Spieler oder Rating erkannt" };
   const expectedTimeframe = detectExpectedTimeframe(text);
-
-  return {
-    ok: true,
-    signal: {
-      id: `discord_${message.id}`,
-      source,
-      message: text.slice(0, 3000),
-      playerOrRating: targetInfo.target,
-      eaId: targetInfo.eaId || null,
-      call,
-      reason: text.slice(0, 1200),
-      expectedTimeframe,
-      sourceReliability: 50,
-      category,
-      timestamp: Date.now()
-    }
-  };
+  const signalKind = call === "BEOBACHTEN" ? "MARKET_EVENT" : "TRADER_CALL";
+  return { ok: true, signal: {
+    id: `discord_${message.id}`, source, sourceChannel: channelMeta?.channel || null, sourceChannelType: channelMeta?.type || null,
+    sourceChannelWeight: Number(channelMeta?.weight || 1), signalKind, message: text.slice(0, 3000),
+    playerOrRating: targetInfo.target, eaId: targetInfo.eaId || null, call, reason: text.slice(0, 1200), expectedTimeframe,
+    sourceReliability: 50, category, timestamp: Date.now()
+  }};
 }
 
 function currentReferenceForTraderSignal(signal) {
@@ -2266,12 +2405,15 @@ async function saveIncomingTraderSignal(signal) {
         source_event_at,
         received_at,
         external_event_id,
+        source_channel,
+        signal_kind,
+        source_channel_weight,
         created_at
       )
       VALUES (
         $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,
         CASE WHEN $11::integer IS NULL THEN NULL ELSE $12::timestamptz END,
-        $13,$12::timestamptz,NOW(),$14,$12::timestamptz
+        $13,$12::timestamptz,NOW(),$14,$15,$16,$17,$12::timestamptz
       )
       ON CONFLICT (id) DO NOTHING
       RETURNING id
@@ -2290,7 +2432,10 @@ async function saveIncomingTraderSignal(signal) {
       Number.isFinite(initialReferencePrice) ? Math.round(initialReferencePrice) : null,
       sourceEventAtIso,
       ingestOrigin,
-      externalEventId
+      externalEventId,
+      compactWhitespace(signal.sourceChannel || "").slice(0, 120) || null,
+      compactWhitespace(signal.signalKind || (signal.call === "BEOBACHTEN" ? "MARKET_EVENT" : "TRADER_CALL")).slice(0, 40),
+      Number.isFinite(Number(signal.sourceChannelWeight)) ? Number(signal.sourceChannelWeight) : 1
     ]
   );
 
@@ -2381,7 +2526,7 @@ async function handleTraderSignalMessage(message) {
       return;
     }
 
-    parsed.signal.sourceEventAt = Number(message.createdTimestamp) || Date.now();
+    parsed.signal.sourceEventAt = discordSourceEventTimestamp(message);
     parsed.signal.timestamp = parsed.signal.sourceEventAt;
     parsed.signal.ingestOrigin = "discord_channel";
     parsed.signal.externalEventId = compactWhitespace(message.id || "").slice(0, 180) || null;
@@ -2398,8 +2543,9 @@ async function handleTraderSignalMessage(message) {
 
     await message.reply({
       content:
-        `📥 **Trader-Signal gespeichert** | ${parsed.signal.call} | ` +
-        `**${parsed.signal.playerOrRating}** | Quelle: **${parsed.signal.source}** | ` +
+        `📥 **${parsed.signal.signalKind === "MARKET_EVENT" ? "Markt-Event" : "Trader-Signal"} gespeichert** | ${parsed.signal.call} | ` +
+        `**${parsed.signal.playerOrRating}** | Quelle: **${parsed.signal.source}**` +
+        `${parsed.signal.sourceChannel ? ` • #${parsed.signal.sourceChannel}` : ""} | ` +
         `Kategorie: ${parsed.signal.category}. Wird ab dem nächsten 60-Sekunden-Marktcheck gegen FUT.GG geprüft.`,
       allowedMentions: { repliedUser: false, parse: [] }
     }).catch(() => {});
@@ -3260,6 +3406,7 @@ async function processTraderConfluenceAlerts(rows, ratingStats, brainWork, alert
     const candidates = [];
 
     for (const signal of signals) {
+      if (signal.signalKind === "MARKET_EVENT" || String(signal.call || "").toUpperCase() === "BEOBACHTEN") continue;
       const profile = profiles[String(signal.source || "").toLowerCase()];
       const gate = traderConfluenceReliabilityGate(signal, profile);
       const ageMs = Date.now() - Number(signal.timestamp || 0);
@@ -3821,7 +3968,7 @@ async function sendDiscordStartupMessage() {
           { name: "Kaufalarm ab", value: `${DISCORD_MIN_BUY_CONFIDENCE}% KI-Sicherheit`, inline: true },
           { name: "Spam-Schutz", value: `${Math.round(DISCORD_ALERT_COOLDOWN_MS / 60_000)} Min. Cooldown`, inline: true }
         ],
-        footer: { text: "FC Trading Intelligence v10.35" },
+        footer: { text: "FC Trading Intelligence v10.36" },
         timestamp: new Date().toISOString()
       }]
     });
@@ -3830,7 +3977,7 @@ async function sendDiscordStartupMessage() {
       alertKey,
       alertType: "system",
       action: "CONNECTED",
-      fingerprint: "v10.35"
+      fingerprint: "v10.36"
     });
   } catch (error) {
     lastDiscordError = String(error);
@@ -3910,6 +4057,7 @@ async function monitorOnce() {
       updateFutbinCrossCheckHealth(latestTradingRows);
 
       await evaluateTraderSignalReliability(latestTradingRows);
+      await evaluateTraderMarketImpact(latestTradingRows);
       await enrichImportantRowsWithFutbinParse(latestTradingRows, built.brainWork);
       await automaticTraderBrain(latestTradingRows, built.brainWork);
       await processIntensiveWatchAlerts(latestTradingRows, cycleAlertBudget);
@@ -4418,6 +4566,9 @@ async function loadRecentDiscordSignals() {
       source_event_at,
       received_at,
       external_event_id,
+      source_channel,
+      signal_kind,
+      source_channel_weight,
       created_at
     FROM fc_discord_signals
     WHERE created_at >= NOW() - INTERVAL '30 hours'
@@ -4444,6 +4595,9 @@ async function loadRecentDiscordSignals() {
     sourceEventAt: row.source_event_at ? new Date(row.source_event_at).getTime() : new Date(row.created_at).getTime(),
     receivedAt: row.received_at ? new Date(row.received_at).getTime() : new Date(row.created_at).getTime(),
     externalEventId: row.external_event_id || null,
+    sourceChannel: row.source_channel || null,
+    signalKind: row.signal_kind || (row.call === "BEOBACHTEN" ? "MARKET_EVENT" : "TRADER_CALL"),
+    sourceChannelWeight: Number(row.source_channel_weight || 1),
     timestamp: row.source_event_at ? new Date(row.source_event_at).getTime() : new Date(row.created_at).getTime()
   }));
 }
@@ -5075,8 +5229,11 @@ async function loadTraderSignalsForReliability() {
       target_ea_id,
       call,
       category,
+      signal_kind,
+      source_channel_weight,
       initial_reference_price,
       initial_reference_at,
+      source_event_at,
       created_at
     FROM fc_discord_signals
     WHERE created_at >= NOW() - INTERVAL '30 hours'
@@ -5090,9 +5247,11 @@ async function loadTraderSignalsForReliability() {
     eaId: row.target_ea_id == null ? null : String(row.target_ea_id),
     call: row.call,
     category: row.category || "SHORT_TERM_FLIPS",
+    signalKind: row.signal_kind || (row.call === "BEOBACHTEN" ? "MARKET_EVENT" : "TRADER_CALL"),
+    sourceChannelWeight: Number(row.source_channel_weight || 1),
     initialReferencePrice: row.initial_reference_price == null ? null : Number(row.initial_reference_price),
     initialReferenceAt: row.initial_reference_at ? new Date(row.initial_reference_at).getTime() : null,
-    createdAt: new Date(row.created_at).getTime()
+    createdAt: row.source_event_at ? new Date(row.source_event_at).getTime() : new Date(row.created_at).getTime()
   }));
 }
 
@@ -5282,6 +5441,7 @@ async function refreshTraderReliabilityProfiles() {
       s.source,
       s.category,
       s.expected_timeframe,
+      s.source_channel_weight,
       o.horizon_minutes,
       o.was_correct
     FROM fc_trader_signal_outcomes o
@@ -5308,7 +5468,7 @@ async function refreshTraderReliabilityProfiles() {
       category: signalLike.category,
       horizonMinutes: Number(row.horizon_minutes),
       wasCorrect: row.was_correct === true,
-      weight: traderReliabilityOutcomeWeight(signalLike, Number(row.horizon_minutes))
+      weight: traderReliabilityOutcomeWeight(signalLike, Number(row.horizon_minutes)) * Math.max(0.1, Math.min(1, Number(row.source_channel_weight || 1)))
     });
   }
 
@@ -5381,6 +5541,7 @@ async function evaluateTraderSignalReliability(rows) {
   const now = Date.now();
 
   for (const signal of signals) {
+    if (signal.signalKind === "MARKET_EVENT" || String(signal.call || "").toUpperCase() === "BEOBACHTEN") continue;
     const initialPrice = await ensureFrozenTraderSignalReference(signal, rows);
     if (!Number.isFinite(initialPrice) || initialPrice <= 0) continue;
 
@@ -5433,6 +5594,81 @@ async function evaluateTraderSignalReliability(rows) {
   // Dadurch werden auch bereits vorhandene v10.6-Outcomes sofort
   // mit Zeitfenster-Gewichtung und 50%-Startbasis korrigiert.
   await refreshTraderReliabilityProfiles();
+  return inserted;
+}
+
+async function loadTraderMarketEventsForImpact() {
+  if (!dbEnabled) return [];
+  const result = await pool.query(`
+    SELECT id, source, source_channel, category, message, player_or_rating, source_event_at, created_at
+    FROM fc_discord_signals
+    WHERE (signal_kind = 'MARKET_EVENT' OR call = 'BEOBACHTEN')
+      AND COALESCE(source_event_at, created_at) >= NOW() - INTERVAL '30 hours'
+    ORDER BY COALESCE(source_event_at, created_at) ASC
+    LIMIT 200
+  `);
+  return result.rows.map(row => ({ id: row.id, source: row.source, sourceChannel: row.source_channel || null, category: row.category || "LEAKS_CONTENT", message: row.message || "", target: row.player_or_rating || "MARKT", createdAt: row.source_event_at ? new Date(row.source_event_at).getTime() : new Date(row.created_at).getTime() }));
+}
+
+async function ratingMedianSnapshotAt(rows, atMs) {
+  if (!dbEnabled || !rows?.length) return {};
+  const baseRare = rows.filter(row => row.cardType === "Base Rare" && Number.isFinite(Number(row.eaId)) && Number(row.overall) >= RATING_MIN && Number(row.overall) <= RATING_MAX);
+  if (!baseRare.length) return {};
+  const ids = [...new Set(baseRare.map(row => String(row.eaId)))];
+  const prices = await lookupDb(ids, atMs);
+  const grouped = new Map();
+  for (const row of baseRare) {
+    const price = prices.get(String(row.eaId));
+    if (!Number.isFinite(price) || price <= 0) continue;
+    const rating = Number(row.overall);
+    if (!grouped.has(rating)) grouped.set(rating, []);
+    grouped.get(rating).push(price);
+  }
+  const snapshot = {};
+  for (const [rating, values] of grouped.entries()) if (values.length >= 3) snapshot[rating] = median(values);
+  return snapshot;
+}
+
+function compareRatingSnapshots(before, after) {
+  const moves = [];
+  for (let rating = RATING_MIN; rating <= RATING_MAX; rating++) {
+    const a = Number(before?.[rating]); const b = Number(after?.[rating]);
+    if (!Number.isFinite(a) || a <= 0 || !Number.isFinite(b) || b <= 0) continue;
+    moves.push({ rating, before: Math.round(a), after: Math.round(b), changePct: Number((((b - a) / a) * 100).toFixed(4)) });
+  }
+  const marketMedianChangePct = median(moves.map(item => item.changePct));
+  const strongest = [...moves].sort((a, b) => Math.abs(b.changePct) - Math.abs(a.changePct))[0] || null;
+  const affectedRatings = [...moves].sort((a, b) => Math.abs(b.changePct) - Math.abs(a.changePct)).slice(0, 8);
+  let direction = "FLAT";
+  if (Number.isFinite(marketMedianChangePct) && marketMedianChangePct >= 1) direction = "RISING";
+  else if (Number.isFinite(marketMedianChangePct) && marketMedianChangePct <= -1) direction = "FALLING";
+  else if (affectedRatings.some(item => Math.abs(item.changePct) >= 3)) direction = "MIXED";
+  return { marketMedianChangePct, strongest, affectedRatings, direction };
+}
+
+async function evaluateTraderMarketImpact(rows) {
+  if (!dbEnabled || !rows?.length) return 0;
+  const events = await loadTraderMarketEventsForImpact();
+  if (!events.length) return 0;
+  const existingResult = await pool.query(`SELECT signal_id, horizon_minutes FROM fc_trader_market_impacts WHERE signal_id = ANY($1::varchar[])`, [events.map(event => event.id)]);
+  const existing = new Set(existingResult.rows.map(row => `${row.signal_id}:${Number(row.horizon_minutes)}`));
+  let inserted = 0; const now = Date.now(); const snapshotCache = new Map();
+  const getSnapshot = async atMs => { const key = String(Math.floor(atMs / 60_000)); if (!snapshotCache.has(key)) snapshotCache.set(key, await ratingMedianSnapshotAt(rows, atMs)); return snapshotCache.get(key); };
+  for (const event of events) {
+    let baseline = null;
+    for (const horizonMinutes of TRADER_MARKET_IMPACT_HORIZONS) {
+      const key = `${event.id}:${horizonMinutes}`; if (existing.has(key)) continue;
+      const targetAt = event.createdAt + horizonMinutes * 60_000; if (now < targetAt) continue;
+      if (!baseline) baseline = await getSnapshot(event.createdAt);
+      const observed = await getSnapshot(targetAt); const comparison = compareRatingSnapshots(baseline, observed);
+      if (!Number.isFinite(comparison.marketMedianChangePct) || !comparison.affectedRatings.length) continue;
+      const result = await pool.query(`
+        INSERT INTO fc_trader_market_impacts (signal_id, horizon_minutes, market_median_change_pct, strongest_rating, strongest_rating_change_pct, affected_ratings, direction, evaluated_at)
+        VALUES ($1,$2,$3,$4,$5,$6::jsonb,$7,NOW()) ON CONFLICT (signal_id, horizon_minutes) DO NOTHING
+      `, [event.id, horizonMinutes, Number(comparison.marketMedianChangePct.toFixed(4)), comparison.strongest?.rating ?? null, Number.isFinite(comparison.strongest?.changePct) ? Number(comparison.strongest.changePct.toFixed(4)) : null, JSON.stringify(comparison.affectedRatings), comparison.direction]);
+      if (result.rowCount) { inserted += 1; existing.add(key); }
+    }
+  }
   return inserted;
 }
 
@@ -6610,7 +6846,7 @@ app.get("/", (req, res) => {
   res.json({
     online: true,
     service: "FC Trading Intelligence",
-    version: "10.35-rating-buy-sell-alerts",
+    version: "10.36-curated-trader-impact-learning",
     gameYear: GAME_YEAR,
     marketProfile: marketProfile(),
     refreshSeconds: 60,
@@ -6637,6 +6873,8 @@ app.get("/", (req, res) => {
       authorizedTraderFeedIngest: "POST /api/trader-signals/ingest",
       traderConfluenceStatus: "GET /api/trader-confluence/status",
       traderReliabilityStatus: "GET /api/trader-reliability/status",
+      traderSourcesStatus: "GET /api/trader-sources/status",
+      leakImpactStatus: "GET /api/leak-impact/status",
       marketContext: "GET /api/market-context",
       sourceHealth: "GET /api/source-health",
       processingHealth: "GET /api/processing-health",
@@ -6734,7 +6972,7 @@ app.get("/api/readiness", (req, res) => {
   const readiness = runtimeReadinessSnapshot();
   res.status(readiness.ready ? 200 : 503).json({
     ok: readiness.ready,
-    version: "10.35-rating-buy-sell-alerts",
+    version: "10.36-curated-trader-impact-learning",
     gameYear: GAME_YEAR,
     readiness,
     note: "Dieser Endpunkt ist absichtlich strenger als /health. /health zeigt, ob der Webdienst lebt; /api/readiness zeigt, ob Marktquelle, Monitoring, Datenbank, Discord und Trader Brain wirklich produktionsbereit sind."
@@ -6744,7 +6982,7 @@ app.get("/api/readiness", (req, res) => {
 app.get("/health", (req, res) => {
   res.json({
     ok: true,
-    version: "10.35-rating-buy-sell-alerts",
+    version: "10.36-curated-trader-impact-learning",
     gameYear: GAME_YEAR,
     marketProfile: marketProfile(),
     marketContext: latestMarketContext,
@@ -6899,6 +7137,7 @@ app.post("/api/trader-signals/ingest", async (req, res) => {
     }
 
     const requestedSource = compactWhitespace(req.body?.source || "").slice(0, 120);
+    const requestedChannel = compactWhitespace(req.body?.channel || req.body?.channelName || "").replace(/^#/, "").slice(0, 120);
     const text = compactWhitespace(req.body?.message ?? req.body?.text ?? "").slice(0, 3000);
     const externalIdRaw = compactWhitespace(req.body?.eventId ?? req.body?.id ?? "");
     const eventTimeRaw = req.body?.eventTime ?? req.body?.timestamp ?? req.body?.createdAt ?? null;
@@ -6927,7 +7166,7 @@ app.post("/api/trader-signals/ingest", async (req, res) => {
 
     // Kanonischer Anzeigename aus der Allowlist verhindert, dass kleine Schreibvarianten
     // mehrere Zuverlaessigkeitsprofile fuer denselben Trader erzeugen.
-    const source = allowedSource || requestedSource;
+    const source = canonicalTraderSourceName(allowedSource || requestedSource);
 
     if (eventTimeRaw != null && !eventTime) {
       authorizedTraderFeedIgnored++;
@@ -6960,7 +7199,7 @@ app.post("/api/trader-signals/ingest", async (req, res) => {
     const sourceKey = traderFeedSafeKey(source, "source");
     const synthetic = {
       id: `${sourceKey}_${eventKey}`.slice(0, 90),
-      content: `Quelle: ${source}\n${text}`,
+      content: `Quelle: ${source}${requestedChannel ? `\nKanal: #${requestedChannel}` : ""}\n${text}`,
       embeds: [],
       author: { username: source }
     };
@@ -6976,6 +7215,13 @@ app.post("/api/trader-signals/ingest", async (req, res) => {
     parsed.signal.source = source;
     parsed.signal.message = text;
     parsed.signal.reason = text.slice(0, 1200);
+    parsed.signal.sourceChannel = requestedChannel || parsed.signal.sourceChannel || null;
+    const channelMeta = detectKnownTraderChannel(`${requestedChannel ? `#${requestedChannel} ` : ""}${text}`, source);
+    if (channelMeta) {
+      parsed.signal.sourceChannelType = channelMeta.type || parsed.signal.sourceChannelType || null;
+      parsed.signal.sourceChannelWeight = Number(channelMeta.weight || parsed.signal.sourceChannelWeight || 1);
+      if (channelMeta.category) parsed.signal.category = channelMeta.category;
+    }
     parsed.signal.sourceEventAt = (eventTime || new Date()).getTime();
     parsed.signal.timestamp = parsed.signal.sourceEventAt;
     parsed.signal.ingestOrigin = "authorized_feed";
@@ -7003,6 +7249,8 @@ app.post("/api/trader-signals/ingest", async (req, res) => {
         call: parsed.signal.call,
         target: parsed.signal.playerOrRating,
         category: parsed.signal.category,
+        channel: parsed.signal.sourceChannel || null,
+        signalKind: parsed.signal.signalKind || "TRADER_CALL",
         expectedTimeframe: parsed.signal.expectedTimeframe,
         eventTime: new Date(parsed.signal.sourceEventAt).toISOString(),
         receivedAt: lastAuthorizedTraderFeedAt,
@@ -7017,6 +7265,38 @@ app.post("/api/trader-signals/ingest", async (req, res) => {
     console.error("Authorized trader feed ingest error:", error);
     return res.status(500).json({ ok: false, error: "Trader-Feed-Ingest fehlgeschlagen." });
   }
+});
+
+app.get("/api/trader-sources/status", (req, res) => {
+  res.json({
+    ok: true, version: "10.36-curated-trader-impact-learning", mode: "forwarded-or-authorized-only", automaticForeignDiscordReading: false,
+    sources: CURATED_TRADER_SOURCES.map(source => ({ id: source.id, name: source.displayName, aliases: source.aliases, channels: source.channels.map(channel => ({ channel: channel.name, type: channel.type, category: channel.category, defaultCall: channel.defaultCall, reliabilityWeight: Number(channel.weight || 1) })) })),
+    note: "Die Registry normalisiert weitergeleitete/erlaubte Signale. Sie liest keine fremden Discord-Server automatisch oder verdeckt aus."
+  });
+});
+
+app.get("/api/leak-impact/status", async (req, res) => {
+  try {
+    if (!dbEnabled) return res.json({ ok: false, enabled: false, reason: "PostgreSQL ist nicht aktiv." });
+    const recent = await pool.query(`
+      SELECT i.signal_id, i.horizon_minutes, i.market_median_change_pct, i.strongest_rating, i.strongest_rating_change_pct, i.affected_ratings, i.direction, i.evaluated_at,
+             s.source, s.source_channel, s.category, s.message, COALESCE(s.source_event_at, s.created_at) AS source_event_at
+      FROM fc_trader_market_impacts i JOIN fc_discord_signals s ON s.id = i.signal_id
+      ORDER BY i.evaluated_at DESC LIMIT 100
+    `);
+    const sourceSummary = await pool.query(`
+      SELECT s.source, COUNT(*)::int AS evaluated_points, COUNT(DISTINCT i.signal_id)::int AS events,
+             ROUND(AVG(ABS(i.market_median_change_pct))::numeric, 2) AS avg_abs_market_move, ROUND(AVG(i.market_median_change_pct)::numeric, 2) AS avg_market_move
+      FROM fc_trader_market_impacts i JOIN fc_discord_signals s ON s.id = i.signal_id
+      GROUP BY s.source ORDER BY COUNT(DISTINCT i.signal_id) DESC, s.source ASC
+    `);
+    return res.json({
+      ok: true, enabled: true, version: "10.36-curated-trader-impact-learning", horizonsMinutes: TRADER_MARKET_IMPACT_HORIZONS,
+      sourceSummary: sourceSummary.rows.map(row => ({ source: row.source, events: Number(row.events || 0), evaluatedPoints: Number(row.evaluated_points || 0), avgAbsMarketMovePct: Number(row.avg_abs_market_move || 0), avgMarketMovePct: Number(row.avg_market_move || 0) })),
+      recent: recent.rows.map(row => ({ signalId: row.signal_id, source: row.source, channel: row.source_channel || null, category: row.category, horizonMinutes: Number(row.horizon_minutes), marketMedianChangePct: Number(row.market_median_change_pct), strongestRating: row.strongest_rating == null ? null : Number(row.strongest_rating), strongestRatingChangePct: row.strongest_rating_change_pct == null ? null : Number(row.strongest_rating_change_pct), affectedRatings: row.affected_ratings || [], direction: row.direction, sourceEventAt: row.source_event_at, evaluatedAt: row.evaluated_at, message: String(row.message || "").slice(0, 500) })),
+      note: "Leak/Content-Events loesen keinen Kauf aus. Der Brain misst zuerst, welche Rating-Segmente sich nach 15m/1h/6h/24h real bewegen."
+    });
+  } catch (error) { return res.status(500).json({ ok: false, error: String(error) }); }
 });
 
 app.get("/api/trader-reliability/status", async (req, res) => {
@@ -7067,7 +7347,7 @@ app.get("/api/trader-reliability/status", async (req, res) => {
 
     return res.json({
       enabled: true,
-      version: "10.35-rating-buy-sell-alerts",
+      version: "10.36-curated-trader-impact-learning",
       gameYear: GAME_YEAR,
       method: {
         priorAccuracy: TRADER_RELIABILITY_PRIOR_ACCURACY,
@@ -7126,7 +7406,7 @@ app.get("/api/trader-reliability/status", async (req, res) => {
 app.get("/api/trader-confluence/status", (req, res) => {
   res.json({
     enabled: DISCORD_CONFIGURED && dbEnabled,
-    version: "10.35-rating-buy-sell-alerts",
+    version: "10.36-curated-trader-impact-learning",
     minCardConfidence: DISCORD_TRADER_CONFLUENCE_MIN_CONFIDENCE,
     minRatingConfidence: DISCORD_TRADER_CONFLUENCE_MIN_RATING_CONFIDENCE,
     minTraderReliability: DISCORD_TRADER_CONFLUENCE_MIN_RELIABILITY,
@@ -7313,7 +7593,7 @@ app.get("/api/intensive-watchlist", async (req, res) => {
 
     res.json({
       ok: true,
-      version: "10.35-rating-buy-sell-alerts",
+      version: "10.36-curated-trader-impact-learning",
       count: items.length,
       settings: {
         moveAlertPct: INTENSIVE_WATCH_MOVE_PCT,
@@ -7426,7 +7706,7 @@ app.get("/api/trading", async (req, res) => {
 
     res.json({
       ok: true,
-      version: "10.35-rating-buy-sell-alerts",
+      version: "10.36-curated-trader-impact-learning",
       refreshSeconds: 60,
       dbEnabled,
       sourceHealth: health,
@@ -7507,7 +7787,7 @@ app.get("/api/processing-health", (req, res) => {
   const health = processingHealthSnapshot();
   res.status(health.healthy ? 200 : 503).json({
     ok: health.healthy,
-    version: "10.35-rating-buy-sell-alerts",
+    version: "10.36-curated-trader-impact-learning",
     gameYear: GAME_YEAR,
     processingHealth: health,
     note: "DB-, Brain- oder Discord-Fehler werden getrennt von FUT.GG-Quellfehlern bewertet und können den Source Health Guard nicht mehr fälschlich in Quarantäne schicken."
@@ -7518,7 +7798,7 @@ app.get("/api/source-health", (req, res) => {
   const health = sourceHealthSnapshot();
   res.status(health.status === "UNHEALTHY" ? 503 : 200).json({
     ok: health.status !== "UNHEALTHY",
-    version: "10.35-rating-buy-sell-alerts",
+    version: "10.36-curated-trader-impact-learning",
     gameYear: GAME_YEAR,
     refreshSeconds: 60,
     source: "FUT.GG PS5 bulk prices",
@@ -7538,7 +7818,7 @@ app.get("/api/futbin/status", (req, res) => {
 
   res.json({
     ok: true,
-    version: "10.35-rating-buy-sell-alerts",
+    version: "10.36-curated-trader-impact-learning",
     gameYear: GAME_YEAR,
     configured: Boolean(FUTBIN_AUTHORIZED_FEED_URL || FUTBIN_PARSE_API_KEY),
     status: latestFutbinStatus,
@@ -7579,7 +7859,7 @@ app.get("/api/futbin/status", (req, res) => {
 app.get("/api/market-context", (req, res) => {
   res.json({
     ok: true,
-    version: "10.35-rating-buy-sell-alerts",
+    version: "10.36-curated-trader-impact-learning",
     gameYear: GAME_YEAR,
     refreshSeconds: 60,
     context: latestMarketContext,
@@ -7590,7 +7870,7 @@ app.get("/api/market-context", (req, res) => {
 app.get("/api/trader-brain/status", (req, res) => {
   res.json({
     ok: true,
-    version: "10.35-rating-buy-sell-alerts",
+    version: "10.36-curated-trader-impact-learning",
     gameYear: GAME_YEAR,
     marketProfile: marketProfile(),
     marketContext: latestMarketContext,
@@ -7600,7 +7880,7 @@ app.get("/api/trader-brain/status", (req, res) => {
     lastBrainError,
     lastGeminiCandidate,
     learning: {
-      version: "10.35-rating-buy-sell-alerts",
+      version: "10.36-curated-trader-impact-learning",
       totalMatureDecisions: brainLearningCache.totalMatureDecisions,
       rawMatureDecisions: brainLearningCache.rawMatureDecisions,
       uniqueLearningEpisodes: brainLearningCache.uniqueLearningEpisodes,
@@ -7621,7 +7901,7 @@ app.get("/api/trader-brain/learning/status", async (req, res) => {
     const cache = await loadBrainLearningProfiles(true);
     return res.json({
       enabled: true,
-      version: "10.35-rating-buy-sell-alerts",
+      version: "10.36-curated-trader-impact-learning",
       method: {
         windowDays: BRAIN_LEARNING_WINDOW_DAYS,
         priorAccuracy: BRAIN_LEARNING_PRIOR_ACCURACY,
@@ -8812,7 +9092,7 @@ httpServer = app.listen(
   port,
   () => {
     console.log(
-      `FC Trading Intelligence v10.35 Rating Buy Sell Alerts (FC${GAME_YEAR}) running on ${port}`
+      `FC Trading Intelligence v10.36 Curated Trader Impact Learning (FC${GAME_YEAR}) running on ${port}`
     );
 
     startMonitoring();
