@@ -341,7 +341,7 @@ for (const source of CURATED_TRADER_SOURCES) {
 
 const TRADER_MARKET_IMPACT_HORIZONS = [15, 60, 360, 1440];
 
-// v10.44: Rating-first Discord alerts with expandable per-rating player lists. Keeps v10.43 noise reduction + watch sync.
+// v10.45: Hard Rating-Only Discord gate for normal Base cards. Expandable per-rating player lists remain available on demand.
 // Keeps v10.38 Market Knowledge Learning and all previous features. Öffentliche Trading-Grundsätze werden
 // nicht als Wahrheit behandelt. Lernbare Regeln starten als Hypothesen und
 // dürfen erst nach genügend echten FC26-Beobachtungen die Entscheidung leicht
@@ -3601,6 +3601,14 @@ function isBaseRatingCard(row) {
   return type === "Base Rare" || type === "Base Common";
 }
 
+function suppressNormalBasePlayerDiscord(row) {
+  if (!DISCORD_RATING_FIRST_BASE_ALERTS || !isBaseRatingCard(row)) return false;
+  // Normal Base-Spieler werden im Discord ausschließlich über ihren Rating-Markt
+  // dargestellt. Nur bewusst persönliche Karten dürfen weiterhin namentlich kommen:
+  // eigene gespeicherte Käufe oder explizit per Button intensiv überwachte Karten.
+  return !row?.tracked && !row?.intensiveWatch;
+}
+
 function ratingUnusualMoveValue(stat) {
   if (!stat) return 0;
   const values = [stat.change5m, stat.change15m, stat.change1h]
@@ -3798,6 +3806,10 @@ function traderSignalBrainAgreement(signal, rows, ratingStats, brainWork, gate =
 
   const candidates = traderSignalMatchingRows(signal, rows)
     .filter(row => Number.isFinite(row.aiConfidence))
+    // v10.45 hard gate: auch Trader-Konfluenz darf normale Base-Spieler nicht
+    // wieder als Einzelkarten-Alarm in #trading-alerts einschleusen. Für Base
+    // bleibt der öffentliche Weg Rating-Alert -> "Spieler anzeigen".
+    .filter(row => !suppressNormalBasePlayerDiscord(row))
     .filter(row => {
       const quantAction = brainWork?.get(String(row.eaId))?.quant?.suggestedAction;
 
@@ -4044,6 +4056,15 @@ async function processTraderConfluenceAlerts(rows, ratingStats, brainWork, alert
 
     for (const signal of signals) {
       if (signal.signalKind === "MARKET_EVENT" || String(signal.call || "").toUpperCase() === "BEOBACHTEN") continue;
+
+      // Harte Rating-Only-Regel auch fuer alte/aktive Trader-Card-Signale:
+      // normale Base-Spieler duerfen weder bestaetigt noch spaeter per
+      // Invalidation/Expiry wieder namentlich in #trading-alerts auftauchen.
+      if (traderSignalRating(signal) == null) {
+        const matchedBase = traderSignalMatchingRows(signal, rows)
+          .some(row => suppressNormalBasePlayerDiscord(row));
+        if (matchedBase) continue;
+      }
       const profile = profiles[String(signal.source || "").toLowerCase()];
       const gate = traderConfluenceReliabilityGate(signal, profile);
       const ageMs = Date.now() - Number(signal.timestamp || 0);
@@ -4358,7 +4379,7 @@ async function processBrainStateChangeAlerts(rows, alertBudget = null) {
 
   for (const row of rows) {
     if (row?.aiAlertSanity?.blocked) continue;
-    if (DISCORD_RATING_FIRST_BASE_ALERTS && isBaseRatingCard(row) && !row.tracked && !row.intensiveWatch) continue;
+    if (suppressNormalBasePlayerDiscord(row)) continue;
     const previous = previousStates.get(String(row.eaId));
     if (!previous?.action || previous.action === row.aiAction) continue;
 
@@ -4580,7 +4601,7 @@ async function processDiscordAlerts(rows, ratingStats, alertBudget = null) {
       // Rating-first: Base Rare/Common laufen im normalen Discord nicht mehr als
       // tausende Einzelspieler-Alarme. Eigene gekaufte Positionen bleiben eine
       // Ausnahme, damit konkrete Exit-/Profit-Signale weiterhin namentlich kommen.
-      if (DISCORD_RATING_FIRST_BASE_ALERTS && isBaseRatingCard(row) && !row.tracked) continue;
+      if (suppressNormalBasePlayerDiscord(row)) continue;
       const candidate = cardDiscordAlertCandidate(row);
       if (candidate) candidates.push({ kind: "card", row, ...candidate });
     }
@@ -4642,10 +4663,9 @@ async function processDiscordAlerts(rows, ratingStats, alertBudget = null) {
         const stat = item.stat;
         const alertKey = `rating:${stat.rating}`;
         const ratingAlertPrice = Number(stat.ratingReferencePrice ?? stat.medianPrice);
-        const exceptionFingerprint = (stat.namedPriceExceptions || [])
-          .map(card => `${card.eaId}:${Math.round(Number(card.price || 0))}`)
-          .join(",");
-        const fingerprint = `${stat.marketSignal}|${stat.marketAdvice}|${Math.round((stat.change5m ?? 0) * 10)}|${Math.round(ratingAlertPrice || 0)}|${stat.priceExceptionCount || 0}|${exceptionFingerprint}`;
+        // Namen/Einzelausnahmen dürfen keinen neuen öffentlichen Rating-Alarm
+        // auslösen. Sie sind nur hinter dem Button "Spieler anzeigen" sichtbar.
+        const fingerprint = `${stat.marketSignal}|${stat.marketAdvice}|${Math.round((stat.change5m ?? 0) * 10)}|${Math.round(ratingAlertPrice || 0)}`;
         const state = await getDiscordAlertState(alertKey);
         if (!discordAlertShouldSend(state, stat.marketSignal, ratingAlertPrice, stat.confidence, fingerprint)) continue;
 
@@ -4685,7 +4705,7 @@ async function sendDiscordStartupMessage() {
           { name: "Kaufalarm ab", value: `${DISCORD_MIN_BUY_CONFIDENCE}% KI-Sicherheit`, inline: true },
           { name: "Spam-Schutz", value: `${Math.round(DISCORD_ALERT_COOLDOWN_MS / 60_000)} Min. Cooldown`, inline: true }
         ],
-        footer: { text: "FC Trading Intelligence v10.44" },
+        footer: { text: "FC Trading Intelligence v10.45" },
         timestamp: new Date().toISOString()
       }]
     });
@@ -4694,7 +4714,7 @@ async function sendDiscordStartupMessage() {
       alertKey,
       alertType: "system",
       action: "CONNECTED",
-      fingerprint: "v10.44"
+      fingerprint: "v10.45"
     });
   } catch (error) {
     lastDiscordError = String(error);
@@ -8191,7 +8211,7 @@ app.get("/", (req, res) => {
   res.json({
     online: true,
     service: "FC Trading Intelligence",
-    version: "10.44-rating-expandable-list",
+    version: "10.45-rating-only-hard-gate",
     gameYear: GAME_YEAR,
     marketProfile: marketProfile(),
     refreshSeconds: 60,
@@ -8318,7 +8338,7 @@ app.get("/api/readiness", (req, res) => {
   const readiness = runtimeReadinessSnapshot();
   res.status(readiness.ready ? 200 : 503).json({
     ok: readiness.ready,
-    version: "10.44-rating-expandable-list",
+    version: "10.45-rating-only-hard-gate",
     gameYear: GAME_YEAR,
     readiness,
     note: "Dieser Endpunkt ist absichtlich strenger als /health. /health zeigt, ob der Webdienst lebt; /api/readiness zeigt, ob Marktquelle, Monitoring, Datenbank, Discord und Trader Brain wirklich produktionsbereit sind."
@@ -8328,7 +8348,7 @@ app.get("/api/readiness", (req, res) => {
 app.get("/health", (req, res) => {
   res.json({
     ok: true,
-    version: "10.44-rating-expandable-list",
+    version: "10.45-rating-only-hard-gate",
     gameYear: GAME_YEAR,
     marketProfile: marketProfile(),
     marketContext: latestMarketContext,
@@ -8615,7 +8635,7 @@ app.post("/api/trader-signals/ingest", async (req, res) => {
 
 app.get("/api/trader-sources/status", (req, res) => {
   res.json({
-    ok: true, version: "10.44-rating-expandable-list", mode: "forwarded-or-authorized-only", automaticForeignDiscordReading: false,
+    ok: true, version: "10.45-rating-only-hard-gate", mode: "forwarded-or-authorized-only", automaticForeignDiscordReading: false,
     sources: CURATED_TRADER_SOURCES.map(source => ({ id: source.id, name: source.displayName, aliases: source.aliases, channels: source.channels.map(channel => ({ channel: channel.name, type: channel.type, category: channel.category, defaultCall: channel.defaultCall, reliabilityWeight: Number(channel.weight || 1) })) })),
     note: "Die Registry normalisiert weitergeleitete/erlaubte Signale. Sie liest keine fremden Discord-Server automatisch oder verdeckt aus."
   });
@@ -8636,7 +8656,7 @@ app.get("/api/alert-sanity/status", (req, res) => {
   }));
   res.json({
     ok: true,
-    version: "10.44-rating-expandable-list",
+    version: "10.45-rating-only-hard-gate",
     blockedNow: blocked.length,
     thresholds: {
       livePriceDiffPct: ALERT_SANITY_RECHECK_DIFF_PCT,
@@ -8652,7 +8672,7 @@ app.get("/api/buy-guard/status", (req, res) => {
   res.json({
     ok: true,
     enabled: true,
-    version: "10.44-rating-expandable-list",
+    version: "10.45-rating-only-hard-gate",
     rules: {
       duplicateShortHorizonsCountAsOne: true,
       requiredRecoveryCycles: STRICT_BUY_RECOVERY_CYCLES,
@@ -8685,7 +8705,7 @@ app.get("/api/leak-impact/status", async (req, res) => {
       GROUP BY s.source ORDER BY COUNT(DISTINCT i.signal_id) DESC, s.source ASC
     `);
     return res.json({
-      ok: true, enabled: true, version: "10.44-rating-expandable-list", horizonsMinutes: TRADER_MARKET_IMPACT_HORIZONS,
+      ok: true, enabled: true, version: "10.45-rating-only-hard-gate", horizonsMinutes: TRADER_MARKET_IMPACT_HORIZONS,
       sourceSummary: sourceSummary.rows.map(row => ({ source: row.source, events: Number(row.events || 0), evaluatedPoints: Number(row.evaluated_points || 0), avgAbsMarketMovePct: Number(row.avg_abs_market_move || 0), avgMarketMovePct: Number(row.avg_market_move || 0) })),
       recent: recent.rows.map(row => ({ signalId: row.signal_id, source: row.source, channel: row.source_channel || null, category: row.category, horizonMinutes: Number(row.horizon_minutes), marketMedianChangePct: Number(row.market_median_change_pct), strongestRating: row.strongest_rating == null ? null : Number(row.strongest_rating), strongestRatingChangePct: row.strongest_rating_change_pct == null ? null : Number(row.strongest_rating_change_pct), affectedRatings: row.affected_ratings || [], direction: row.direction, sourceEventAt: row.source_event_at, evaluatedAt: row.evaluated_at, message: String(row.message || "").slice(0, 500) })),
       note: "Leak/Content-Events loesen keinen Kauf aus. Der Brain misst zuerst, welche Rating-Segmente sich nach 15m/1h/6h/24h real bewegen."
@@ -8729,7 +8749,7 @@ app.get("/api/market-knowledge/status", async (req, res) => {
     return res.json({
       ok: true,
       enabled: true,
-      version: "10.44-rating-expandable-list",
+      version: "10.45-rating-only-hard-gate",
       policy: {
         hypothesesAreNotTruth: true,
         minimumSamplesBeforeInfluence: MARKET_KNOWLEDGE_MIN_SAMPLES,
@@ -8798,7 +8818,7 @@ app.get("/api/trader-reliability/status", async (req, res) => {
 
     return res.json({
       enabled: true,
-      version: "10.44-rating-expandable-list",
+      version: "10.45-rating-only-hard-gate",
       gameYear: GAME_YEAR,
       method: {
         priorAccuracy: TRADER_RELIABILITY_PRIOR_ACCURACY,
@@ -8857,7 +8877,7 @@ app.get("/api/trader-reliability/status", async (req, res) => {
 app.get("/api/trader-confluence/status", (req, res) => {
   res.json({
     enabled: DISCORD_CONFIGURED && dbEnabled,
-    version: "10.44-rating-expandable-list",
+    version: "10.45-rating-only-hard-gate",
     minCardConfidence: DISCORD_TRADER_CONFLUENCE_MIN_CONFIDENCE,
     minRatingConfidence: DISCORD_TRADER_CONFLUENCE_MIN_RATING_CONFIDENCE,
     minTraderReliability: DISCORD_TRADER_CONFLUENCE_MIN_RELIABILITY,
@@ -8884,6 +8904,24 @@ app.get("/api/trader-confluence/status", (req, res) => {
     lastInvalidationAt: lastTraderConfluenceInvalidationAt,
     lastExpirationAt: lastTraderConfluenceExpirationAt,
     lastError: lastTraderConfluenceAlertError
+  });
+});
+
+app.get("/api/discord-rating-mode/status", (req, res) => {
+  res.json({
+    ok: true,
+    version: "10.45-rating-only-hard-gate",
+    ratingFirst: DISCORD_RATING_FIRST_BASE_ALERTS,
+    normalBasePlayerAlerts: false,
+    basePlayerNameExceptions: ["tracked_purchase", "intensive_watch"],
+    ratingPlayerList: {
+      enabled: true,
+      button: "Spieler anzeigen",
+      privateToClickingUser: true,
+      pageSize: RATING_LIST_PAGE_SIZE
+    },
+    specialCardsRemainIndividual: true,
+    note: "Normale Base Rare/Common Karten werden nicht mehr einzeln alarmiert. Namen erscheinen nur auf Wunsch in der privaten Rating-Liste; eigene Käufe und intensiv überwachte Karten bleiben persönliche Ausnahmen."
   });
 });
 
@@ -9044,7 +9082,7 @@ app.get("/api/intensive-watchlist", async (req, res) => {
 
     res.json({
       ok: true,
-      version: "10.44-rating-expandable-list",
+      version: "10.45-rating-only-hard-gate",
       count: items.length,
       settings: {
         moveAlertPct: INTENSIVE_WATCH_MOVE_PCT,
@@ -9157,7 +9195,7 @@ app.get("/api/trading", async (req, res) => {
 
     res.json({
       ok: true,
-      version: "10.44-rating-expandable-list",
+      version: "10.45-rating-only-hard-gate",
       refreshSeconds: 60,
       dbEnabled,
       sourceHealth: health,
@@ -9238,7 +9276,7 @@ app.get("/api/processing-health", (req, res) => {
   const health = processingHealthSnapshot();
   res.status(health.healthy ? 200 : 503).json({
     ok: health.healthy,
-    version: "10.44-rating-expandable-list",
+    version: "10.45-rating-only-hard-gate",
     gameYear: GAME_YEAR,
     processingHealth: health,
     note: "DB-, Brain- oder Discord-Fehler werden getrennt von FUT.GG-Quellfehlern bewertet und können den Source Health Guard nicht mehr fälschlich in Quarantäne schicken."
@@ -9249,7 +9287,7 @@ app.get("/api/source-health", (req, res) => {
   const health = sourceHealthSnapshot();
   res.status(health.status === "UNHEALTHY" ? 503 : 200).json({
     ok: health.status !== "UNHEALTHY",
-    version: "10.44-rating-expandable-list",
+    version: "10.45-rating-only-hard-gate",
     gameYear: GAME_YEAR,
     refreshSeconds: 60,
     source: "FUT.GG PS5 bulk prices",
@@ -9269,7 +9307,7 @@ app.get("/api/futbin/status", (req, res) => {
 
   res.json({
     ok: true,
-    version: "10.44-rating-expandable-list",
+    version: "10.45-rating-only-hard-gate",
     gameYear: GAME_YEAR,
     configured: Boolean(FUTBIN_AUTHORIZED_FEED_URL || FUTBIN_PARSE_API_KEY),
     status: latestFutbinStatus,
@@ -9310,7 +9348,7 @@ app.get("/api/futbin/status", (req, res) => {
 app.get("/api/market-context", (req, res) => {
   res.json({
     ok: true,
-    version: "10.44-rating-expandable-list",
+    version: "10.45-rating-only-hard-gate",
     gameYear: GAME_YEAR,
     refreshSeconds: 60,
     context: latestMarketContext,
@@ -9321,7 +9359,7 @@ app.get("/api/market-context", (req, res) => {
 app.get("/api/trader-brain/status", (req, res) => {
   res.json({
     ok: true,
-    version: "10.44-rating-expandable-list",
+    version: "10.45-rating-only-hard-gate",
     gameYear: GAME_YEAR,
     marketProfile: marketProfile(),
     marketContext: latestMarketContext,
@@ -9331,7 +9369,7 @@ app.get("/api/trader-brain/status", (req, res) => {
     lastBrainError,
     lastGeminiCandidate,
     learning: {
-      version: "10.44-rating-expandable-list",
+      version: "10.45-rating-only-hard-gate",
       totalMatureDecisions: brainLearningCache.totalMatureDecisions,
       rawMatureDecisions: brainLearningCache.rawMatureDecisions,
       uniqueLearningEpisodes: brainLearningCache.uniqueLearningEpisodes,
@@ -9352,7 +9390,7 @@ app.get("/api/trader-brain/learning/status", async (req, res) => {
     const cache = await loadBrainLearningProfiles(true);
     return res.json({
       enabled: true,
-      version: "10.44-rating-expandable-list",
+      version: "10.45-rating-only-hard-gate",
       method: {
         windowDays: BRAIN_LEARNING_WINDOW_DAYS,
         priorAccuracy: BRAIN_LEARNING_PRIOR_ACCURACY,
@@ -10543,7 +10581,7 @@ httpServer = app.listen(
   port,
   () => {
     console.log(
-      `FC Trading Intelligence v10.44 Rating Expandable Lists (FC${GAME_YEAR}) running on ${port}`
+      `FC Trading Intelligence v10.45 Rating Only Hard Gate (FC${GAME_YEAR}) running on ${port}`
     );
 
     startMonitoring();
