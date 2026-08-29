@@ -282,6 +282,9 @@ const DISCORD_TRANSITION_MIN_SELL_CONFIDENCE = Math.max(70, Math.min(95, Number(
 const DISCORD_TRADER_CONFLUENCE_MIN_CONFIDENCE = Math.max(70, Math.min(95, Number(process.env.DISCORD_TRADER_CONFLUENCE_MIN_CONFIDENCE || 82)));
 const DISCORD_TRADER_CONFLUENCE_MIN_RATING_CONFIDENCE = Math.max(60, Math.min(95, Number(process.env.DISCORD_TRADER_CONFLUENCE_MIN_RATING_CONFIDENCE || 75)));
 const DISCORD_TRADER_CONFLUENCE_MIN_RELIABILITY = Math.max(20, Math.min(80, Number(process.env.DISCORD_TRADER_CONFLUENCE_MIN_RELIABILITY || 35)));
+const INTENSIVE_WATCH_MOVE_PCT = Math.max(1, Math.min(15, Number(process.env.INTENSIVE_WATCH_MOVE_PCT || 3)));
+const INTENSIVE_WATCH_MIN_ALERT_GAP_MS = Math.max(1, Number(process.env.INTENSIVE_WATCH_MIN_ALERT_GAP_MIN || 5)) * 60_000;
+const INTENSIVE_WATCH_MAX_ALERTS_PER_CYCLE = Math.max(1, Math.min(5, Number(process.env.INTENSIVE_WATCH_MAX_ALERTS_PER_CYCLE || 2)));
 
 let lastDiscordSendAt = null;
 let lastDiscordError = null;
@@ -330,6 +333,10 @@ let discordLoginPromise = null;
 const memoryDiscordAlertState = new Map();
 const memoryBrainState = new Map();
 const memoryTraderSignals = [];
+const memoryIntensiveWatchlist = new Map();
+let intensiveWatchAlertsSent = 0;
+let lastIntensiveWatchAlertAt = null;
+let lastIntensiveWatchError = null;
 
 const memoryHistory = new Map();
 const lastMemoryPrice = new Map();
@@ -744,7 +751,7 @@ async function loadAuthorizedFutbinFeed(force = false) {
     try {
       const headers = {
         accept: "application/json",
-        "user-agent": "FC-Trader-Brain/10.32"
+        "user-agent": "FC-Trader-Brain/10.33"
       };
       if (FUTBIN_AUTHORIZED_FEED_TOKEN) {
         headers.authorization = `Bearer ${FUTBIN_AUTHORIZED_FEED_TOKEN}`;
@@ -944,7 +951,7 @@ function futbinParseCandidate(row) {
     Math.abs(Number(row.change15m || 0))
   );
   if (row.tracked && confidence >= 75) return true;
-  if (["JETZT KAUFEN", "VERKAUF PRÜFEN"].includes(row.aiAction) && confidence >= FUTBIN_PARSE_MIN_AI_CONFIDENCE) return true;
+  if (["JETZT KAUFEN", "VERKAUF PRÜFEN", "JETZT VERKAUFEN"].includes(row.aiAction) && confidence >= FUTBIN_PARSE_MIN_AI_CONFIDENCE) return true;
   if (row.aiAction === "NOCH WARTEN" && confidence >= 90 && movement >= 10) return true;
   return false;
 }
@@ -1001,7 +1008,7 @@ async function fetchFutbinParseCrossCheck(row) {
       headers: {
         accept: "application/json",
         "X-API-Key": FUTBIN_PARSE_API_KEY,
-        "user-agent": "FC-Trader-Brain/10.32"
+        "user-agent": "FC-Trader-Brain/10.33"
       }
     });
     if (!response.ok) throw new Error(`Parse FUTBIN API -> HTTP ${response.status}`);
@@ -1080,7 +1087,7 @@ function applyFutbinParseCrossCheck(row, match, brainWork) {
 async function enrichImportantRowsWithFutbinParse(rows, brainWork) {
   if (!FUTBIN_PARSE_API_KEY || !Array.isArray(rows) || !rows.length) return 0;
   refreshFutbinParseDailyBudget();
-  const priority = { "JETZT KAUFEN": 100, "VERKAUF PRÜFEN": 95, "NOCH WARTEN": 80, "NICHT KAUFEN": 50, "BEOBACHTEN": 20, "HALTEN": 10 };
+  const priority = { "JETZT VERKAUFEN": 110, "JETZT KAUFEN": 100, "VERKAUF PRÜFEN": 95, "NOCH WARTEN": 80, "NICHT KAUFEN": 50, "BEOBACHTEN": 20, "HALTEN": 10 };
   const candidates = rows
     .filter(futbinParseCandidate)
     .sort((a, b) => {
@@ -1758,6 +1765,23 @@ async function initDb() {
       updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     )
   `);
+
+  // v10.34: Discord-Favorit / intensive Einzelkarten-Ueberwachung.
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS fc_intensive_watchlist (
+      ea_id BIGINT PRIMARY KEY,
+      player_name VARCHAR(180),
+      start_price INTEGER NOT NULL CHECK (start_price > 0),
+      requested_by VARCHAR(80),
+      last_action VARCHAR(50),
+      last_price INTEGER,
+      last_confidence SMALLINT,
+      last_alert_price INTEGER,
+      last_alert_at TIMESTAMPTZ,
+      started_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+  `);
 }
 
 function recordMemory(rows, at) {
@@ -1877,6 +1901,32 @@ function discordPct(value) {
   if (!Number.isFinite(value)) return "-";
   const sign = value > 0 ? "+" : "";
   return `${sign}${Number(value).toFixed(2)}%`;
+}
+
+function intensiveWatchAddComponents(row) {
+  if (!row || !Number.isFinite(Number(row.eaId))) return [];
+  return [{
+    type: 1,
+    components: [{
+      type: 2,
+      style: 3,
+      label: "⭐ Intensiv überwachen",
+      custom_id: `watch:add:${row.eaId}`
+    }]
+  }];
+}
+
+function intensiveWatchStopComponents(row) {
+  if (!row || !Number.isFinite(Number(row.eaId))) return [];
+  return [{
+    type: 1,
+    components: [{
+      type: 2,
+      style: 4,
+      label: "🛑 Überwachung beenden",
+      custom_id: `watch:remove:${row.eaId}`
+    }]
+  }];
 }
 
 
@@ -2360,6 +2410,57 @@ async function handleTraderSignalMessage(message) {
   }
 }
 
+async function handleDiscordButtonInteraction(interaction) {
+  if (!interaction?.isButton?.()) return;
+
+  const customId = String(interaction.customId || "");
+  const match = customId.match(/^watch:(add|remove):(\d+)$/);
+  if (!match) return;
+
+  const mode = match[1];
+  const eaId = match[2];
+
+  try {
+    if (mode === "remove") {
+      await deleteIntensiveWatch(eaId);
+      await interaction.reply({
+        content: `🛑 Intensive Überwachung für **EA ${eaId}** beendet.`,
+        flags: 64
+      });
+      return;
+    }
+
+    const row = latestTradingRows.find(item => String(item.eaId) === String(eaId));
+    if (!row) {
+      await interaction.reply({
+        content: "⚠️ Diese Karte ist im aktuellen sicheren Markt-Snapshot nicht verfügbar. Bitte beim nächsten Alert erneut versuchen.",
+        flags: 64
+      });
+      return;
+    }
+
+    const before = await getIntensiveWatchlist();
+    const already = before.has(String(eaId));
+    const watch = await saveIntensiveWatch(row, interaction.user?.id || null);
+
+    await interaction.reply({
+      content: already
+        ? `⭐ **${row.name}** wird bereits intensiv überwacht.`
+        : `⭐ **${row.name}** wird jetzt intensiv überwacht. Referenzpreis: **${discordNumber(watch?.startPrice || row.price)} Coins**. Ab jetzt bekommst du engere Folge-Updates nur für diese aktivierte Karte.`,
+      flags: 64
+    });
+  } catch (error) {
+    lastIntensiveWatchError = String(error);
+    console.error("Discord intensive watch interaction error:", error);
+    if (!interaction.replied && !interaction.deferred) {
+      await interaction.reply({
+        content: `⚠️ Überwachung konnte nicht geändert werden: ${String(error?.message || error).slice(0, 300)}`,
+        flags: 64
+      }).catch(() => {});
+    }
+  }
+}
+
 async function initDiscordBot() {
   if (!DISCORD_CONFIGURED) {
     lastDiscordError = "DISCORD_BOT_TOKEN fehlt";
@@ -2395,6 +2496,13 @@ async function initDiscordBot() {
     handleTraderSignalMessage(message).catch(error => {
       lastTraderSignalError = String(error);
       console.error("Trader signal message handler error:", error);
+    });
+  });
+
+  discordClient.on(Events.InteractionCreate, interaction => {
+    handleDiscordButtonInteraction(interaction).catch(error => {
+      lastIntensiveWatchError = String(error);
+      console.error("Discord button interaction handler error:", error);
     });
   });
 
@@ -2637,6 +2745,10 @@ function cardDiscordAlertCandidate(row) {
     return { type: "buy", priority: 100 + row.aiConfidence };
   }
 
+  if (row.aiAction === "JETZT VERKAUFEN" && row.aiConfidence >= DISCORD_MIN_SELL_CONFIDENCE) {
+    return { type: "sell", priority: 130 + row.aiConfidence };
+  }
+
   if (row.aiAction === "VERKAUF PRÜFEN" && row.aiConfidence >= DISCORD_MIN_SELL_CONFIDENCE) {
     return { type: "sell", priority: 110 + row.aiConfidence };
   }
@@ -2705,7 +2817,8 @@ function buildCardDiscordPayload(row, type) {
       fields,
       footer: { text: "FC Trader Brain • automatische 60-Sekunden-Analyse" },
       timestamp: new Date().toISOString()
-    }]
+    }],
+    components: intensiveWatchAddComponents(row)
   };
 }
 
@@ -2906,7 +3019,7 @@ function traderSignalBrainAgreement(signal, rows, ratingStats, brainWork, gate =
         return row.aiAction === "JETZT KAUFEN" && quantAction === "JETZT KAUFEN";
       }
       if (call === "VERKAUFEN") {
-        return row.aiAction === "VERKAUF PRÜFEN" && quantAction === "VERKAUF PRÜFEN";
+        return ["VERKAUF PRÜFEN", "JETZT VERKAUFEN"].includes(row.aiAction) && quantAction === "VERKAUF PRÜFEN";
       }
       if (call === "WARTEN") {
         return ["NOCH WARTEN", "NICHT KAUFEN"].includes(row.aiAction) &&
@@ -2958,7 +3071,8 @@ function buildTraderConfluencePayload(signal, agreement, gate) {
       fields,
       footer: { text: "FC Trader Brain • Reliability-Aware Confluence" },
       timestamp: new Date().toISOString()
-    }]
+    }],
+    components: agreement?.kind === "card" ? intensiveWatchAddComponents(agreement.row) : []
   };
 }
 
@@ -3294,6 +3408,13 @@ function brainTransitionKind(previousAction, nextAction) {
   }
 
   if (
+    to === "JETZT VERKAUFEN" &&
+    ["VERKAUF PRÜFEN", "HALTEN", "JETZT KAUFEN", "BEOBACHTEN"].includes(from)
+  ) {
+    return "sell";
+  }
+
+  if (
     to === "VERKAUF PRÜFEN" &&
     ["HALTEN", "JETZT KAUFEN", "BEOBACHTEN"].includes(from)
   ) {
@@ -3321,7 +3442,8 @@ function buildBrainTransitionPayload(row, previousAction, kind) {
       ],
       footer: { text: "FC Trader Brain • relevanter Zustandswechsel" },
       timestamp: new Date().toISOString()
-    }]
+    }],
+    components: intensiveWatchAddComponents(row)
   };
 }
 
@@ -3404,6 +3526,7 @@ async function processBrainStateChangeAlerts(rows, alertBudget = null) {
   const candidates = [];
 
   for (const row of rows) {
+    if (row.intensiveWatch) continue;
     const previous = previousStates.get(String(row.eaId));
     if (!previous?.action || previous.action === row.aiAction) continue;
 
@@ -3479,6 +3602,134 @@ async function processBrainStateChangeAlerts(rows, alertBudget = null) {
   await saveBrainStates(rows, retryIds);
 }
 
+function intensiveWatchNetPct(row, watch) {
+  const start = Number(watch?.startPrice);
+  const current = Number(row?.price);
+  if (!Number.isFinite(start) || start <= 0 || !Number.isFinite(current) || current <= 0) return null;
+  return Number((((current * 0.95 - start) / start) * 100).toFixed(2));
+}
+
+function intensiveWatchPriority(row) {
+  const action = String(row?.aiAction || "");
+  const actionPriority = {
+    "JETZT VERKAUFEN": 500,
+    "VERKAUF PRÜFEN": 450,
+    "JETZT KAUFEN": 400,
+    "NOCH WARTEN": 330,
+    "NICHT KAUFEN": 300,
+    "HALTEN": 250,
+    "BEOBACHTEN": 200
+  }[action] || 100;
+  return actionPriority + Number(row?.aiConfidence || 0);
+}
+
+function buildIntensiveWatchPayload(row, watch, trigger, movePct) {
+  const netPct = intensiveWatchNetPct(row, watch);
+  const action = String(row.aiAction || "BEOBACHTEN");
+  const emoji = action === "JETZT VERKAUFEN" ? "💰" : action === "VERKAUF PRÜFEN" ? "🟠" : action === "JETZT KAUFEN" ? "🟢" : "👁️";
+  const triggerText = trigger === "ACTION_CHANGE"
+    ? `Brain-Zustand geändert: **${watch.lastAction || "-"} → ${action}**`
+    : `Preis seit dem letzten Intensiv-Update: **${discordPct(movePct)}**`;
+
+  const fields = [
+    { name: "Aktueller Preis", value: `${discordNumber(row.price)} Coins`, inline: true },
+    { name: "Überwachung gestartet bei", value: `${discordNumber(watch.startPrice)} Coins`, inline: true },
+    { name: "KI-Sicherheit", value: `${row.aiConfidence}%`, inline: true },
+    { name: "1m / 5m / 15m", value: `${discordPct(row.change1m)} / ${discordPct(row.change5m)} / ${discordPct(row.change15m)}`, inline: false },
+    { name: "Seit Überwachungsstart", value: netPct == null ? "-" : `${discordPct(netPct)} nach 5% EA-Steuer (Referenz, kein bestätigter Kaufpreis)`, inline: false },
+    { name: "Warum Update?", value: triggerText, inline: false },
+    { name: "Brain", value: String(row.aiReason || "Keine Begründung verfügbar.").slice(0, 900), inline: false }
+  ];
+
+  if (row.tracked) {
+    fields.push({
+      name: "Deine gespeicherte Position",
+      value: `Kauf ${discordNumber(row.buyPrice)} × ${discordNumber(row.quantity || 1)} | Netto ${discordNumber(row.netProfitTotal)} Coins | ${discordPct(row.profitPercent)}`,
+      inline: false
+    });
+  }
+
+  return {
+    embeds: [{
+      title: `${emoji} INTENSIV: ${row.name || `EA ${row.eaId}`} • ${action}`,
+      url: row.url || undefined,
+      description: "Diese Karte wird nur deshalb enger verfolgt, weil du **Intensiv überwachen** gedrückt hast.",
+      fields,
+      footer: { text: "FC Trader Brain • persönliche Intensiv-Watchlist" },
+      timestamp: new Date().toISOString()
+    }],
+    components: intensiveWatchStopComponents(row)
+  };
+}
+
+async function processIntensiveWatchAlerts(rows, alertBudget = null) {
+  const watches = await getIntensiveWatchlist();
+  if (!watches.size || !rows?.length) return;
+
+  const rowMap = new Map(rows.map(row => [String(row.eaId), row]));
+  const candidates = [];
+  const noAlertUpdates = [];
+  const now = Date.now();
+
+  for (const [eaId, watch] of watches.entries()) {
+    const row = rowMap.get(String(eaId));
+    if (!row) continue;
+    row.intensiveWatch = true;
+
+    const previousAction = String(watch.lastAction || "");
+    const actionChanged = Boolean(previousAction && previousAction !== String(row.aiAction || ""));
+    const baseline = Number(watch.lastAlertPrice || watch.startPrice);
+    const movePct = changePct(row.price, baseline);
+    const gapOkay = !watch.lastAlertAt || now - Number(watch.lastAlertAt) >= INTENSIVE_WATCH_MIN_ALERT_GAP_MS;
+    const meaningfulMove = gapOkay && Number.isFinite(movePct) && Math.abs(movePct) >= INTENSIVE_WATCH_MOVE_PCT;
+
+    if (actionChanged || meaningfulMove) {
+      candidates.push({
+        row, watch,
+        trigger: actionChanged ? "ACTION_CHANGE" : "PRICE_MOVE",
+        movePct,
+        priority: intensiveWatchPriority(row) + (actionChanged ? 50 : 0)
+      });
+    } else {
+      noAlertUpdates.push({ row, watch });
+    }
+  }
+
+  // Zustandsdaten ohne Alarm normal fortschreiben. Dadurch erzeugt eine Karte
+  // nicht wegen jeder 60-Sekunden-Abfrage eine neue Nachricht.
+  for (const item of noAlertUpdates) {
+    await updateIntensiveWatchState(item.row, item.watch, { alertSent: false });
+  }
+
+  if (!DISCORD_CONFIGURED || !candidates.length) return;
+
+  candidates.sort((a, b) => b.priority - a.priority);
+  let sent = 0;
+
+  for (const item of candidates) {
+    if (sent >= INTENSIVE_WATCH_MAX_ALERTS_PER_CYCLE || !discordCycleHasRoom(alertBudget)) {
+      discordCycleBlock(alertBudget);
+      // Nicht fortschreiben: der relevante Wechsel bleibt bis zum nächsten Zyklus offen.
+      continue;
+    }
+
+    try {
+      await sendDiscordPayload(buildIntensiveWatchPayload(item.row, item.watch, item.trigger, item.movePct));
+      discordCycleConsume(alertBudget);
+      sent += 1;
+      intensiveWatchAlertsSent += 1;
+      lastIntensiveWatchAlertAt = new Date().toISOString();
+      lastIntensiveWatchError = null;
+      await updateIntensiveWatchState(item.row, item.watch, { alertSent: true });
+    } catch (error) {
+      lastIntensiveWatchError = String(error);
+      lastDiscordError = String(error);
+      console.error("Intensive watch Discord alert error:", error);
+      // Zustand absichtlich nicht fortschreiben, damit der Alert erneut versucht wird.
+    }
+  }
+}
+
 async function processDiscordAlerts(rows, ratingStats, alertBudget = null) {
   if (!DISCORD_CONFIGURED) return;
 
@@ -3486,6 +3737,7 @@ async function processDiscordAlerts(rows, ratingStats, alertBudget = null) {
     const candidates = [];
 
     for (const row of rows) {
+      if (row.intensiveWatch) continue;
       const candidate = cardDiscordAlertCandidate(row);
       if (candidate) candidates.push({ kind: "card", row, ...candidate });
     }
@@ -3564,7 +3816,7 @@ async function sendDiscordStartupMessage() {
           { name: "Kaufalarm ab", value: `${DISCORD_MIN_BUY_CONFIDENCE}% KI-Sicherheit`, inline: true },
           { name: "Spam-Schutz", value: `${Math.round(DISCORD_ALERT_COOLDOWN_MS / 60_000)} Min. Cooldown`, inline: true }
         ],
-        footer: { text: "FC Trading Intelligence v10.32" },
+        footer: { text: "FC Trading Intelligence v10.34" },
         timestamp: new Date().toISOString()
       }]
     });
@@ -3573,7 +3825,7 @@ async function sendDiscordStartupMessage() {
       alertKey,
       alertType: "system",
       action: "CONNECTED",
-      fingerprint: "v10.5.1"
+      fingerprint: "v10.34"
     });
   } catch (error) {
     lastDiscordError = String(error);
@@ -3655,6 +3907,7 @@ async function monitorOnce() {
       await evaluateTraderSignalReliability(latestTradingRows);
       await enrichImportantRowsWithFutbinParse(latestTradingRows, built.brainWork);
       await automaticTraderBrain(latestTradingRows, built.brainWork);
+      await processIntensiveWatchAlerts(latestTradingRows, cycleAlertBudget);
       await processTraderConfluenceAlerts(latestTradingRows, latestRatingStats, built.brainWork, cycleAlertBudget);
       await processBrainStateChangeAlerts(latestTradingRows, cycleAlertBudget);
       await processDiscordAlerts(latestTradingRows, latestRatingStats, cycleAlertBudget);
@@ -3858,6 +4111,136 @@ async function deletePosition(eaId) {
   }
 
   memoryPositions.delete(String(eaId));
+}
+
+async function getIntensiveWatchlist() {
+  if (dbEnabled) {
+    const result = await pool.query(`
+      SELECT
+        ea_id::text AS ea_id, player_name, start_price, requested_by,
+        last_action, last_price, last_confidence, last_alert_price,
+        last_alert_at, started_at, updated_at
+      FROM fc_intensive_watchlist
+      ORDER BY started_at DESC
+    `);
+
+    return new Map(result.rows.map(row => [
+      row.ea_id,
+      {
+        eaId: row.ea_id,
+        playerName: row.player_name || `EA ${row.ea_id}`,
+        startPrice: Number(row.start_price),
+        requestedBy: row.requested_by || null,
+        lastAction: row.last_action || null,
+        lastPrice: row.last_price == null ? null : Number(row.last_price),
+        lastConfidence: row.last_confidence == null ? null : Number(row.last_confidence),
+        lastAlertPrice: row.last_alert_price == null ? null : Number(row.last_alert_price),
+        lastAlertAt: row.last_alert_at ? new Date(row.last_alert_at).getTime() : null,
+        startedAt: row.started_at ? new Date(row.started_at).toISOString() : null,
+        updatedAt: row.updated_at ? new Date(row.updated_at).toISOString() : null
+      }
+    ]));
+  }
+
+  return new Map([...memoryIntensiveWatchlist.entries()].map(([eaId, value]) => [String(eaId), { ...value }]));
+}
+
+async function saveIntensiveWatch(row, requestedBy = null) {
+  const eaId = String(row?.eaId || "");
+  const price = Number(row?.price);
+  if (!/^\d+$/.test(eaId) || !Number.isFinite(price) || price <= 0) {
+    throw new Error("Karte hat keinen gültigen Marktpreis für die intensive Überwachung.");
+  }
+
+  if (dbEnabled) {
+    await pool.query(`
+      INSERT INTO fc_intensive_watchlist (
+        ea_id, player_name, start_price, requested_by,
+        last_action, last_price, last_confidence, last_alert_price, updated_at
+      )
+      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,NOW())
+      ON CONFLICT (ea_id)
+      DO UPDATE SET
+        player_name = EXCLUDED.player_name,
+        requested_by = COALESCE(EXCLUDED.requested_by, fc_intensive_watchlist.requested_by),
+        updated_at = NOW()
+    `, [
+      eaId,
+      String(row.name || `EA ${eaId}`).slice(0, 180),
+      Math.round(price),
+      requestedBy ? String(requestedBy).slice(0, 80) : null,
+      row.aiAction || null,
+      Math.round(price),
+      Number.isFinite(row.aiConfidence) ? Math.round(row.aiConfidence) : null,
+      Math.round(price)
+    ]);
+  } else if (!memoryIntensiveWatchlist.has(eaId)) {
+    memoryIntensiveWatchlist.set(eaId, {
+      eaId,
+      playerName: row.name || `EA ${eaId}`,
+      startPrice: Math.round(price),
+      requestedBy: requestedBy || null,
+      lastAction: row.aiAction || null,
+      lastPrice: Math.round(price),
+      lastConfidence: Number.isFinite(row.aiConfidence) ? Math.round(row.aiConfidence) : null,
+      lastAlertPrice: Math.round(price),
+      lastAlertAt: null,
+      startedAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString()
+    });
+  }
+
+  row.intensiveWatch = true;
+  const watches = await getIntensiveWatchlist();
+  return watches.get(eaId) || null;
+}
+
+async function deleteIntensiveWatch(eaId) {
+  const key = String(eaId);
+  if (dbEnabled) {
+    await pool.query(`DELETE FROM fc_intensive_watchlist WHERE ea_id = $1`, [key]);
+  } else {
+    memoryIntensiveWatchlist.delete(key);
+  }
+
+  const row = latestTradingRows.find(item => String(item.eaId) === key);
+  if (row) row.intensiveWatch = false;
+}
+
+async function updateIntensiveWatchState(row, watch, { alertSent = false } = {}) {
+  const eaId = String(row.eaId);
+  const price = Number.isFinite(row.price) ? Math.round(row.price) : null;
+  const confidence = Number.isFinite(row.aiConfidence) ? Math.round(row.aiConfidence) : null;
+  const nowIso = new Date().toISOString();
+
+  if (dbEnabled) {
+    await pool.query(`
+      UPDATE fc_intensive_watchlist
+      SET
+        player_name = $2,
+        last_action = $3,
+        last_price = $4,
+        last_confidence = $5,
+        last_alert_price = CASE WHEN $6::boolean THEN $4 ELSE last_alert_price END,
+        last_alert_at = CASE WHEN $6::boolean THEN NOW() ELSE last_alert_at END,
+        updated_at = NOW()
+      WHERE ea_id = $1
+    `, [eaId, String(row.name || `EA ${eaId}`).slice(0, 180), row.aiAction || null, price, confidence, alertSent]);
+    return;
+  }
+
+  const current = memoryIntensiveWatchlist.get(eaId) || watch || {};
+  memoryIntensiveWatchlist.set(eaId, {
+    ...current,
+    eaId,
+    playerName: row.name || current.playerName || `EA ${eaId}`,
+    lastAction: row.aiAction || null,
+    lastPrice: price,
+    lastConfidence: confidence,
+    lastAlertPrice: alertSent ? price : current.lastAlertPrice,
+    lastAlertAt: alertSent ? Date.now() : current.lastAlertAt,
+    updatedAt: nowIso
+  });
 }
 
 function changePct(current, old) {
@@ -5561,6 +5944,7 @@ function normalizeDecisionForPosition(row, decision) {
   if (!decision || decision.action !== "VERKAUF PRÜFEN") return decision;
 
   const profit = Number.isFinite(row.profitPercent) ? row.profitPercent : null;
+  const netProfitTotal = Number.isFinite(row.netProfitTotal) ? row.netProfitTotal : null;
   const nearHigh =
     Number.isFinite(row.high24h) &&
     row.high24h > 0 &&
@@ -5613,21 +5997,35 @@ function normalizeDecisionForPosition(row, decision) {
     };
   }
 
-  // Sehr guter Nettogewinn nahe Widerstand: Gewinnmitnahme aktiv prüfen.
-  if (profit >= 12 && nearHigh) {
+  // v10.33: VERKAUF PRÜFEN ist nur noch die Vorstufe. Wenn Gewinn UND Exit-
+  // Bestätigung stark genug sind, sagt der Brain klar JETZT VERKAUFEN.
+  const clearSellNow =
+    (profit >= 15 && nearHigh) ||
+    (profit >= 8 && nearHigh && strongRun && momentumCooling);
+
+  if (clearSellNow) {
+    const coins = netProfitTotal == null ? "" : ` (${Math.round(netProfitTotal).toLocaleString("de-DE")} Coins netto)`;
     return {
       ...decision,
-      confidence: Math.max(88, Math.min(95, decision.confidence ?? 88)),
-      reason: `Eigener Bestand liegt nach 5% EA-Steuer bei +${profit.toFixed(2)}% Netto-Gewinn und notiert nahe dem 24h-Hoch. Gewinnmitnahme aktiv prüfen.`
+      action: "JETZT VERKAUFEN",
+      confidence: Math.max(90, Math.min(95, decision.confidence ?? 90)),
+      risk: "niedrig",
+      market_state: "Gewinnmitnahme bestätigt",
+      reason: `Nach 5% EA-Steuer liegt dein Netto-Gewinn bei +${profit.toFixed(2)}%${coins}. Die Karte steht nahe dem 24h-Hoch${momentumCooling ? " und das kurzfristige Momentum kühlt ab" : ""}. Der Exit ist ausreichend bestätigt: jetzt verkaufen.`,
+      recommended_horizon: "Jetzt verkaufen / Gewinn sichern"
     };
   }
 
-  // Solider Gewinn reicht nur dann für Verkauf, wenn der starke Lauf sichtbar abkühlt.
-  if (profit >= 6 && nearHigh && strongRun && momentumCooling) {
+  // Gute Marge, aber noch keine harte Exit-Bestätigung: erst prüfen, nicht blind verkaufen.
+  if (profit >= 6 && nearHigh) {
     return {
       ...decision,
+      action: "VERKAUF PRÜFEN",
       confidence: Math.max(84, Math.min(93, decision.confidence ?? 86)),
-      reason: `Eigener Bestand liegt nach 5% EA-Steuer bei +${profit.toFixed(2)}% Netto-Gewinn. Preis ist nahe dem 24h-Hoch und das kurzfristige Momentum kühlt ab: Verkauf prüfen.`
+      risk: "niedrig",
+      market_state: "Gewinnposition nahe möglichem Exit",
+      reason: `Nach 5% EA-Steuer liegt dein Netto-Gewinn bei +${profit.toFixed(2)}%. Die Karte notiert nahe dem 24h-Hoch, aber der Exit ist noch nicht stark genug bestätigt. Verkauf prüfen, noch nicht blind aussteigen.`,
+      recommended_horizon: "Exit-Signal beobachten"
     };
   }
 
@@ -5643,10 +6041,11 @@ function normalizeDecisionForPosition(row, decision) {
 }
 
 async function buildTradingRows(futbinFeedOverride = null) {
-  const [cards, bulk, positions, allSignals, traderProfiles, brainLearning] = await Promise.all([
+  const [cards, bulk, positions, intensiveWatches, allSignals, traderProfiles, brainLearning] = await Promise.all([
     ensureUniverse(false),
     loadBulkPs5Prices(false),
     getPositions(),
+    getIntensiveWatchlist(),
     loadRecentDiscordSignals(),
     loadTraderProfiles(),
     loadBrainLearningProfiles(false)
@@ -5725,7 +6124,8 @@ async function buildTradingRows(futbinFeedOverride = null) {
       low24h: range.low ?? card.price,
       high24h: range.high ?? card.price,
       distanceFrom24hLow: distancePct(card.price, range.low),
-      tracked: positions.has(key)
+      tracked: positions.has(key),
+      intensiveWatch: intensiveWatches.has(key)
     };
 
     Object.assign(row, signalFor(row));
@@ -5784,7 +6184,7 @@ async function buildTradingRows(futbinFeedOverride = null) {
     const normalizedDecision = normalizeDecisionForPosition(row, rawDecision);
     const learningProfile = selectBrainLearningProfile(
       brainLearning,
-      normalizedDecision?.action,
+      normalizedDecision?.action === "JETZT VERKAUFEN" ? "VERKAUF PRÜFEN" : normalizedDecision?.action,
       row.cardType,
       row.overall,
       input
@@ -5805,6 +6205,7 @@ async function buildTradingRows(futbinFeedOverride = null) {
   await persistDiscordSignalMarketConfirmations(rows, brainWork);
 
   const aiPriority = {
+    "JETZT VERKAUFEN": 7,
     "JETZT KAUFEN": 6,
     "VERKAUF PRÜFEN": 5,
     "NOCH WARTEN": 4,
@@ -5815,6 +6216,7 @@ async function buildTradingRows(futbinFeedOverride = null) {
 
   rows.sort((a, b) => {
     if (a.tracked !== b.tracked) return a.tracked ? -1 : 1;
+    if (a.intensiveWatch !== b.intensiveWatch) return a.intensiveWatch ? -1 : 1;
     const actionDiff = (aiPriority[b.aiAction] ?? 0) - (aiPriority[a.aiAction] ?? 0);
     if (actionDiff !== 0) return actionDiff;
     if (b.aiConfidence !== a.aiConfidence) return b.aiConfidence - a.aiConfidence;
@@ -5826,6 +6228,7 @@ async function buildTradingRows(futbinFeedOverride = null) {
 
 function candidateScore(row, work) {
   const actionScore = {
+    "JETZT VERKAUFEN": 110,
     "JETZT KAUFEN": 100,
     "VERKAUF PRÜFEN": 95,
     "NOCH WARTEN": 85,
@@ -5851,8 +6254,9 @@ function candidateScore(row, work) {
 async function saveDecisionIfNeeded(row, work, decision, forceGemini = false) {
   if (!dbEnabled) return null;
 
+  const storageAction = decision.action === "JETZT VERKAUFEN" ? "VERKAUF PRÜFEN" : decision.action;
   const important =
-    ["JETZT KAUFEN", "VERKAUF PRÜFEN", "NICHT KAUFEN"].includes(decision.action) ||
+    ["JETZT KAUFEN", "VERKAUF PRÜFEN", "JETZT VERKAUFEN", "NICHT KAUFEN"].includes(decision.action) ||
     (decision.action === "NOCH WARTEN" && (Math.abs(row.change1m ?? 0) >= 5 || Math.abs(row.change5m ?? 0) >= 10));
 
   if (!important && !forceGemini) return null;
@@ -5865,7 +6269,7 @@ async function saveDecisionIfNeeded(row, work, decision, forceGemini = false) {
       AND created_at >= NOW() - INTERVAL '2 hours'
     ORDER BY created_at DESC
     LIMIT 1
-  `, [String(row.eaId), decision.action]);
+  `, [String(row.eaId), storageAction]);
 
   if (recent.rowCount) {
     const oldModel = String(recent.rows[0].ai_model_used || "");
@@ -5889,7 +6293,7 @@ async function saveDecisionIfNeeded(row, work, decision, forceGemini = false) {
     row.overall,
     row.cardType,
     row.price,
-    decision.action,
+    storageAction,
     decision.confidence,
     decision.reason,
     decision.risk,
@@ -5944,7 +6348,7 @@ async function automaticTraderBrain(rows, brainWork) {
       const normalizedDecision = normalizeDecisionForPosition(geminiCandidate.row, rawDecision);
       const learningProfile = selectBrainLearningProfile(
         brainLearningCache,
-        normalizedDecision?.action,
+        normalizedDecision?.action === "JETZT VERKAUFEN" ? "VERKAUF PRÜFEN" : normalizedDecision?.action,
         geminiCandidate.row.cardType,
         geminiCandidate.row.overall,
         geminiCandidate.work.input
@@ -5976,7 +6380,7 @@ async function automaticTraderBrain(rows, brainWork) {
     if (dbEnabled) {
       const notable = rows
         .filter(row =>
-          ["JETZT KAUFEN", "VERKAUF PRÜFEN", "NICHT KAUFEN"].includes(row.aiAction) ||
+          ["JETZT KAUFEN", "VERKAUF PRÜFEN", "JETZT VERKAUFEN", "NICHT KAUFEN"].includes(row.aiAction) ||
           (row.aiAction === "NOCH WARTEN" && (Math.abs(row.change1m ?? 0) >= 5 || Math.abs(row.change5m ?? 0) >= 10))
         )
         .sort((a, b) => b.aiConfidence - a.aiConfidence)
@@ -6146,7 +6550,7 @@ app.get("/", (req, res) => {
   res.json({
     online: true,
     service: "FC Trading Intelligence",
-    version: "10.32-public-futbin-api-bridge",
+    version: "10.34-discord-intensive-watch",
     gameYear: GAME_YEAR,
     marketProfile: marketProfile(),
     refreshSeconds: 60,
@@ -6159,6 +6563,9 @@ app.get("/", (req, res) => {
       tradingData: "GET /api/trading",
       positionSave: "POST /api/position",
       positionDelete: "DELETE /api/position/:eaId",
+      intensiveWatchlist: "GET /api/intensive-watchlist",
+      intensiveWatchAdd: "POST /api/intensive-watch/:eaId",
+      intensiveWatchDelete: "DELETE /api/intensive-watch/:eaId",
       traderBrainStatus: "GET /api/trader-brain/status",
       ratingIntelligence: "GET /api/ratings-intelligence",
       traderBrainHistory: "GET /api/trader-brain/feedback/history",
@@ -6267,7 +6674,7 @@ app.get("/api/readiness", (req, res) => {
   const readiness = runtimeReadinessSnapshot();
   res.status(readiness.ready ? 200 : 503).json({
     ok: readiness.ready,
-    version: "10.32-public-futbin-api-bridge",
+    version: "10.34-discord-intensive-watch",
     gameYear: GAME_YEAR,
     readiness,
     note: "Dieser Endpunkt ist absichtlich strenger als /health. /health zeigt, ob der Webdienst lebt; /api/readiness zeigt, ob Marktquelle, Monitoring, Datenbank, Discord und Trader Brain wirklich produktionsbereit sind."
@@ -6277,7 +6684,7 @@ app.get("/api/readiness", (req, res) => {
 app.get("/health", (req, res) => {
   res.json({
     ok: true,
-    version: "10.32-public-futbin-api-bridge",
+    version: "10.34-discord-intensive-watch",
     gameYear: GAME_YEAR,
     marketProfile: marketProfile(),
     marketContext: latestMarketContext,
@@ -6600,7 +7007,7 @@ app.get("/api/trader-reliability/status", async (req, res) => {
 
     return res.json({
       enabled: true,
-      version: "10.32-public-futbin-api-bridge",
+      version: "10.34-discord-intensive-watch",
       gameYear: GAME_YEAR,
       method: {
         priorAccuracy: TRADER_RELIABILITY_PRIOR_ACCURACY,
@@ -6659,7 +7066,7 @@ app.get("/api/trader-reliability/status", async (req, res) => {
 app.get("/api/trader-confluence/status", (req, res) => {
   res.json({
     enabled: DISCORD_CONFIGURED && dbEnabled,
-    version: "10.32-public-futbin-api-bridge",
+    version: "10.34-discord-intensive-watch",
     minCardConfidence: DISCORD_TRADER_CONFLUENCE_MIN_CONFIDENCE,
     minRatingConfidence: DISCORD_TRADER_CONFLUENCE_MIN_RATING_CONFIDENCE,
     minTraderReliability: DISCORD_TRADER_CONFLUENCE_MIN_RELIABILITY,
@@ -6733,7 +7140,14 @@ app.get("/api/discord/status", (req, res) => {
     cycleBudget: lastDiscordCycleBudget,
     minBuyConfidence: DISCORD_MIN_BUY_CONFIDENCE,
     minSellConfidence: DISCORD_MIN_SELL_CONFIDENCE,
-    minRatingConfidence: DISCORD_MIN_RATING_CONFIDENCE
+    minRatingConfidence: DISCORD_MIN_RATING_CONFIDENCE,
+    intensiveWatch: {
+      alertsSent: intensiveWatchAlertsSent,
+      lastAlertAt: lastIntensiveWatchAlertAt,
+      lastError: lastIntensiveWatchError,
+      moveAlertPct: INTENSIVE_WATCH_MOVE_PCT,
+      minAlertGapMinutes: Math.round(INTENSIVE_WATCH_MIN_ALERT_GAP_MS / 60_000)
+    }
   });
 });
 
@@ -6821,6 +7235,64 @@ app.delete("/api/position/:eaId", async (req, res) => {
   }
 });
 
+app.get("/api/intensive-watchlist", async (req, res) => {
+  try {
+    const watches = await getIntensiveWatchlist();
+    const rowMap = new Map(latestTradingRows.map(row => [String(row.eaId), row]));
+    const items = [...watches.values()].map(watch => {
+      const row = rowMap.get(String(watch.eaId));
+      return {
+        ...watch,
+        currentPrice: row?.price ?? watch.lastPrice ?? null,
+        currentAction: row?.aiAction ?? watch.lastAction ?? null,
+        currentConfidence: row?.aiConfidence ?? watch.lastConfidence ?? null,
+        url: row?.url || null,
+        trackedPosition: Boolean(row?.tracked)
+      };
+    });
+
+    res.json({
+      ok: true,
+      version: "10.34-discord-intensive-watch",
+      count: items.length,
+      settings: {
+        moveAlertPct: INTENSIVE_WATCH_MOVE_PCT,
+        minAlertGapMinutes: Math.round(INTENSIVE_WATCH_MIN_ALERT_GAP_MS / 60_000),
+        maxAlertsPerCycle: INTENSIVE_WATCH_MAX_ALERTS_PER_CYCLE
+      },
+      alertsSent: intensiveWatchAlertsSent,
+      lastAlertAt: lastIntensiveWatchAlertAt,
+      lastError: lastIntensiveWatchError,
+      items
+    });
+  } catch (error) {
+    res.status(500).json({ ok: false, error: String(error) });
+  }
+});
+
+app.post("/api/intensive-watch/:eaId", async (req, res) => {
+  try {
+    const eaId = String(req.params.eaId || "");
+    const row = latestTradingRows.find(item => String(item.eaId) === eaId);
+    if (!row) return res.status(404).json({ ok: false, error: "Karte im aktuellen Snapshot nicht gefunden" });
+    const watch = await saveIntensiveWatch(row, "api");
+    res.json({ ok: true, watch });
+  } catch (error) {
+    res.status(500).json({ ok: false, error: String(error) });
+  }
+});
+
+app.delete("/api/intensive-watch/:eaId", async (req, res) => {
+  try {
+    const eaId = String(req.params.eaId || "");
+    if (!/^\d+$/.test(eaId)) return res.status(400).json({ ok: false, error: "Ungültige eaId" });
+    await deleteIntensiveWatch(eaId);
+    res.json({ ok: true, eaId });
+  } catch (error) {
+    res.status(500).json({ ok: false, error: String(error) });
+  }
+});
+
 
 function tradingDataMode() {
   const health = sourceHealthSnapshot();
@@ -6894,7 +7366,7 @@ app.get("/api/trading", async (req, res) => {
 
     res.json({
       ok: true,
-      version: "10.32-public-futbin-api-bridge",
+      version: "10.34-discord-intensive-watch",
       refreshSeconds: 60,
       dbEnabled,
       sourceHealth: health,
@@ -6906,11 +7378,13 @@ app.get("/api/trading", async (req, res) => {
           : "Nur Arbeitsspeicher; Lernhistorie ist ohne PostgreSQL nicht dauerhaft",
       totalPricedCards: rows.length,
       trackedPositions: rows.filter(row => row.tracked).length,
+      intensiveWatchedCards: rows.filter(row => row.intensiveWatch).length,
       aiSummary: {
         buyNow: rows.filter(row => row.aiAction === "JETZT KAUFEN").length,
         wait: rows.filter(row => row.aiAction === "NOCH WARTEN").length,
         doNotBuy: rows.filter(row => row.aiAction === "NICHT KAUFEN").length,
-        sellCheck: rows.filter(row => row.aiAction === "VERKAUF PRÜFEN").length
+        sellCheck: rows.filter(row => row.aiAction === "VERKAUF PRÜFEN").length,
+        sellNow: rows.filter(row => row.aiAction === "JETZT VERKAUFEN").length
       },
       ratingIntelligence: Object.values(latestRatingStats)
         .sort((a, b) => b.rating - a.rating),
@@ -6973,7 +7447,7 @@ app.get("/api/processing-health", (req, res) => {
   const health = processingHealthSnapshot();
   res.status(health.healthy ? 200 : 503).json({
     ok: health.healthy,
-    version: "10.32-public-futbin-api-bridge",
+    version: "10.34-discord-intensive-watch",
     gameYear: GAME_YEAR,
     processingHealth: health,
     note: "DB-, Brain- oder Discord-Fehler werden getrennt von FUT.GG-Quellfehlern bewertet und können den Source Health Guard nicht mehr fälschlich in Quarantäne schicken."
@@ -6984,7 +7458,7 @@ app.get("/api/source-health", (req, res) => {
   const health = sourceHealthSnapshot();
   res.status(health.status === "UNHEALTHY" ? 503 : 200).json({
     ok: health.status !== "UNHEALTHY",
-    version: "10.32-public-futbin-api-bridge",
+    version: "10.34-discord-intensive-watch",
     gameYear: GAME_YEAR,
     refreshSeconds: 60,
     source: "FUT.GG PS5 bulk prices",
@@ -7004,7 +7478,7 @@ app.get("/api/futbin/status", (req, res) => {
 
   res.json({
     ok: true,
-    version: "10.32-public-futbin-api-bridge",
+    version: "10.34-discord-intensive-watch",
     gameYear: GAME_YEAR,
     configured: Boolean(FUTBIN_AUTHORIZED_FEED_URL || FUTBIN_PARSE_API_KEY),
     status: latestFutbinStatus,
@@ -7045,7 +7519,7 @@ app.get("/api/futbin/status", (req, res) => {
 app.get("/api/market-context", (req, res) => {
   res.json({
     ok: true,
-    version: "10.32-public-futbin-api-bridge",
+    version: "10.34-discord-intensive-watch",
     gameYear: GAME_YEAR,
     refreshSeconds: 60,
     context: latestMarketContext,
@@ -7056,7 +7530,7 @@ app.get("/api/market-context", (req, res) => {
 app.get("/api/trader-brain/status", (req, res) => {
   res.json({
     ok: true,
-    version: "10.32-public-futbin-api-bridge",
+    version: "10.34-discord-intensive-watch",
     gameYear: GAME_YEAR,
     marketProfile: marketProfile(),
     marketContext: latestMarketContext,
@@ -7066,7 +7540,7 @@ app.get("/api/trader-brain/status", (req, res) => {
     lastBrainError,
     lastGeminiCandidate,
     learning: {
-      version: "10.32-public-futbin-api-bridge",
+      version: "10.34-discord-intensive-watch",
       totalMatureDecisions: brainLearningCache.totalMatureDecisions,
       rawMatureDecisions: brainLearningCache.rawMatureDecisions,
       uniqueLearningEpisodes: brainLearningCache.uniqueLearningEpisodes,
@@ -7087,7 +7561,7 @@ app.get("/api/trader-brain/learning/status", async (req, res) => {
     const cache = await loadBrainLearningProfiles(true);
     return res.json({
       enabled: true,
-      version: "10.32-public-futbin-api-bridge",
+      version: "10.34-discord-intensive-watch",
       method: {
         windowDays: BRAIN_LEARNING_WINDOW_DAYS,
         priorAccuracy: BRAIN_LEARNING_PRIOR_ACCURACY,
@@ -7423,6 +7897,7 @@ app.get("/trading", (req, res) => {
       <option>BEOBACHTEN</option>
       <option>HALTEN</option>
       <option>VERKAUF PRÜFEN</option>
+      <option>JETZT VERKAUFEN</option>
     </select>
 
     <select id="trackedFilter">
@@ -8277,7 +8752,7 @@ httpServer = app.listen(
   port,
   () => {
     console.log(
-      `FC Trading Intelligence v10.32 Public FUTBIN API Bridge (FC${GAME_YEAR}) running on ${port}`
+      `FC Trading Intelligence v10.34 Discord Intensive Watch (FC${GAME_YEAR}) running on ${port}`
     );
 
     startMonitoring();
