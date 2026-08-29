@@ -1036,6 +1036,67 @@ async function loadBulkPs5Prices(force = false) {
   }
 }
 
+
+async function loadDirectFutggPlayerPrices(ids) {
+  const cleanIds = [...new Set(
+    (ids || [])
+      .map(Number)
+      .filter(value => Number.isFinite(value) && value > 0)
+  )];
+
+  const map = new Map();
+  if (!cleanIds.length) return map;
+
+  // FUT.GG eigener Preis-Endpunkt für konkrete Definition-/Item-IDs.
+  // Er ist für die ausklappbare Rating-Liste robuster als nur der große
+  // R2-Bulk-Snapshot, weil einzelne Karten dort zeitweise fehlen können.
+  const chunks = [];
+  for (let i = 0; i < cleanIds.length; i += 23) {
+    chunks.push(cleanIds.slice(i, i + 23));
+  }
+
+  const results = await mapLimit(chunks, 2, async chunk => {
+    const joined = chunk.join("%2C");
+    const url = `https://www.fut.gg/api/fut/player-prices/${GAME_YEAR}/?ids=${joined}`;
+    try {
+      const json = await fetchJson(url);
+      return Array.isArray(json?.data) ? json.data : [];
+    } catch (error) {
+      console.error("FUT.GG direct rating price lookup error:", error);
+      return [];
+    }
+  });
+
+  for (const rows of results) {
+    for (const item of rows || []) {
+      const eaId = Number(
+        item?.eaId ??
+        item?.ea_id ??
+        item?.itemId ??
+        item?.item_id ??
+        item?.resourceId ??
+        item?.resource_id
+      );
+      const price = Number(
+        item?.price ??
+        item?.currentPrice ??
+        item?.current_price
+      );
+
+      if (!Number.isFinite(eaId) || eaId <= 0) continue;
+      if (!Number.isFinite(price) || price <= 0) continue;
+
+      map.set(eaId, {
+        price: Math.round(price),
+        statusCode: item?.statusCode ?? item?.status_code ?? null,
+        direct: true
+      });
+    }
+  }
+
+  return map;
+}
+
 function currentPricedCards(cards, bulk) {
   const rows = [];
 
@@ -2441,55 +2502,127 @@ function ratingPlayerListOpenComponents(stat) {
 async function ratingPlayerListRows(rating) {
   const targetRating = Number(rating);
 
-  // Die private Liste soll vollständiger sein als der öffentliche Alert-Snapshot.
-  // Deshalb mehrere Quellen zusammenführen statt nur dann zu fallen backen, wenn
-  // latestTradingRows komplett leer ist. Das behebt z.B. fehlende Liga-F-Karten.
-  const merged = new Map();
+  // v10.51:
+  // 1) zuerst ALLE passenden Karten als Metadaten sammeln,
+  // 2) Preise aus dem normalen Snapshot übernehmen,
+  // 3) fehlende Preise direkt über FUT.GG player-prices nachladen.
+  // Dadurch verschwinden Karten wie Bellingham/Haaland/Hansen nicht mehr nur
+  // deshalb aus der Liste, weil der Bulk-Snapshot gerade keine Zuordnung hatte.
+  const candidates = new Map();
 
-  const addRows = rows => {
-    for (const row of rows || []) {
-      if (
-        row?.cardType !== "Base Rare" ||
-        Number(row.overall) !== targetRating ||
-        !Number.isFinite(Number(row.price)) ||
-        Number(row.price) <= 0
-      ) {
-        continue;
-      }
+  const addCandidate = row => {
+    if (!row || Number(row.overall) !== targetRating) return;
 
-      const itemId =
-        (Number.isFinite(Number(row.itemId)) ? Number(row.itemId) : null) ??
-        futggItemIdFromUrl(row.url) ??
-        (Number.isFinite(Number(row.eaId)) ? Number(row.eaId) : null);
+    const cardType = row.cardType || classifyCard(row);
+    if (cardType !== "Base Rare") return;
 
-      if (!Number.isFinite(Number(itemId))) continue;
+    const itemId =
+      (Number.isFinite(Number(row.itemId)) ? Number(row.itemId) : null) ??
+      futggItemIdFromUrl(row.url) ??
+      (Number.isFinite(Number(row.eaId)) ? Number(row.eaId) : null) ??
+      (Number.isFinite(Number(row.sourceEaId)) ? Number(row.sourceEaId) : null) ??
+      (Number.isFinite(Number(row.id)) ? Number(row.id) : null);
 
-      merged.set(String(itemId), {
-        ...row,
-        eaId: Number(itemId),
-        itemId: Number(itemId)
-      });
-    }
+    if (!Number.isFinite(Number(itemId))) return;
+
+    const key = String(itemId);
+    const previous = candidates.get(key) || {};
+
+    candidates.set(key, {
+      ...previous,
+      ...row,
+      cardType: "Base Rare",
+      eaId: Number(itemId),
+      itemId: Number(itemId),
+      price:
+        Number.isFinite(Number(row.price)) && Number(row.price) > 0
+          ? Number(row.price)
+          : (
+              Number.isFinite(Number(previous.price)) && Number(previous.price) > 0
+                ? Number(previous.price)
+                : null
+            )
+    });
   };
 
-  addRows(latestTradingRows || []);
+  for (const row of latestTradingRows || []) addCandidate(row);
 
+  let bulk = null;
   try {
-    const [cards, supplements, bulk] = await Promise.all([
+    const [cards, supplements, loadedBulk] = await Promise.all([
       ensureUniverse(false),
       collectRatingGenderSupplements(targetRating),
       loadBulkPs5Prices(false)
     ]);
+    bulk = loadedBulk;
 
-    addRows(currentPricedCards(cards, bulk));
-    addRows(currentPricedCards(supplements, bulk));
+    for (const card of cards || []) addCandidate(card);
+    for (const card of supplements || []) addCandidate(card);
   } catch (error) {
-    console.error("Rating player list merged fallback error:", error);
+    console.error("Rating player metadata merge error:", error);
+  }
+
+  // Bulk-Preis ergänzen, aber Karte NICHT verwerfen wenn dort nichts gefunden wird.
+  if (bulk?.map) {
+    for (const card of candidates.values()) {
+      if (Number.isFinite(Number(card.price)) && Number(card.price) > 0) continue;
+
+      const ids = [
+        Number(card.itemId),
+        Number(card.eaId),
+        Number(card.sourceEaId),
+        Number(card.id)
+      ].filter(value => Number.isFinite(value) && value > 0);
+
+      for (const id of [...new Set(ids)]) {
+        const hit = bulk.map.get(id);
+        if (hit && Number.isFinite(Number(hit.price)) && Number(hit.price) > 0) {
+          card.price = Number(hit.price);
+          card.priceLookupId = id;
+          card.priceSource = "FUTGG_BULK";
+          break;
+        }
+      }
+    }
+  }
+
+  // Für ALLE Kandidaten IDs abfragen. So kann die direkte Antwort auch einen
+  // stale/falschen Bulk-Wert korrigieren, nicht nur komplett fehlende Preise.
+  const queryIds = [];
+  for (const card of candidates.values()) {
+    queryIds.push(
+      card.itemId,
+      card.eaId,
+      card.sourceEaId,
+      card.id
+    );
+  }
+
+  const directPrices = await loadDirectFutggPlayerPrices(queryIds);
+
+  for (const card of candidates.values()) {
+    const ids = [
+      Number(card.itemId),
+      Number(card.eaId),
+      Number(card.sourceEaId),
+      Number(card.id)
+    ].filter(value => Number.isFinite(value) && value > 0);
+
+    for (const id of [...new Set(ids)]) {
+      const hit = directPrices.get(id);
+      if (hit && Number.isFinite(Number(hit.price)) && Number(hit.price) > 0) {
+        card.price = Number(hit.price);
+        card.priceLookupId = id;
+        card.priceSource = "FUTGG_DIRECT";
+        break;
+      }
+    }
   }
 
   const intensiveWatches = await getIntensiveWatchlist().catch(() => new Map());
 
-  return Array.from(merged.values())
+  return Array.from(candidates.values())
+    .filter(row => Number.isFinite(Number(row.price)) && Number(row.price) > 0)
     .map(row => ({
       ...row,
       intensiveWatch: intensiveWatches.has(String(row.eaId))
@@ -2507,7 +2640,10 @@ async function buildRatingPlayerListPayload(rating, page = 0) {
   const start = safePage * RATING_LIST_PAGE_SIZE;
   const slice = rows.slice(start, start + RATING_LIST_PAGE_SIZE);
   const stat = latestRatingStats?.[rating] || latestRatingStats?.[String(rating)] || null;
-  const referencePrice = Number(stat?.ratingReferencePrice ?? stat?.medianPrice);
+  const listMedian = rows.length ? median(rows.map(row => Number(row.price)).filter(Number.isFinite)) : null;
+  const referencePrice = Number.isFinite(Number(listMedian))
+    ? Number(listMedian)
+    : Number(stat?.ratingReferencePrice ?? stat?.medianPrice);
 
   const description = slice.length
     ? slice.map((row, index) => {
@@ -5116,7 +5252,7 @@ async function sendDiscordStartupMessage() {
       alertKey,
       alertType: "system",
       action: "CONNECTED",
-      fingerprint: "v10.50"
+      fingerprint: "v10.51"
     });
   } catch (error) {
     lastDiscordError = String(error);
@@ -7851,7 +7987,7 @@ async function buildDecisionPerformanceScorecard(limit = 500) {
   return {
     ok: true,
     enabled: true,
-    version: "10.50-rating-list-all-watch",
+    version: "10.51-direct-rating-price-recovery",
     sampleSize: total,
     scorecard: {
       accuracy: total ? Number(((wins / total) * 100).toFixed(2)) : null,
@@ -9148,7 +9284,7 @@ app.get("/", (req, res) => {
   res.json({
     online: true,
     service: "FC Trading Intelligence",
-    version: "10.50-rating-list-all-watch",
+    version: "10.51-direct-rating-price-recovery",
     gameYear: GAME_YEAR,
     marketProfile: marketProfile(),
     refreshSeconds: 60,
@@ -9276,7 +9412,7 @@ app.get("/api/readiness", (req, res) => {
   const readiness = runtimeReadinessSnapshot();
   res.status(readiness.ready ? 200 : 503).json({
     ok: readiness.ready,
-    version: "10.50-rating-list-all-watch",
+    version: "10.51-direct-rating-price-recovery",
     gameYear: GAME_YEAR,
     readiness,
     note: "Dieser Endpunkt ist absichtlich strenger als /health. /health zeigt, ob der Webdienst lebt; /api/readiness zeigt, ob Marktquelle, Monitoring, Datenbank, Discord und Trader Brain wirklich produktionsbereit sind."
@@ -9286,7 +9422,7 @@ app.get("/api/readiness", (req, res) => {
 app.get("/health", (req, res) => {
   res.json({
     ok: true,
-    version: "10.50-rating-list-all-watch",
+    version: "10.51-direct-rating-price-recovery",
     gameYear: GAME_YEAR,
     marketProfile: marketProfile(),
     marketContext: latestMarketContext,
@@ -9580,7 +9716,7 @@ app.post("/api/trader-signals/ingest", async (req, res) => {
 
 app.get("/api/trader-sources/status", (req, res) => {
   res.json({
-    ok: true, version: "10.50-rating-list-all-watch", mode: "forwarded-or-authorized-only", automaticForeignDiscordReading: false,
+    ok: true, version: "10.51-direct-rating-price-recovery", mode: "forwarded-or-authorized-only", automaticForeignDiscordReading: false,
     sources: CURATED_TRADER_SOURCES.map(source => ({ id: source.id, name: source.displayName, aliases: source.aliases, channels: source.channels.map(channel => ({ channel: channel.name, type: channel.type, category: channel.category, defaultCall: channel.defaultCall, reliabilityWeight: Number(channel.weight || 1) })) })),
     note: "Die Registry normalisiert weitergeleitete/erlaubte Signale. Sie liest keine fremden Discord-Server automatisch oder verdeckt aus."
   });
@@ -9601,7 +9737,7 @@ app.get("/api/alert-sanity/status", (req, res) => {
   }));
   res.json({
     ok: true,
-    version: "10.50-rating-list-all-watch",
+    version: "10.51-direct-rating-price-recovery",
     blockedNow: blocked.length,
     thresholds: {
       livePriceDiffPct: ALERT_SANITY_RECHECK_DIFF_PCT,
@@ -9617,7 +9753,7 @@ app.get("/api/buy-guard/status", (req, res) => {
   res.json({
     ok: true,
     enabled: true,
-    version: "10.50-rating-list-all-watch",
+    version: "10.51-direct-rating-price-recovery",
     rules: {
       duplicateShortHorizonsCountAsOne: true,
       requiredRecoveryCycles: STRICT_BUY_RECOVERY_CYCLES,
@@ -9650,7 +9786,7 @@ app.get("/api/leak-impact/status", async (req, res) => {
       GROUP BY s.source ORDER BY COUNT(DISTINCT i.signal_id) DESC, s.source ASC
     `);
     return res.json({
-      ok: true, enabled: true, version: "10.50-rating-list-all-watch", horizonsMinutes: TRADER_MARKET_IMPACT_HORIZONS,
+      ok: true, enabled: true, version: "10.51-direct-rating-price-recovery", horizonsMinutes: TRADER_MARKET_IMPACT_HORIZONS,
       sourceSummary: sourceSummary.rows.map(row => ({ source: row.source, events: Number(row.events || 0), evaluatedPoints: Number(row.evaluated_points || 0), avgAbsMarketMovePct: Number(row.avg_abs_market_move || 0), avgMarketMovePct: Number(row.avg_market_move || 0) })),
       recent: recent.rows.map(row => ({ signalId: row.signal_id, source: row.source, channel: row.source_channel || null, category: row.category, horizonMinutes: Number(row.horizon_minutes), marketMedianChangePct: Number(row.market_median_change_pct), strongestRating: row.strongest_rating == null ? null : Number(row.strongest_rating), strongestRatingChangePct: row.strongest_rating_change_pct == null ? null : Number(row.strongest_rating_change_pct), affectedRatings: row.affected_ratings || [], direction: row.direction, sourceEventAt: row.source_event_at, evaluatedAt: row.evaluated_at, message: String(row.message || "").slice(0, 500) })),
       note: "Leak/Content-Events loesen keinen Kauf aus. Der Brain misst zuerst, welche Rating-Segmente sich nach 15m/1h/6h/24h real bewegen."
@@ -9694,7 +9830,7 @@ app.get("/api/market-knowledge/status", async (req, res) => {
     return res.json({
       ok: true,
       enabled: true,
-      version: "10.50-rating-list-all-watch",
+      version: "10.51-direct-rating-price-recovery",
       policy: {
         hypothesesAreNotTruth: true,
         minimumSamplesBeforeInfluence: MARKET_KNOWLEDGE_MIN_SAMPLES,
@@ -9763,7 +9899,7 @@ app.get("/api/trader-reliability/status", async (req, res) => {
 
     return res.json({
       enabled: true,
-      version: "10.50-rating-list-all-watch",
+      version: "10.51-direct-rating-price-recovery",
       gameYear: GAME_YEAR,
       method: {
         priorAccuracy: TRADER_RELIABILITY_PRIOR_ACCURACY,
@@ -9822,7 +9958,7 @@ app.get("/api/trader-reliability/status", async (req, res) => {
 app.get("/api/trader-confluence/status", (req, res) => {
   res.json({
     enabled: DISCORD_CONFIGURED && dbEnabled,
-    version: "10.50-rating-list-all-watch",
+    version: "10.51-direct-rating-price-recovery",
     minCardConfidence: DISCORD_TRADER_CONFLUENCE_MIN_CONFIDENCE,
     minRatingConfidence: DISCORD_TRADER_CONFLUENCE_MIN_RATING_CONFIDENCE,
     minTraderReliability: DISCORD_TRADER_CONFLUENCE_MIN_RELIABILITY,
@@ -9855,7 +9991,7 @@ app.get("/api/trader-confluence/status", (req, res) => {
 app.get("/api/discord-rating-mode/status", (req, res) => {
   res.json({
     ok: true,
-    version: "10.50-rating-list-all-watch",
+    version: "10.51-direct-rating-price-recovery",
     ratingFirst: DISCORD_RATING_FIRST_BASE_ALERTS,
     strictRatingFeed: true,
     normalPlayerAlerts: false,
@@ -9871,7 +10007,7 @@ app.get("/api/discord-rating-mode/status", (req, res) => {
     },
     specialCardsRemainIndividual: false,
     traderPlayerConfluencePublic: false,
-    note: "Öffentlicher Feed bleibt Rating-only. Die private Liste führt Männer- und Frauenkarten zusammen und bietet zusätzlich ALLE Rating-Spieler intensiv überwachen."
+    note: "Öffentlicher Feed bleibt Rating-only. Die private Liste sammelt erst alle Rating-Karten und lädt fehlende/abweichende Preise zusätzlich direkt über FUT.GG player-prices nach; ALLE intensiv bleibt verfügbar."
   });
 });
 
@@ -10032,7 +10168,7 @@ app.get("/api/intensive-watchlist", async (req, res) => {
 
     res.json({
       ok: true,
-      version: "10.50-rating-list-all-watch",
+      version: "10.51-direct-rating-price-recovery",
       count: items.length,
       settings: {
         moveAlertPct: INTENSIVE_WATCH_MOVE_PCT,
@@ -10145,7 +10281,7 @@ app.get("/api/trading", async (req, res) => {
 
     res.json({
       ok: true,
-      version: "10.50-rating-list-all-watch",
+      version: "10.51-direct-rating-price-recovery",
       refreshSeconds: 60,
       dbEnabled,
       sourceHealth: health,
@@ -10226,7 +10362,7 @@ app.get("/api/processing-health", (req, res) => {
   const health = processingHealthSnapshot();
   res.status(health.healthy ? 200 : 503).json({
     ok: health.healthy,
-    version: "10.50-rating-list-all-watch",
+    version: "10.51-direct-rating-price-recovery",
     gameYear: GAME_YEAR,
     processingHealth: health,
     note: "DB-, Brain- oder Discord-Fehler werden getrennt von FUT.GG-Quellfehlern bewertet und können den Source Health Guard nicht mehr fälschlich in Quarantäne schicken."
@@ -10237,7 +10373,7 @@ app.get("/api/source-health", (req, res) => {
   const health = sourceHealthSnapshot();
   res.status(health.status === "UNHEALTHY" ? 503 : 200).json({
     ok: health.status !== "UNHEALTHY",
-    version: "10.50-rating-list-all-watch",
+    version: "10.51-direct-rating-price-recovery",
     gameYear: GAME_YEAR,
     refreshSeconds: 60,
     source: "FUT.GG PS5 bulk prices",
@@ -10257,7 +10393,7 @@ app.get("/api/futbin/status", (req, res) => {
 
   res.json({
     ok: true,
-    version: "10.50-rating-list-all-watch",
+    version: "10.51-direct-rating-price-recovery",
     gameYear: GAME_YEAR,
     configured: Boolean(FUTBIN_AUTHORIZED_FEED_URL || FUTBIN_PARSE_API_KEY),
     status: latestFutbinStatus,
@@ -10298,7 +10434,7 @@ app.get("/api/futbin/status", (req, res) => {
 app.get("/api/market-context", (req, res) => {
   res.json({
     ok: true,
-    version: "10.50-rating-list-all-watch",
+    version: "10.51-direct-rating-price-recovery",
     gameYear: GAME_YEAR,
     refreshSeconds: 60,
     context: latestMarketContext,
@@ -10309,7 +10445,7 @@ app.get("/api/market-context", (req, res) => {
 app.get("/api/trader-brain/status", (req, res) => {
   res.json({
     ok: true,
-    version: "10.50-rating-list-all-watch",
+    version: "10.51-direct-rating-price-recovery",
     gameYear: GAME_YEAR,
     marketProfile: marketProfile(),
     marketContext: latestMarketContext,
@@ -10319,7 +10455,7 @@ app.get("/api/trader-brain/status", (req, res) => {
     lastBrainError,
     lastGeminiCandidate,
     learning: {
-      version: "10.50-rating-list-all-watch",
+      version: "10.51-direct-rating-price-recovery",
       totalMatureDecisions: brainLearningCache.totalMatureDecisions,
       rawMatureDecisions: brainLearningCache.rawMatureDecisions,
       uniqueLearningEpisodes: brainLearningCache.uniqueLearningEpisodes,
@@ -10340,7 +10476,7 @@ app.get("/api/trader-brain/learning/status", async (req, res) => {
     const cache = await loadBrainLearningProfiles(true);
     return res.json({
       enabled: true,
-      version: "10.50-rating-list-all-watch",
+      version: "10.51-direct-rating-price-recovery",
       method: {
         windowDays: BRAIN_LEARNING_WINDOW_DAYS,
         priorAccuracy: BRAIN_LEARNING_PRIOR_ACCURACY,
@@ -10384,7 +10520,7 @@ app.get("/api/trader-brain/performance/status", async (req, res) => {
     res.status(500).json({
       ok: false,
       enabled: dbEnabled,
-      version: "10.50-rating-list-all-watch",
+      version: "10.51-direct-rating-price-recovery",
       error: String(error)
     });
   }
