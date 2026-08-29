@@ -4535,6 +4535,8 @@ function buildCardDiscordPayload(row, type) {
     { name: "1m / 5m / 15m", value: `${discordPct(row.change1m)} / ${discordPct(row.change5m)} / ${discordPct(row.change15m)}`, inline: false },
     { name: "24h Tief / Hoch", value: `${discordNumber(row.low24h)} / ${discordNumber(row.high24h)}`, inline: true },
     { name: "Rating-Markt", value: `${row.overall}er: ${String(row.ratingMarketTrend || "neutral").replaceAll("_", " ")}`, inline: true },
+    { name: "Combined Brain", value: `Player ${row.aiPlayerScore ?? "-"}/100 • Market ${row.aiMarketLogicScore ?? "-"}/100 • Combined ${row.aiCombinedScore ?? "-"}/100`, inline: false },
+    { name: "Market Logic", value: `${String(row.aiMarketPhase || "DATA_BUILDING").replaceAll("_", " ")} • These ${row.aiThesisConfirmed ?? 0}/${row.aiThesisTotal ?? 0} • Fortsetzung ${row.aiContinuationProbability ?? "-"}%`, inline: false },
     { name: "Gesamtmarkt", value: `${String(row.globalMarketMood || "neutral").replaceAll("_", " ")} • ${row.packSupplyActive ? "Angebotsdruck erkannt" : "kein Angebotsdruck"}`, inline: false }
   ];
 
@@ -5769,7 +5771,7 @@ async function sendDiscordStartupMessage() {
       alertKey,
       alertType: "system",
       action: "CONNECTED",
-      fingerprint: "v10.54"
+      fingerprint: "v10.55"
     });
   } catch (error) {
     lastDiscordError = String(error);
@@ -6830,6 +6832,420 @@ function buildRatingStats(rows) {
   }
 
   return stats;
+}
+
+
+function clampBrainScore(value, min = 0, max = 100) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) return min;
+  return Math.max(min, Math.min(max, numeric));
+}
+
+function roundBrainPrice(value) {
+  const price = Number(value);
+  if (!Number.isFinite(price) || price <= 0) return null;
+  const step = price < 1_000 ? 50 : price < 10_000 ? 100 : price < 50_000 ? 250 : price < 250_000 ? 500 : 1_000;
+  return Math.max(step, Math.round(price / step) * step);
+}
+
+function ratingMarketPhase(stat, globalContext = {}) {
+  const measured = Number(stat?.measuredCards || 0);
+  const c5 = Number(stat?.change5m || 0);
+  const c15 = Number(stat?.change15m || 0);
+  const rising = Number(stat?.risingPct5m || 0);
+  const falling = Number(stat?.fallingPct5m || 0);
+  const nearLow = Number(stat?.near24hLowPct || 0);
+  const nearHigh = Number(stat?.near24hHighPct || 0);
+  const recovery = Number(stat?.recoveryPct || 0);
+  const cooling = Number(stat?.coolingPct || 0);
+
+  if (measured < 5) return "DATA_BUILDING";
+  if (globalContext?.packSupplyActive && falling >= 60 && c5 <= -1) return "SUPPLY_SHOCK";
+  if (falling >= 70 && c5 <= -1.5) return "SELL_OFF";
+  if (nearHigh >= 40 && cooling >= 40 && c15 >= 2) return "DISTRIBUTION";
+  if (rising >= 65 && c5 >= 1 && c15 >= 0.5) return "EARLY_DEMAND_EXPANSION";
+  if (rising >= 55 && c5 >= 0.4 && c15 < 0) return "RECOVERY";
+  if (nearLow >= 45 && recovery >= 30 && c5 >= -0.5) return "ACCUMULATION";
+  if (rising >= 55 && c5 > 0) return "DEMAND_BUILDING";
+  if (falling >= 55 && c5 < 0) return "SUPPLY_DOMINANT";
+  return "STABLE";
+}
+
+function buildRatingMarketLogic(ratingStats, rating, globalContext = {}) {
+  const stat = ratingStats?.[rating];
+  if (!stat) return null;
+
+  const lower = ratingStats?.[Number(rating) - 1] || null;
+  const higher = ratingStats?.[Number(rating) + 1] || null;
+  const c5 = Number(stat.change5m || 0);
+  const c15 = Number(stat.change15m || 0);
+  const c1h = Number(stat.change1h || 0);
+  const rising = Number(stat.risingPct5m || 0);
+  const falling = Number(stat.fallingPct5m || 0);
+  const breadth = rising - falling;
+  const phase = ratingMarketPhase(stat, globalContext);
+
+  let score = 50;
+  score += clampBrainScore(c5 * 4, -20, 20);
+  score += clampBrainScore(c15 * 1.5, -15, 15);
+  score += clampBrainScore(c1h * 0.45, -8, 8);
+  score += clampBrainScore(breadth * 0.18, -15, 15);
+  score += clampBrainScore(Number(stat.recoveryPct || 0) * 0.08, 0, 8);
+  score -= clampBrainScore(Number(stat.coolingPct || 0) * 0.06, 0, 7);
+
+  if (globalContext?.packSupplyActive) score -= 14;
+  if (phase === "EARLY_DEMAND_EXPANSION") score += 8;
+  if (phase === "ACCUMULATION") score += 4;
+  if (phase === "RECOVERY") score += 5;
+  if (["SELL_OFF", "SUPPLY_SHOCK"].includes(phase)) score -= 8;
+  if (phase === "DISTRIBUTION") score -= 10;
+
+  const reasons = [];
+  const risks = [];
+  let rotationFromLower = false;
+  let lowerLeadPct = null;
+  let lowerRatioCompressionPct = null;
+
+  if (lower && Number.isFinite(Number(lower.change15m))) {
+    lowerLeadPct = Number((Number(lower.change15m || 0) - c15).toFixed(2));
+
+    const currentRatio = Number(lower.medianPrice) > 0 && Number(stat.medianPrice) > 0
+      ? Number(lower.medianPrice) / Number(stat.medianPrice)
+      : null;
+    const previousRatio = Number(lower.medianPrice15mAgo) > 0 && Number(stat.medianPrice15mAgo) > 0
+      ? Number(lower.medianPrice15mAgo) / Number(stat.medianPrice15mAgo)
+      : null;
+
+    if (Number.isFinite(currentRatio) && Number.isFinite(previousRatio) && previousRatio > 0) {
+      lowerRatioCompressionPct = Number((((currentRatio - previousRatio) / previousRatio) * 100).toFixed(2));
+    }
+
+    rotationFromLower = lowerLeadPct >= 1.5 && (
+      !Number.isFinite(lowerRatioCompressionPct) || lowerRatioCompressionPct >= 0
+    );
+
+    if (rotationFromLower) {
+      score += 7;
+      reasons.push(`${Number(rating) - 1}er führen die Bewegung in 15m um ${lowerLeadPct.toFixed(2)} Prozentpunkte an. Das erhöht die Chance auf eine Nachfrage-Rotation in ${rating}er.`);
+    }
+  }
+
+  if (rising >= 60) {
+    reasons.push(`${rising.toFixed(0)}% der gemessenen ${rating}er steigen in 5m. Die Bewegung ist breit und nicht nur eine Einzelkarte.`);
+  } else if (falling >= 60) {
+    reasons.push(`${falling.toFixed(0)}% der gemessenen ${rating}er fallen in 5m. Angebotsdruck dominiert aktuell das Rating-Segment.`);
+  }
+
+  if (c5 >= 0.5 && c15 >= 0.5) {
+    reasons.push(`Der ${rating}er-Median bestätigt Aufwärtsmomentum über 5m (${c5 >= 0 ? "+" : ""}${c5.toFixed(2)}%) und 15m (${c15 >= 0 ? "+" : ""}${c15.toFixed(2)}%).`);
+  }
+
+  if (higher && c15 > 0.5 && Number(higher.change15m || 0) <= c15 - 1.5) {
+    reasons.push(`${Number(rating) + 1}er reagieren in 15m schwächer. Die Nachfrage sitzt momentan eher im ${rating}er-Band als eine Stufe höher.`);
+    score += 3;
+  }
+
+  if (globalContext?.packSupplyActive) {
+    risks.push("Breiter Pack-/Angebotsdruck ist aktiv und kann eine positive Rating-Bewegung abbremsen.");
+  }
+  if (Number(stat.near24hHighPct || 0) >= 40) {
+    risks.push(`${Number(stat.near24hHighPct || 0).toFixed(0)}% der ${rating}er liegen nahe ihrem 24h-Hoch. Rücksetzer-/Gewinnmitnahme-Risiko ist erhöht.`);
+  }
+  if (Number(stat.coolingPct || 0) >= 45) {
+    risks.push(`${Number(stat.coolingPct || 0).toFixed(0)}% der ${rating}er zeigen abkühlendes Momentum.`);
+  }
+  if (!reasons.length) {
+    reasons.push(`Der ${rating}er-Markt zeigt aktuell keine dominante Supply-/Demand-These. Weiter Daten sammeln.`);
+  }
+
+  score = Math.round(clampBrainScore(score, 5, 95));
+  const localConfidence = Number(stat.confidence || 50);
+  const globalConfidence = Number(globalContext?.confidence || 0);
+  const measuredBonus = Math.min(10, Number(stat.measuredCards || 0));
+  const marketConfidence = Math.round(clampBrainScore(
+    localConfidence * 0.68 + (globalConfidence || localConfidence) * 0.22 + measuredBonus
+  , 20, 95));
+
+  const continuationProbability = Math.round(clampBrainScore(
+    50 + (score - 50) * 0.72 + (marketConfidence - 50) * 0.18,
+    10,
+    92
+  ));
+
+  return {
+    phase,
+    score,
+    confidence: marketConfidence,
+    continuationProbability,
+    rotationFromLower,
+    lowerLeadPct,
+    lowerRatioCompressionPct,
+    reasons: reasons.slice(0, 5),
+    risks: risks.slice(0, 4),
+    adjacentRatings: {
+      lower: lower ? {
+        rating: Number(rating) - 1,
+        medianPrice: lower.medianPrice ?? null,
+        change5m: lower.change5m ?? null,
+        change15m: lower.change15m ?? null
+      } : null,
+      higher: higher ? {
+        rating: Number(rating) + 1,
+        medianPrice: higher.medianPrice ?? null,
+        change5m: higher.change5m ?? null,
+        change15m: higher.change15m ?? null
+      } : null
+    }
+  };
+}
+
+function enrichRatingMarketLogic(ratingStats, globalContext) {
+  for (const rating of Object.keys(ratingStats || {})) {
+    const stat = ratingStats[rating];
+    stat.marketLogic = buildRatingMarketLogic(ratingStats, Number(rating), globalContext);
+    stat.marketPhase = stat.marketLogic?.phase || "DATA_BUILDING";
+    stat.marketLogicScore = stat.marketLogic?.score ?? 50;
+    stat.marketLogicConfidence = stat.marketLogic?.confidence ?? stat.confidence ?? 50;
+    stat.continuationProbability = stat.marketLogic?.continuationProbability ?? 50;
+  }
+  return ratingStats;
+}
+
+function buildPlayerMarketBrain(row, ratingStat, globalContext = {}) {
+  const marketLogic = ratingStat?.marketLogic || null;
+  const current = Number(row?.price);
+  const ratingReference = Number(ratingStat?.ratingReferencePrice || ratingStat?.medianPrice || current);
+  const low = Number(row?.low24h);
+  const high = Number(row?.high24h);
+
+  const momentum = Math.round(clampBrainScore(
+    50 +
+    Number(row?.change1m || 0) * 3.0 +
+    Number(row?.change5m || 0) * 2.5 +
+    Number(row?.change15m || 0) * 1.15 +
+    Number(row?.change1h || 0) * 0.45
+  ));
+
+  const relativeStrength = Math.round(clampBrainScore(
+    50 +
+    (Number(row?.change5m || 0) - Number(ratingStat?.change5m || 0)) * 4.0 +
+    (Number(row?.change15m || 0) - Number(ratingStat?.change15m || 0)) * 2.25 +
+    (Number(row?.change1h || 0) - Number(ratingStat?.change1h || 0)) * 0.75
+  ));
+
+  const ratingMarketScore = Math.round(clampBrainScore(marketLogic?.score ?? 50));
+
+  let liquidityProxy = 55 + Math.min(20, Number(ratingStat?.cardCount || 0) * 2);
+  if (Number(row?.priceStatusCode) === 0) liquidityProxy += 8;
+  if (row?.futbinCrossCheck === "MATCH") liquidityProxy += 10;
+  if (row?.futbinCrossCheck === "DIVERGENCE") liquidityProxy -= 10;
+  if (row?.futbinCrossCheck === "OUTLIER") liquidityProxy -= 25;
+  liquidityProxy = Math.round(clampBrainScore(liquidityProxy, 20, 95));
+
+  const sourceConfidence = row?.futbinCrossCheck === "MATCH"
+    ? 97
+    : row?.futbinCrossCheck === "DIVERGENCE"
+    ? 65
+    : row?.futbinCrossCheck === "OUTLIER"
+    ? 35
+    : latestSourceHealth?.healthy
+    ? 88
+    : 76;
+
+  const traderSignalCount = Number(row?.aiTraderConfluence?.signalCount || 0);
+  const confirmedSignalCount = Number(row?.aiTraderConfluence?.confirmedSignals || 0);
+  const verifiedMarketRules = Array.isArray(row?.aiMarketKnowledge?.activeVerifiedRules)
+    ? row.aiMarketKnowledge.activeVerifiedRules.length
+    : 0;
+  const eventCatalyst = Math.round(clampBrainScore(
+    42 + Math.min(24, traderSignalCount * 5) + Math.min(18, confirmedSignalCount * 7) +
+    Math.min(12, verifiedMarketRules * 4) + (marketLogic?.rotationFromLower ? 8 : 0)
+  , 25, 95));
+
+  let risk = 24;
+  risk += Math.min(18, Math.abs(Number(row?.change5m || 0)) * 1.8);
+  risk += Math.min(12, Math.abs(Number(row?.change15m || 0)) * 0.7);
+  if (Number.isFinite(high) && high > 0 && current >= high * 0.97) risk += 12;
+  if (globalContext?.packSupplyActive) risk += 18;
+  if (["SELL_OFF", "SUPPLY_SHOCK", "DISTRIBUTION"].includes(marketLogic?.phase)) risk += 15;
+  if (row?.futbinCrossCheck === "OUTLIER") risk += 25;
+  else if (row?.futbinCrossCheck === "DIVERGENCE") risk += 10;
+  if (relativeStrength >= 70) risk -= 7;
+  if (marketLogic?.phase === "EARLY_DEMAND_EXPANSION") risk -= 5;
+  risk = Math.round(clampBrainScore(risk, 5, 95));
+
+  let historyFair = current;
+  if (Number.isFinite(low) && low > 0 && Number.isFinite(high) && high >= low) {
+    historyFair = low === high ? current : low + (high - low) * 0.55;
+  }
+
+  let marketAnchoredFair = current;
+  if (Number.isFinite(ratingReference) && ratingReference > 0 && Number.isFinite(current) && current > 0) {
+    const premium = clampBrainScore(current / ratingReference, 0.65, 2.75);
+    const dampedPremium = 1 + (premium - 1) * 0.78;
+    marketAnchoredFair = ratingReference * dampedPremium;
+  }
+
+  const marketBias = clampBrainScore((ratingMarketScore - 50) / 1000, -0.045, 0.045);
+  const rawFair = (historyFair * 0.58 + marketAnchoredFair * 0.42) * (1 + marketBias);
+  const fairValue = roundBrainPrice(rawFair) || roundBrainPrice(current) || current;
+  const undervaluationPct = Number.isFinite(fairValue) && current > 0
+    ? Number((((fairValue - current) / current) * 100).toFixed(2))
+    : null;
+
+  let playerScore =
+    momentum * 0.22 +
+    relativeStrength * 0.23 +
+    ratingMarketScore * 0.18 +
+    liquidityProxy * 0.11 +
+    sourceConfidence * 0.14 +
+    eventCatalyst * 0.12;
+  playerScore -= Math.max(0, risk - 35) * 0.22;
+  playerScore = Math.round(clampBrainScore(playerScore, 5, 95));
+
+  const thesisChecks = [
+    {
+      key: "rating_breadth",
+      label: `${row.overall}er Marktbreite bestätigt`,
+      passed: Number(ratingStat?.risingPct5m || 0) >= 55 || marketLogic?.phase === "ACCUMULATION"
+    },
+    {
+      key: "rating_median",
+      label: `${row.overall}er Median hält`,
+      passed: Number(ratingStat?.change5m || 0) >= -0.5
+    },
+    {
+      key: "relative_strength",
+      label: "Karte zeigt relative Stärke",
+      passed: relativeStrength >= 55
+    },
+    {
+      key: "rating_chain",
+      label: "Rating-Kette bestätigt Nachfrage",
+      passed: Boolean(marketLogic?.rotationFromLower) || Number(ratingStat?.risingPct15m || 0) >= 60
+    },
+    {
+      key: "supply_guard",
+      label: "Kein breiter Supply-Schock",
+      passed: !globalContext?.packSupplyActive
+    },
+    {
+      key: "source_guard",
+      label: "Preisquelle plausibel",
+      passed: sourceConfidence >= 75
+    }
+  ];
+
+  const confirmedChecks = thesisChecks.filter(check => check.passed).length;
+  const thesisScore = Math.round((confirmedChecks / thesisChecks.length) * 100);
+  let combinedScore = Math.round(clampBrainScore(
+    playerScore * 0.55 + ratingMarketScore * 0.30 + thesisScore * 0.15 - Math.max(0, risk - 55) * 0.2,
+    5,
+    95
+  ));
+
+  const downsideRiskPct = Math.round(clampBrainScore(
+    8 + risk * 0.42 + Math.max(0, 55 - relativeStrength) * 0.18,
+    5,
+    65
+  ));
+
+  const targetLow = roundBrainPrice(Math.max(current, fairValue * 0.98));
+  const targetHigh = roundBrainPrice(Math.max(current, fairValue * 1.035));
+  const invalidation = roundBrainPrice(
+    Number.isFinite(low) && low > 0
+      ? Math.min(current * 0.97, low * 0.99)
+      : current * (1 - Math.max(0.03, Math.min(0.08, risk / 1000 + 0.02)))
+  );
+  const idealEntryLow = roundBrainPrice(Math.min(current, fairValue * 0.94));
+  const idealEntryHigh = roundBrainPrice(Math.min(current, fairValue * 0.985));
+
+  return {
+    fairValue,
+    undervaluationPct,
+    momentum,
+    relativeStrength,
+    ratingMarketScore,
+    liquidityProxy,
+    sourceConfidence,
+    eventCatalyst,
+    risk,
+    playerScore,
+    marketScore: ratingMarketScore,
+    marketConfidence: marketLogic?.confidence ?? ratingStat?.confidence ?? 50,
+    thesisScore,
+    thesisChecks,
+    confirmedChecks,
+    totalChecks: thesisChecks.length,
+    combinedScore,
+    continuationProbability: marketLogic?.continuationProbability ?? 50,
+    downsideRiskPct,
+    targetLow,
+    targetHigh,
+    invalidation,
+    idealEntryLow,
+    idealEntryHigh,
+    marketPhase: marketLogic?.phase || "DATA_BUILDING",
+    marketReasons: marketLogic?.reasons || [],
+    marketRisks: marketLogic?.risks || [],
+    rotationFromLower: Boolean(marketLogic?.rotationFromLower)
+  };
+}
+
+function applyCombinedMarketBrain(row, ratingStat, globalContext = {}) {
+  const brain = buildPlayerMarketBrain(row, ratingStat, globalContext);
+  const originalAction = String(row?.aiAction || "BEOBACHTEN");
+  let finalAction = originalAction;
+  const blockers = [];
+
+  if (originalAction === "JETZT KAUFEN") {
+    if (brain.marketScore < 55) blockers.push(`Rating-Markt-Score nur ${brain.marketScore}/100`);
+    if (brain.risk >= 60) blockers.push(`Risiko ${brain.risk}/100`);
+    if (brain.confirmedChecks < 4) blockers.push(`nur ${brain.confirmedChecks}/${brain.totalChecks} Buy-Thesen bestätigt`);
+    if (["SELL_OFF", "SUPPLY_SHOCK", "DISTRIBUTION"].includes(brain.marketPhase)) blockers.push(`Marktphase ${brain.marketPhase}`);
+
+    if (blockers.length) {
+      finalAction = "NOCH WARTEN";
+      row.aiReason = `${row.aiReason} v10.55 Market-Logic-Guard: ${blockers.join("; ")}. Kauf wird erst wieder freigegeben, wenn Spieler- und Rating-These gleichzeitig tragen.`.slice(0, 1800);
+      row.aiConfidence = Math.min(Number(row.aiConfidence || 75), Math.max(55, brain.combinedScore));
+    } else {
+      row.aiConfidence = Math.min(95, Math.max(Number(row.aiConfidence || 50), Math.min(brain.combinedScore, Number(row.aiConfidence || 50) + 3)));
+    }
+  }
+
+  row.aiAction = finalAction;
+  row.aiPlayerScore = brain.playerScore;
+  row.aiMarketLogicScore = brain.marketScore;
+  row.aiCombinedScore = brain.combinedScore;
+  row.aiFairValue = brain.fairValue;
+  row.aiUndervaluationPct = brain.undervaluationPct;
+  row.aiMomentumScore = brain.momentum;
+  row.aiRelativeStrengthScore = brain.relativeStrength;
+  row.aiLiquidityScore = brain.liquidityProxy;
+  row.aiSourceConfidenceScore = brain.sourceConfidence;
+  row.aiEventCatalystScore = brain.eventCatalyst;
+  row.aiRiskScore = brain.risk;
+  row.aiMarketPhase = brain.marketPhase;
+  row.aiMarketLogicConfidence = brain.marketConfidence;
+  row.aiContinuationProbability = brain.continuationProbability;
+  row.aiDownsideRiskPct = brain.downsideRiskPct;
+  row.aiThesisScore = brain.thesisScore;
+  row.aiThesisChecks = brain.thesisChecks;
+  row.aiThesisConfirmed = brain.confirmedChecks;
+  row.aiThesisTotal = brain.totalChecks;
+  row.aiTargetLow = brain.targetLow;
+  row.aiTargetHigh = brain.targetHigh;
+  row.aiInvalidation = brain.invalidation;
+  row.aiIdealEntryLow = brain.idealEntryLow;
+  row.aiIdealEntryHigh = brain.idealEntryHigh;
+  row.aiMarketLogicReasons = brain.marketReasons;
+  row.aiMarketLogicRisks = brain.marketRisks;
+  row.aiRatingRotationFromLower = brain.rotationFromLower;
+  row.aiCombinedOriginalAction = originalAction;
+  row.aiCombinedGuardChangedAction = finalAction !== originalAction;
+  row.aiModelUsed = `${row.aiModelUsed || "Quantitative Core"} + v10.55 Market Logic`;
+
+  return row;
 }
 
 function matchingSignalsForRow(row, allSignals) {
@@ -8504,7 +8920,7 @@ async function buildDecisionPerformanceScorecard(limit = 500) {
   return {
     ok: true,
     enabled: true,
-    version: "10.54-canonical-pr-rating-list",
+    version: "10.55-combined-market-logic-brain",
     sampleSize: total,
     scorecard: {
       accuracy: total ? Number(((wins / total) * 100).toFixed(2)) : null,
@@ -9266,6 +9682,8 @@ async function buildTradingRows(futbinFeedOverride = null) {
       club: card.club,
       url: card.url,
       price: card.price,
+      priceStatusCode: card.priceStatusCode ?? null,
+      priceLookupId: card.priceLookupId ?? card.eaId,
       change1m: changePct(card.price, old1m),
       change5m: changePct(card.price, old5m),
       change15m: changePct(card.price, old15m),
@@ -9289,6 +9707,7 @@ async function buildTradingRows(futbinFeedOverride = null) {
 
   const ratingStats = buildRatingStats(rows);
   const globalMarketContext = buildGlobalMarketContext(rows);
+  enrichRatingMarketLogic(ratingStats, globalMarketContext);
   latestMarketContext = globalMarketContext;
   const brainWork = new Map();
 
@@ -9323,6 +9742,9 @@ async function buildTradingRows(futbinFeedOverride = null) {
       ratingMarketTrend: rating.trend,
       ratingMarketRisingPct: rating.risingPct,
       ratingMarketFallingPct: rating.fallingPct,
+      ratingMarketPhase: rating.marketPhase || rating.marketLogic?.phase || "DATA_BUILDING",
+      ratingMarketLogicScore: rating.marketLogicScore ?? rating.marketLogic?.score ?? 50,
+      ratingMarketLogicConfidence: rating.marketLogicConfidence ?? rating.marketLogic?.confidence ?? rating.confidence ?? 50,
       marketContext: {
         packSupplyActive: globalMarketContext.packSupplyActive,
         overallMarketMood: globalMarketContext.mood,
@@ -9358,6 +9780,7 @@ async function buildTradingRows(futbinFeedOverride = null) {
     row.packSupplyActive = globalMarketContext.packSupplyActive;
     row.marketContextConfidence = globalMarketContext.confidence;
     applyAlertSanityGuard(row);
+    applyCombinedMarketBrain(row, rating, globalMarketContext);
 
     brainWork.set(String(row.eaId), {
       input,
@@ -9365,7 +9788,15 @@ async function buildTradingRows(futbinFeedOverride = null) {
       confluence,
       learningProfile,
       knowledgeContext,
-      performanceCalibration: row.aiPerformanceCalibration || null
+      performanceCalibration: row.aiPerformanceCalibration || null,
+      combinedMarketBrain: {
+        playerScore: row.aiPlayerScore ?? null,
+        marketScore: row.aiMarketLogicScore ?? null,
+        combinedScore: row.aiCombinedScore ?? null,
+        marketPhase: row.aiMarketPhase ?? null,
+        thesisConfirmed: row.aiThesisConfirmed ?? null,
+        thesisTotal: row.aiThesisTotal ?? null
+      }
     });
   }
 
@@ -9801,7 +10232,7 @@ app.get("/", (req, res) => {
   res.json({
     online: true,
     service: "FC Trading Intelligence",
-    version: "10.54-canonical-pr-rating-list",
+    version: "10.55-combined-market-logic-brain",
     gameYear: GAME_YEAR,
     marketProfile: marketProfile(),
     refreshSeconds: 60,
@@ -9930,7 +10361,7 @@ app.get("/api/readiness", (req, res) => {
   const readiness = runtimeReadinessSnapshot();
   res.status(readiness.ready ? 200 : 503).json({
     ok: readiness.ready,
-    version: "10.54-canonical-pr-rating-list",
+    version: "10.55-combined-market-logic-brain",
     gameYear: GAME_YEAR,
     readiness,
     note: "Dieser Endpunkt ist absichtlich strenger als /health. /health zeigt, ob der Webdienst lebt; /api/readiness zeigt, ob Marktquelle, Monitoring, Datenbank, Discord und Trader Brain wirklich produktionsbereit sind."
@@ -9940,7 +10371,7 @@ app.get("/api/readiness", (req, res) => {
 app.get("/health", (req, res) => {
   res.json({
     ok: true,
-    version: "10.54-canonical-pr-rating-list",
+    version: "10.55-combined-market-logic-brain",
     gameYear: GAME_YEAR,
     marketProfile: marketProfile(),
     marketContext: latestMarketContext,
@@ -10234,7 +10665,7 @@ app.post("/api/trader-signals/ingest", async (req, res) => {
 
 app.get("/api/trader-sources/status", (req, res) => {
   res.json({
-    ok: true, version: "10.54-canonical-pr-rating-list", mode: "forwarded-or-authorized-only", automaticForeignDiscordReading: false,
+    ok: true, version: "10.55-combined-market-logic-brain", mode: "forwarded-or-authorized-only", automaticForeignDiscordReading: false,
     sources: CURATED_TRADER_SOURCES.map(source => ({ id: source.id, name: source.displayName, aliases: source.aliases, channels: source.channels.map(channel => ({ channel: channel.name, type: channel.type, category: channel.category, defaultCall: channel.defaultCall, reliabilityWeight: Number(channel.weight || 1) })) })),
     note: "Die Registry normalisiert weitergeleitete/erlaubte Signale. Sie liest keine fremden Discord-Server automatisch oder verdeckt aus."
   });
@@ -10255,7 +10686,7 @@ app.get("/api/alert-sanity/status", (req, res) => {
   }));
   res.json({
     ok: true,
-    version: "10.54-canonical-pr-rating-list",
+    version: "10.55-combined-market-logic-brain",
     blockedNow: blocked.length,
     thresholds: {
       livePriceDiffPct: ALERT_SANITY_RECHECK_DIFF_PCT,
@@ -10271,7 +10702,7 @@ app.get("/api/buy-guard/status", (req, res) => {
   res.json({
     ok: true,
     enabled: true,
-    version: "10.54-canonical-pr-rating-list",
+    version: "10.55-combined-market-logic-brain",
     rules: {
       duplicateShortHorizonsCountAsOne: true,
       requiredRecoveryCycles: STRICT_BUY_RECOVERY_CYCLES,
@@ -10304,7 +10735,7 @@ app.get("/api/leak-impact/status", async (req, res) => {
       GROUP BY s.source ORDER BY COUNT(DISTINCT i.signal_id) DESC, s.source ASC
     `);
     return res.json({
-      ok: true, enabled: true, version: "10.54-canonical-pr-rating-list", horizonsMinutes: TRADER_MARKET_IMPACT_HORIZONS,
+      ok: true, enabled: true, version: "10.55-combined-market-logic-brain", horizonsMinutes: TRADER_MARKET_IMPACT_HORIZONS,
       sourceSummary: sourceSummary.rows.map(row => ({ source: row.source, events: Number(row.events || 0), evaluatedPoints: Number(row.evaluated_points || 0), avgAbsMarketMovePct: Number(row.avg_abs_market_move || 0), avgMarketMovePct: Number(row.avg_market_move || 0) })),
       recent: recent.rows.map(row => ({ signalId: row.signal_id, source: row.source, channel: row.source_channel || null, category: row.category, horizonMinutes: Number(row.horizon_minutes), marketMedianChangePct: Number(row.market_median_change_pct), strongestRating: row.strongest_rating == null ? null : Number(row.strongest_rating), strongestRatingChangePct: row.strongest_rating_change_pct == null ? null : Number(row.strongest_rating_change_pct), affectedRatings: row.affected_ratings || [], direction: row.direction, sourceEventAt: row.source_event_at, evaluatedAt: row.evaluated_at, message: String(row.message || "").slice(0, 500) })),
       note: "Leak/Content-Events loesen keinen Kauf aus. Der Brain misst zuerst, welche Rating-Segmente sich nach 15m/1h/6h/24h real bewegen."
@@ -10348,7 +10779,7 @@ app.get("/api/market-knowledge/status", async (req, res) => {
     return res.json({
       ok: true,
       enabled: true,
-      version: "10.54-canonical-pr-rating-list",
+      version: "10.55-combined-market-logic-brain",
       policy: {
         hypothesesAreNotTruth: true,
         minimumSamplesBeforeInfluence: MARKET_KNOWLEDGE_MIN_SAMPLES,
@@ -10417,7 +10848,7 @@ app.get("/api/trader-reliability/status", async (req, res) => {
 
     return res.json({
       enabled: true,
-      version: "10.54-canonical-pr-rating-list",
+      version: "10.55-combined-market-logic-brain",
       gameYear: GAME_YEAR,
       method: {
         priorAccuracy: TRADER_RELIABILITY_PRIOR_ACCURACY,
@@ -10476,7 +10907,7 @@ app.get("/api/trader-reliability/status", async (req, res) => {
 app.get("/api/trader-confluence/status", (req, res) => {
   res.json({
     enabled: DISCORD_CONFIGURED && dbEnabled,
-    version: "10.54-canonical-pr-rating-list",
+    version: "10.55-combined-market-logic-brain",
     minCardConfidence: DISCORD_TRADER_CONFLUENCE_MIN_CONFIDENCE,
     minRatingConfidence: DISCORD_TRADER_CONFLUENCE_MIN_RATING_CONFIDENCE,
     minTraderReliability: DISCORD_TRADER_CONFLUENCE_MIN_RELIABILITY,
@@ -10509,7 +10940,7 @@ app.get("/api/trader-confluence/status", (req, res) => {
 app.get("/api/discord-rating-mode/status", (req, res) => {
   res.json({
     ok: true,
-    version: "10.54-canonical-pr-rating-list",
+    version: "10.55-combined-market-logic-brain",
     ratingFirst: DISCORD_RATING_FIRST_BASE_ALERTS,
     strictRatingFeed: true,
     normalPlayerAlerts: false,
@@ -10686,7 +11117,7 @@ app.get("/api/intensive-watchlist", async (req, res) => {
 
     res.json({
       ok: true,
-      version: "10.54-canonical-pr-rating-list",
+      version: "10.55-combined-market-logic-brain",
       count: items.length,
       settings: {
         moveAlertPct: INTENSIVE_WATCH_MOVE_PCT,
@@ -10799,7 +11230,7 @@ app.get("/api/trading", async (req, res) => {
 
     res.json({
       ok: true,
-      version: "10.54-canonical-pr-rating-list",
+      version: "10.55-combined-market-logic-brain",
       refreshSeconds: 60,
       dbEnabled,
       sourceHealth: health,
@@ -10880,7 +11311,7 @@ app.get("/api/processing-health", (req, res) => {
   const health = processingHealthSnapshot();
   res.status(health.healthy ? 200 : 503).json({
     ok: health.healthy,
-    version: "10.54-canonical-pr-rating-list",
+    version: "10.55-combined-market-logic-brain",
     gameYear: GAME_YEAR,
     processingHealth: health,
     note: "DB-, Brain- oder Discord-Fehler werden getrennt von FUT.GG-Quellfehlern bewertet und können den Source Health Guard nicht mehr fälschlich in Quarantäne schicken."
@@ -10891,7 +11322,7 @@ app.get("/api/source-health", (req, res) => {
   const health = sourceHealthSnapshot();
   res.status(health.status === "UNHEALTHY" ? 503 : 200).json({
     ok: health.status !== "UNHEALTHY",
-    version: "10.54-canonical-pr-rating-list",
+    version: "10.55-combined-market-logic-brain",
     gameYear: GAME_YEAR,
     refreshSeconds: 60,
     source: "FUT.GG PS5 bulk prices",
@@ -10911,7 +11342,7 @@ app.get("/api/futbin/status", (req, res) => {
 
   res.json({
     ok: true,
-    version: "10.54-canonical-pr-rating-list",
+    version: "10.55-combined-market-logic-brain",
     gameYear: GAME_YEAR,
     configured: Boolean(FUTBIN_AUTHORIZED_FEED_URL || FUTBIN_PARSE_API_KEY),
     status: latestFutbinStatus,
@@ -10952,7 +11383,7 @@ app.get("/api/futbin/status", (req, res) => {
 app.get("/api/market-context", (req, res) => {
   res.json({
     ok: true,
-    version: "10.54-canonical-pr-rating-list",
+    version: "10.55-combined-market-logic-brain",
     gameYear: GAME_YEAR,
     refreshSeconds: 60,
     context: latestMarketContext,
@@ -10963,7 +11394,7 @@ app.get("/api/market-context", (req, res) => {
 app.get("/api/trader-brain/status", (req, res) => {
   res.json({
     ok: true,
-    version: "10.54-canonical-pr-rating-list",
+    version: "10.55-combined-market-logic-brain",
     gameYear: GAME_YEAR,
     marketProfile: marketProfile(),
     marketContext: latestMarketContext,
@@ -10973,7 +11404,7 @@ app.get("/api/trader-brain/status", (req, res) => {
     lastBrainError,
     lastGeminiCandidate,
     learning: {
-      version: "10.54-canonical-pr-rating-list",
+      version: "10.55-combined-market-logic-brain",
       totalMatureDecisions: brainLearningCache.totalMatureDecisions,
       rawMatureDecisions: brainLearningCache.rawMatureDecisions,
       uniqueLearningEpisodes: brainLearningCache.uniqueLearningEpisodes,
@@ -10994,7 +11425,7 @@ app.get("/api/trader-brain/learning/status", async (req, res) => {
     const cache = await loadBrainLearningProfiles(true);
     return res.json({
       enabled: true,
-      version: "10.54-canonical-pr-rating-list",
+      version: "10.55-combined-market-logic-brain",
       method: {
         windowDays: BRAIN_LEARNING_WINDOW_DAYS,
         priorAccuracy: BRAIN_LEARNING_PRIOR_ACCURACY,
@@ -11038,7 +11469,7 @@ app.get("/api/trader-brain/performance/status", async (req, res) => {
     res.status(500).json({
       ok: false,
       enabled: dbEnabled,
-      version: "10.54-canonical-pr-rating-list",
+      version: "10.55-combined-market-logic-brain",
       error: String(error)
     });
   }
@@ -11056,7 +11487,7 @@ app.get("/api/rating-list/debug/:rating", async (req, res) => {
 
     res.json({
       ok: true,
-      version: "10.54-canonical-pr-rating-list",
+      version: "10.55-combined-market-logic-brain",
       rating,
       discoveredBaseRare: discovered.length,
       pricedBaseRare: priced.length,
@@ -11092,7 +11523,7 @@ app.get("/api/rating-list/debug/:rating", async (req, res) => {
   } catch (error) {
     res.status(500).json({
       ok: false,
-      version: "10.54-canonical-pr-rating-list",
+      version: "10.55-combined-market-logic-brain",
       error: String(error)
     });
   }
@@ -11463,6 +11894,8 @@ app.get("/trading", (req, res) => {
             <th>Fallen 5m</th>
             <th>Nahe 24h-Tief</th>
             <th>Signal</th>
+            <th>Marktphase</th>
+            <th>Market Brain</th>
             <th>Rating-Aktion</th>
             <th>Sicherheit</th>
             <th>Grund</th>
@@ -11494,6 +11927,9 @@ app.get("/trading", (req, res) => {
         <th>Score</th>
         <th>KI-Entscheidung</th>
         <th>KI-Sicherheit</th>
+        <th>Combined Brain</th>
+        <th>Fair Value / Ziele</th>
+        <th>Market Logic / These</th>
         <th>KI-Grund</th>
         <th>Kaufpreis</th>
         <th>Menge</th>
@@ -11604,9 +12040,11 @@ function renderRatings() {
       <td>\${Number(row.fallingPct5m ?? 0).toFixed(1)}%</td>
       <td>\${Number(row.near24hLowPct ?? 0).toFixed(1)}%</td>
       <td class="rating-signal">\${row.marketSignal}</td>
+      <td class="strong">\${String(row.marketPhase || "DATA_BUILDING").replaceAll("_", " ")}</td>
+      <td><b>\${row.marketLogicScore ?? "-"}/100</b><br><span class="muted">Fortsetzung \${row.continuationProbability ?? "-"}%</span></td>
       <td class="strong">\${row.marketAdvice}</td>
       <td>\${row.confidence}%</td>
-      <td style="text-align:left; white-space:normal; min-width:320px">\${row.reason}</td>
+      <td style="text-align:left; white-space:normal; min-width:320px">\${row.reason}<br><span class="muted">\${(row.marketLogic?.reasons || []).slice(0,2).join(" ")}</span></td>
     \`;
 
     body.appendChild(tr);
@@ -11822,6 +12260,25 @@ function render() {
 
       <td>
         \${row.aiConfidence}%
+      </td>
+
+      <td style="text-align:left; white-space:normal; min-width:220px">
+        <b>Combined \${row.aiCombinedScore ?? "-"}/100</b><br>
+        Player \${row.aiPlayerScore ?? "-"}/100 • Market \${row.aiMarketLogicScore ?? "-"}/100<br>
+        <span class="muted">Momentum \${row.aiMomentumScore ?? "-"} • Rel. Stärke \${row.aiRelativeStrengthScore ?? "-"} • Risiko \${row.aiRiskScore ?? "-"}</span>
+      </td>
+
+      <td style="text-align:left; white-space:normal; min-width:210px">
+        Fair \${fmt(row.aiFairValue)}<br>
+        \${Number.isFinite(row.aiUndervaluationPct) ? ((row.aiUndervaluationPct > 0 ? "+" : "") + row.aiUndervaluationPct.toFixed(2) + "% vs. Fair Value") : "-"}<br>
+        Ziel \${fmt(row.aiTargetLow)}–\${fmt(row.aiTargetHigh)}<br>
+        <span class="muted">Ideal \${fmt(row.aiIdealEntryLow)}–\${fmt(row.aiIdealEntryHigh)} • Invalidation \${fmt(row.aiInvalidation)}</span>
+      </td>
+
+      <td style="text-align:left; white-space:normal; min-width:330px">
+        <b>\${String(row.aiMarketPhase || "DATA_BUILDING").replaceAll("_", " ")}</b> • Market Confidence \${row.aiMarketLogicConfidence ?? "-"}%<br>
+        These: \${row.aiThesisConfirmed ?? 0}/\${row.aiThesisTotal ?? 0} bestätigt • Fortsetzung \${row.aiContinuationProbability ?? "-"}% • Downside \${row.aiDownsideRiskPct ?? "-"}%<br>
+        <span class="muted">\${(row.aiMarketLogicReasons || []).slice(0,2).join(" ")}</span>
       </td>
 
       <td style="text-align:left; white-space:normal; min-width:320px">
