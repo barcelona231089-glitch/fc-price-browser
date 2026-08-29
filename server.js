@@ -252,6 +252,33 @@ const BRAIN_LEARNING_EXACT_MIN_EFFECTIVE = 3;
 const BRAIN_LEARNING_CARDTYPE_MIN_EFFECTIVE = 5;
 const BRAIN_LEARNING_ACTION_MIN_EFFECTIVE = 8;
 
+// v10.47 Decision Performance Lab
+// Ziel: nicht nur Signale erzeugen, sondern jede eigenständige Entscheidung
+// messbar machen und Confidence nur dann hoch lassen, wenn echte Outcomes sie tragen.
+const PERFORMANCE_LAB_WINDOW_DAYS = Math.max(30, Number(process.env.PERFORMANCE_LAB_WINDOW_DAYS || 90));
+const PERFORMANCE_LAB_REFRESH_MS = Math.max(5, Number(process.env.PERFORMANCE_LAB_REFRESH_MIN || 10)) * 60_000;
+const PERFORMANCE_LAB_MIN_CALIBRATION_SAMPLES = Math.max(12, Number(process.env.PERFORMANCE_LAB_MIN_CALIBRATION_SAMPLES || 20));
+const PERFORMANCE_LAB_MIN_ABSTAIN_SAMPLES = Math.max(
+  PERFORMANCE_LAB_MIN_CALIBRATION_SAMPLES,
+  Number(process.env.PERFORMANCE_LAB_MIN_ABSTAIN_SAMPLES || 24)
+);
+const PERFORMANCE_LAB_CONFIDENCE_BUFFER = Math.max(2, Math.min(12, Number(process.env.PERFORMANCE_LAB_CONFIDENCE_BUFFER || 7)));
+const PERFORMANCE_LAB_MISSED_ENTRY_NET_ROI = Math.max(2, Number(process.env.PERFORMANCE_LAB_MISSED_ENTRY_NET_ROI || 5));
+const PERFORMANCE_LAB_FALSE_BUY_MAX_NET_ROI = Number(process.env.PERFORMANCE_LAB_FALSE_BUY_MAX_NET_ROI || 0);
+const PERFORMANCE_LAB_BUY_ABSTAIN_ACCURACY = Math.max(35, Math.min(65, Number(process.env.PERFORMANCE_LAB_BUY_ABSTAIN_ACCURACY || 52)));
+const PERFORMANCE_LAB_BUY_BLOCK_ACCURACY = Math.max(25, Math.min(
+  PERFORMANCE_LAB_BUY_ABSTAIN_ACCURACY,
+  Number(process.env.PERFORMANCE_LAB_BUY_BLOCK_ACCURACY || 43)
+));
+
+let decisionPerformanceCache = {
+  loadedAt: 0,
+  updatedAt: null,
+  totalMature: 0,
+  profiles: new Map(),
+  profileList: []
+};
+
 let brainLearningCache = {
   loadedAt: 0,
   updatedAt: null,
@@ -1858,6 +1885,35 @@ async function initDb() {
       notes TEXT,
       evaluated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     )
+  `);
+
+  // v10.47: zusaetzliche Horizonte + Performance-Metriken.
+  // ALTER TABLE ist absichtlich idempotent, damit bestehende FC26-Daten erhalten bleiben.
+  await pool.query(`
+    ALTER TABLE fc_decision_evaluations
+      ADD COLUMN IF NOT EXISTS price_after_30m INTEGER,
+      ADD COLUMN IF NOT EXISTS price_after_3h INTEGER,
+      ADD COLUMN IF NOT EXISTS roi_30m NUMERIC(8,2),
+      ADD COLUMN IF NOT EXISTS roi_3h NUMERIC(8,2),
+      ADD COLUMN IF NOT EXISTS net_roi_5m NUMERIC(9,3),
+      ADD COLUMN IF NOT EXISTS net_roi_15m NUMERIC(9,3),
+      ADD COLUMN IF NOT EXISTS net_roi_30m NUMERIC(9,3),
+      ADD COLUMN IF NOT EXISTS net_roi_1h NUMERIC(9,3),
+      ADD COLUMN IF NOT EXISTS net_roi_3h NUMERIC(9,3),
+      ADD COLUMN IF NOT EXISTS net_roi_6h NUMERIC(9,3),
+      ADD COLUMN IF NOT EXISTS net_roi_24h NUMERIC(9,3),
+      ADD COLUMN IF NOT EXISTS best_net_roi NUMERIC(9,3),
+      ADD COLUMN IF NOT EXISTS worst_move_pct NUMERIC(9,3),
+      ADD COLUMN IF NOT EXISTS missed_entry BOOLEAN,
+      ADD COLUMN IF NOT EXISTS false_buy BOOLEAN,
+      ADD COLUMN IF NOT EXISTS sell_timing_score SMALLINT,
+      ADD COLUMN IF NOT EXISTS outcome_class VARCHAR(60),
+      ADD COLUMN IF NOT EXISTS confidence_error NUMERIC(9,3)
+  `);
+
+  await pool.query(`
+    CREATE INDEX IF NOT EXISTS idx_fc_decision_evaluations_outcome
+    ON fc_decision_evaluations (outcome_class, evaluated_at DESC)
   `);
 
   await pool.query(`
@@ -4696,13 +4752,13 @@ async function sendDiscordStartupMessage() {
     await sendDiscordPayload({
       embeds: [{
         title: "✅ FC Trader Brain verbunden",
-        description: "Automatische Trading-Alerts sind aktiv. Du musst die Webseite nicht geöffnet lassen.",
+        description: "Automatische Trading-Alerts sind aktiv. Decision Performance Lab bewertet eigenständige KI-Calls automatisch im Hintergrund.",
         fields: [
           { name: "Markt-Check", value: "alle 60 Sekunden", inline: true },
           { name: "Kaufalarm ab", value: `${DISCORD_MIN_BUY_CONFIDENCE}% KI-Sicherheit`, inline: true },
           { name: "Spam-Schutz", value: `${Math.round(DISCORD_ALERT_COOLDOWN_MS / 60_000)} Min. Cooldown`, inline: true }
         ],
-        footer: { text: "FC Trading Intelligence v10.46" },
+        footer: { text: "FC Trading Intelligence v10.47" },
         timestamp: new Date().toISOString()
       }]
     });
@@ -4711,7 +4767,7 @@ async function sendDiscordStartupMessage() {
       alertKey,
       alertType: "system",
       action: "CONNECTED",
-      fingerprint: "v10.45"
+      fingerprint: "v10.47"
     });
   } catch (error) {
     lastDiscordError = String(error);
@@ -7024,6 +7080,465 @@ function brainLearningDecisionIsMature(row) {
   return false;
 }
 
+
+function performanceConfidenceBucket(confidence) {
+  const value = Math.max(0, Math.min(95, Number(confidence || 0)));
+  if (value >= 90) return "90-95";
+  if (value >= 80) return "80-89";
+  if (value >= 70) return "70-79";
+  if (value >= 60) return "60-69";
+  return "0-59";
+}
+
+function performanceCardGroup(cardType) {
+  const type = String(cardType || "").toLowerCase();
+  return type.includes("base rare") || type.includes("base common") ? "BASE" : "SPECIAL";
+}
+
+function performanceAction(action) {
+  return String(action || "").toUpperCase() === "JETZT VERKAUFEN"
+    ? "VERKAUF PRÜFEN"
+    : String(action || "").toUpperCase();
+}
+
+function performanceNetRoi(initialPrice, futurePrice) {
+  const initial = Number(initialPrice);
+  const future = Number(futurePrice);
+  if (!Number.isFinite(initial) || initial <= 0 || !Number.isFinite(future) || future <= 0) return null;
+  // Hypothetischer Kauf zum Signalpreis, Verkauf spaeter nach 5% EA-Steuer.
+  return ((future * 0.95 - initial) / initial) * 100;
+}
+
+function performanceRawMove(initialPrice, futurePrice) {
+  const initial = Number(initialPrice);
+  const future = Number(futurePrice);
+  if (!Number.isFinite(initial) || initial <= 0 || !Number.isFinite(future) || future <= 0) return null;
+  return ((future - initial) / initial) * 100;
+}
+
+function decisionPerformanceIsMature(action, tracked) {
+  const normalized = performanceAction(action);
+  if (normalized === "NOCH WARTEN") {
+    return tracked.after30m != null;
+  }
+  if (["JETZT KAUFEN", "NICHT KAUFEN", "VERKAUF PRÜFEN"].includes(normalized)) {
+    return tracked.after6h != null;
+  }
+  return false;
+}
+
+function enhancedDecisionPerformance(record, tracked, baseEvaluation) {
+  const initial = Number(record.initial_price);
+  const prices = [
+    tracked.after5m,
+    tracked.after15m,
+    tracked.after30m,
+    tracked.after1h,
+    tracked.after3h,
+    tracked.after6h,
+    tracked.after24h
+  ];
+
+  const rawMoves = prices.map(price => performanceRawMove(initial, price));
+  const netRois = prices.map(price => performanceNetRoi(initial, price));
+  const validRaw = rawMoves.filter(Number.isFinite);
+  const validNet = netRois.filter(Number.isFinite);
+
+  const action = performanceAction(record.action);
+  const bestNetRoi = validNet.length ? Math.max(...validNet) : null;
+  const worstMovePct = validRaw.length ? Math.min(...validRaw) : null;
+
+  // Camavinga-artiger Fehler: WAIT, aber danach waere nach Steuer ein klarer
+  // profitabler Rebound moeglich gewesen.
+  const missedEntry =
+    action === "NOCH WARTEN" &&
+    decisionPerformanceIsMature(action, tracked) &&
+    Number.isFinite(bestNetRoi) &&
+    bestNetRoi >= PERFORMANCE_LAB_MISSED_ENTRY_NET_ROI;
+
+  // Lauren-James-artiger Fehler: BUY, aber bis zur Reife kein einziger
+  // profitabler Exit nach Steuer.
+  const falseBuy =
+    action === "JETZT KAUFEN" &&
+    decisionPerformanceIsMature(action, tracked) &&
+    Number.isFinite(bestNetRoi) &&
+    bestNetRoi <= PERFORMANCE_LAB_FALSE_BUY_MAX_NET_ROI;
+
+  let sellTimingScore = null;
+  if (action === "VERKAUF PRÜFEN" && validRaw.length) {
+    // Ein gutes Sell-Timing zeigt sich daran, dass der Markt nach dem Signal
+    // nachgibt. 0% Rueckgang = 50 Punkte, -10% oder mehr = 100 Punkte.
+    const postSignalLowMove = Math.min(...validRaw);
+    sellTimingScore = Math.max(0, Math.min(100, Math.round(50 + (-postSignalLowMove * 5))));
+  }
+
+  const outcomeCorrect = baseEvaluation?.wasCorrect === true;
+  const confidence = Number(record.confidence || 0);
+  const confidenceError = baseEvaluation?.wasCorrect == null
+    ? null
+    : Math.abs(confidence - (outcomeCorrect ? 100 : 0));
+
+  let outcomeClass = "LEARNING";
+  if (falseBuy) outcomeClass = "FALSE_BUY";
+  else if (missedEntry) outcomeClass = "MISSED_ENTRY";
+  else if (action === "JETZT KAUFEN" && baseEvaluation?.wasCorrect === true) outcomeClass = "GOOD_BUY";
+  else if (action === "NOCH WARTEN" && baseEvaluation?.wasCorrect === true) outcomeClass = "GOOD_WAIT";
+  else if (action === "NICHT KAUFEN" && baseEvaluation?.wasCorrect === true) outcomeClass = "GOOD_AVOID";
+  else if (action === "VERKAUF PRÜFEN" && baseEvaluation?.wasCorrect === true) outcomeClass = "GOOD_SELL";
+  else if (decisionPerformanceIsMature(action, tracked) && baseEvaluation?.wasCorrect === false) outcomeClass = "WRONG_DECISION";
+
+  return {
+    roi30m: rawMoves[2],
+    roi3h: rawMoves[4],
+    netRoi5m: netRois[0],
+    netRoi15m: netRois[1],
+    netRoi30m: netRois[2],
+    netRoi1h: netRois[3],
+    netRoi3h: netRois[4],
+    netRoi6h: netRois[5],
+    netRoi24h: netRois[6],
+    bestNetRoi,
+    worstMovePct,
+    missedEntry,
+    falseBuy,
+    sellTimingScore,
+    outcomeClass,
+    confidenceError
+  };
+}
+
+function addPerformanceCalibrationSample(map, key, row) {
+  let group = map.get(key);
+  if (!group) {
+    group = {
+      key,
+      action: row.action,
+      cardGroup: row.cardGroup,
+      confidenceBucket: row.confidenceBucket,
+      samples: 0,
+      wins: 0,
+      confidenceTotal: 0
+    };
+    map.set(key, group);
+  }
+  group.samples += 1;
+  if (row.wasCorrect === true) group.wins += 1;
+  group.confidenceTotal += Number(row.confidence || 0);
+}
+
+function finalizePerformanceCalibrationGroup(group) {
+  const samples = Number(group.samples || 0);
+  const wins = Number(group.wins || 0);
+  const empiricalAccuracy = samples ? (wins / samples) * 100 : 50;
+  const smoothedAccuracy = (
+    50 * 8 + wins * 100
+  ) / (8 + samples);
+  const averageConfidence = samples ? Number(group.confidenceTotal || 0) / samples : 0;
+  return {
+    ...group,
+    empiricalAccuracy: Number(empiricalAccuracy.toFixed(2)),
+    smoothedAccuracy: Number(smoothedAccuracy.toFixed(2)),
+    averageConfidence: Number(averageConfidence.toFixed(2)),
+    calibrationGap: Number((averageConfidence - empiricalAccuracy).toFixed(2))
+  };
+}
+
+async function loadDecisionPerformanceProfiles(force = false) {
+  if (!dbEnabled) return decisionPerformanceCache;
+
+  const now = Date.now();
+  if (
+    !force &&
+    decisionPerformanceCache.loadedAt > 0 &&
+    now - decisionPerformanceCache.loadedAt < PERFORMANCE_LAB_REFRESH_MS
+  ) {
+    return decisionPerformanceCache;
+  }
+
+  try {
+    const result = await pool.query(`
+      SELECT
+        d.action,
+        d.confidence,
+        d.card_type,
+        e.was_correct,
+        e.price_after_30m,
+        e.price_after_6h
+      FROM fc_trader_brain_decisions d
+      JOIN fc_decision_evaluations e ON e.decision_id = d.id
+      WHERE d.created_at >= NOW() - ($1::int * INTERVAL '1 day')
+        AND e.was_correct IS NOT NULL
+        AND (
+          (d.action = 'NOCH WARTEN' AND e.price_after_30m IS NOT NULL)
+          OR
+          (d.action IN ('JETZT KAUFEN','NICHT KAUFEN','VERKAUF PRÜFEN') AND e.price_after_6h IS NOT NULL)
+        )
+      ORDER BY d.created_at DESC
+      LIMIT 5000
+    `, [PERFORMANCE_LAB_WINDOW_DAYS]);
+
+    const exact = new Map();
+    const fallback = new Map();
+
+    for (const dbRow of result.rows) {
+      const row = {
+        action: performanceAction(dbRow.action),
+        confidence: Number(dbRow.confidence || 0),
+        cardGroup: performanceCardGroup(dbRow.card_type),
+        confidenceBucket: performanceConfidenceBucket(dbRow.confidence),
+        wasCorrect: dbRow.was_correct
+      };
+      addPerformanceCalibrationSample(
+        exact,
+        `${row.action}|${row.cardGroup}|${row.confidenceBucket}`,
+        row
+      );
+      addPerformanceCalibrationSample(
+        fallback,
+        `${row.action}|*|${row.confidenceBucket}`,
+        { ...row, cardGroup: "*" }
+      );
+    }
+
+    const profiles = [
+      ...Array.from(exact.values()).map(finalizePerformanceCalibrationGroup),
+      ...Array.from(fallback.values()).map(finalizePerformanceCalibrationGroup)
+    ];
+
+    decisionPerformanceCache = {
+      loadedAt: now,
+      updatedAt: new Date().toISOString(),
+      totalMature: result.rowCount,
+      profiles: new Map(profiles.map(profile => [profile.key, profile])),
+      profileList: profiles.sort((a, b) => b.samples - a.samples)
+    };
+    return decisionPerformanceCache;
+  } catch (error) {
+    console.error("Decision Performance profile error:", error);
+    return decisionPerformanceCache;
+  }
+}
+
+function selectDecisionPerformanceProfile(cache, action, cardType, confidence) {
+  const normalizedAction = performanceAction(action);
+  const bucket = performanceConfidenceBucket(confidence);
+  const cardGroup = performanceCardGroup(cardType);
+  const exact = cache?.profiles?.get(`${normalizedAction}|${cardGroup}|${bucket}`);
+  if (exact && exact.samples >= PERFORMANCE_LAB_MIN_CALIBRATION_SAMPLES) return exact;
+  const fallback = cache?.profiles?.get(`${normalizedAction}|*|${bucket}`);
+  if (fallback && fallback.samples >= PERFORMANCE_LAB_MIN_CALIBRATION_SAMPLES) return fallback;
+  return null;
+}
+
+function applyDecisionPerformanceCalibration(row, cache = decisionPerformanceCache) {
+  if (!row || !Number.isFinite(Number(row.aiConfidence))) return row;
+  const profile = selectDecisionPerformanceProfile(cache, row.aiAction, row.cardType, row.aiConfidence);
+  if (!profile) {
+    row.aiPerformanceCalibration = {
+      active: false,
+      reason: "Noch nicht genug unabhaengige reife Outcomes."
+    };
+    return row;
+  }
+
+  const oldConfidence = Number(row.aiConfidence);
+  const confidenceCap = Math.max(
+    50,
+    Math.min(95, Math.round(profile.smoothedAccuracy + PERFORMANCE_LAB_CONFIDENCE_BUFFER))
+  );
+  if (oldConfidence > confidenceCap) {
+    row.aiConfidence = confidenceCap;
+  }
+
+  const originalAction = row.aiAction;
+  let abstained = false;
+
+  // Harte Abstain-Zone nur bei BUY. Schlechte Historie darf einen Kauf stoppen,
+  // aber nie umgekehrt aus schwacher Historie einen neuen Kauf erzeugen.
+  if (
+    originalAction === "JETZT KAUFEN" &&
+    profile.samples >= PERFORMANCE_LAB_MIN_ABSTAIN_SAMPLES
+  ) {
+    if (profile.smoothedAccuracy < PERFORMANCE_LAB_BUY_BLOCK_ACCURACY) {
+      row.aiAction = "NICHT KAUFEN";
+      abstained = true;
+      row.aiReason = `${row.aiReason} Performance Lab: vergleichbare reife Kaufsignale trafen nur ${profile.smoothedAccuracy.toFixed(1)}% geglaettet. Historie blockiert den Einstieg.`;
+    } else if (profile.smoothedAccuracy < PERFORMANCE_LAB_BUY_ABSTAIN_ACCURACY) {
+      row.aiAction = "NOCH WARTEN";
+      abstained = true;
+      row.aiReason = `${row.aiReason} Performance Lab: vergleichbare reife Kaufsignale liegen nur bei ${profile.smoothedAccuracy.toFixed(1)}% geglaetteter Trefferquote. Erst weitere Marktbestätigung abwarten.`;
+    }
+  }
+
+  row.aiPerformanceCalibration = {
+    active: true,
+    samples: profile.samples,
+    confidenceBucket: profile.confidenceBucket,
+    cardGroup: profile.cardGroup,
+    empiricalAccuracy: profile.empiricalAccuracy,
+    smoothedAccuracy: profile.smoothedAccuracy,
+    previousConfidence: oldConfidence,
+    confidenceCap,
+    finalConfidence: Number(row.aiConfidence),
+    originalAction,
+    finalAction: row.aiAction,
+    abstained
+  };
+
+  return row;
+}
+
+async function buildDecisionPerformanceScorecard(limit = 500) {
+  if (!dbEnabled) {
+    return {
+      ok: true,
+      enabled: false,
+      total: 0,
+      note: "PostgreSQL nicht aktiv."
+    };
+  }
+
+  const safeLimit = Math.max(50, Math.min(2000, Number(limit || 500)));
+  const result = await pool.query(`
+    SELECT
+      d.id,
+      d.ea_id::text AS ea_id,
+      d.player_name,
+      d.rating,
+      d.card_type,
+      d.initial_price,
+      d.action,
+      d.confidence,
+      d.market_state,
+      d.created_at,
+      e.price_after_5m,
+      e.price_after_15m,
+      e.price_after_30m,
+      e.price_after_1h,
+      e.price_after_3h,
+      e.price_after_6h,
+      e.price_after_24h,
+      e.net_roi_5m,
+      e.net_roi_15m,
+      e.net_roi_30m,
+      e.net_roi_1h,
+      e.net_roi_3h,
+      e.net_roi_6h,
+      e.net_roi_24h,
+      e.best_net_roi,
+      e.worst_move_pct,
+      e.was_correct,
+      e.outcome_score,
+      e.missed_entry,
+      e.false_buy,
+      e.sell_timing_score,
+      e.outcome_class,
+      e.confidence_error,
+      e.evaluated_at
+    FROM fc_trader_brain_decisions d
+    JOIN fc_decision_evaluations e ON e.decision_id = d.id
+    WHERE e.was_correct IS NOT NULL
+      AND (
+        (d.action = 'NOCH WARTEN' AND e.price_after_30m IS NOT NULL)
+        OR
+        (d.action IN ('JETZT KAUFEN','NICHT KAUFEN','VERKAUF PRÜFEN') AND e.price_after_6h IS NOT NULL)
+      )
+    ORDER BY d.created_at DESC
+    LIMIT $1
+  `, [safeLimit]);
+
+  const rows = result.rows.map(row => ({
+    ...row,
+    confidence: Number(row.confidence || 0),
+    best_net_roi: row.best_net_roi == null ? null : Number(row.best_net_roi),
+    worst_move_pct: row.worst_move_pct == null ? null : Number(row.worst_move_pct),
+    confidence_error: row.confidence_error == null ? null : Number(row.confidence_error),
+    sell_timing_score: row.sell_timing_score == null ? null : Number(row.sell_timing_score),
+    was_correct: row.was_correct === true
+  }));
+
+  const total = rows.length;
+  const wins = rows.filter(row => row.was_correct).length;
+  const buyRows = rows.filter(row => performanceAction(row.action) === "JETZT KAUFEN");
+  const waitRows = rows.filter(row => performanceAction(row.action) === "NOCH WARTEN");
+  const falseBuys = buyRows.filter(row => row.false_buy === true).length;
+  const missedEntries = waitRows.filter(row => row.missed_entry === true).length;
+  const sellRows = rows.filter(row => performanceAction(row.action) === "VERKAUF PRÜFEN" && Number.isFinite(row.sell_timing_score));
+  const confidenceErrors = rows.map(row => row.confidence_error).filter(Number.isFinite);
+  const bestNet = buyRows.map(row => row.best_net_roi).filter(Number.isFinite);
+
+  function groupSummary(keyFn) {
+    const groups = new Map();
+    for (const row of rows) {
+      const key = keyFn(row);
+      let group = groups.get(key);
+      if (!group) {
+        group = { key, samples: 0, wins: 0, confidenceTotal: 0, bestNetTotal: 0, bestNetCount: 0, falseBuys: 0, missedEntries: 0 };
+        groups.set(key, group);
+      }
+      group.samples += 1;
+      if (row.was_correct) group.wins += 1;
+      group.confidenceTotal += Number(row.confidence || 0);
+      if (Number.isFinite(row.best_net_roi)) {
+        group.bestNetTotal += row.best_net_roi;
+        group.bestNetCount += 1;
+      }
+      if (row.false_buy === true) group.falseBuys += 1;
+      if (row.missed_entry === true) group.missedEntries += 1;
+    }
+    return Array.from(groups.values()).map(group => ({
+      key: group.key,
+      samples: group.samples,
+      accuracy: Number(((group.wins / Math.max(1, group.samples)) * 100).toFixed(2)),
+      averageConfidence: Number((group.confidenceTotal / Math.max(1, group.samples)).toFixed(2)),
+      averageBestNetRoi: group.bestNetCount
+        ? Number((group.bestNetTotal / group.bestNetCount).toFixed(2))
+        : null,
+      falseBuys: group.falseBuys,
+      missedEntries: group.missedEntries
+    })).sort((a, b) => b.samples - a.samples);
+  }
+
+  return {
+    ok: true,
+    enabled: true,
+    version: "10.47-decision-performance-lab",
+    sampleSize: total,
+    scorecard: {
+      accuracy: total ? Number(((wins / total) * 100).toFixed(2)) : null,
+      falseBuyRate: buyRows.length ? Number(((falseBuys / buyRows.length) * 100).toFixed(2)) : null,
+      missedEntryRate: waitRows.length ? Number(((missedEntries / waitRows.length) * 100).toFixed(2)) : null,
+      buySamples: buyRows.length,
+      waitSamples: waitRows.length,
+      sellSamples: sellRows.length,
+      averageBestNetRoi: bestNet.length
+        ? Number((bestNet.reduce((a, b) => a + b, 0) / bestNet.length).toFixed(2))
+        : null,
+      averageSellTimingScore: sellRows.length
+        ? Number((sellRows.reduce((sum, row) => sum + row.sell_timing_score, 0) / sellRows.length).toFixed(2))
+        : null,
+      meanConfidenceError: confidenceErrors.length
+        ? Number((confidenceErrors.reduce((a, b) => a + b, 0) / confidenceErrors.length).toFixed(2))
+        : null
+    },
+    byAction: groupSummary(row => performanceAction(row.action)),
+    byConfidenceBucket: groupSummary(row => performanceConfidenceBucket(row.confidence)),
+    byCardGroup: groupSummary(row => performanceCardGroup(row.card_type)),
+    recent: rows.slice(0, 30),
+    calibration: decisionPerformanceCache.profileList.slice(0, 40),
+    thresholds: {
+      evaluationHorizonsMinutes: [5, 15, 30, 60, 180, 360, 1440],
+      eaTaxPct: 5,
+      missedEntryMinNetRoi: PERFORMANCE_LAB_MISSED_ENTRY_NET_ROI,
+      falseBuyMaxBestNetRoi: PERFORMANCE_LAB_FALSE_BUY_MAX_NET_ROI,
+      calibrationMinSamples: PERFORMANCE_LAB_MIN_CALIBRATION_SAMPLES,
+      abstainMinSamples: PERFORMANCE_LAB_MIN_ABSTAIN_SAMPLES,
+      buyAbstainBelowAccuracy: PERFORMANCE_LAB_BUY_ABSTAIN_ACCURACY,
+      buyBlockBelowAccuracy: PERFORMANCE_LAB_BUY_BLOCK_ACCURACY
+    }
+  };
+}
+
 async function loadBrainLearningProfiles(force = false) {
   if (!dbEnabled) return brainLearningCache;
 
@@ -7674,7 +8189,7 @@ function normalizeDecisionForPosition(row, decision) {
 }
 
 async function buildTradingRows(futbinFeedOverride = null) {
-  const [cards, bulk, positions, intensiveWatches, allSignals, traderProfiles, brainLearning, marketKnowledgeProfiles] = await Promise.all([
+  const [cards, bulk, positions, intensiveWatches, allSignals, traderProfiles, brainLearning, marketKnowledgeProfiles, performanceProfiles] = await Promise.all([
     ensureUniverse(false),
     loadBulkPs5Prices(false),
     getPositions(),
@@ -7682,7 +8197,8 @@ async function buildTradingRows(futbinFeedOverride = null) {
     loadRecentDiscordSignals(),
     loadTraderProfiles(),
     loadBrainLearningProfiles(false),
-    loadMarketKnowledgeProfiles()
+    loadMarketKnowledgeProfiles(),
+    loadDecisionPerformanceProfiles(false)
   ]);
 
   const futbinFeed = futbinFeedOverride || await loadAuthorizedFutbinFeedSafe(false);
@@ -7830,6 +8346,7 @@ async function buildTradingRows(futbinFeedOverride = null) {
     applyDecisionToRow(row, decision);
     calibrateStrictBuyDecision(row, { input, quant, confluence, learningProfile });
     applyMarketKnowledgeLayer(row, knowledgeContext);
+    applyDecisionPerformanceCalibration(row, performanceProfiles);
 
     row.ratingMarketTrend = rating.trend;
     row.ratingMarketRisingPct = rating.risingPct;
@@ -7840,7 +8357,14 @@ async function buildTradingRows(futbinFeedOverride = null) {
     row.marketContextConfidence = globalMarketContext.confidence;
     applyAlertSanityGuard(row);
 
-    brainWork.set(String(row.eaId), { input, quant, confluence, learningProfile, knowledgeContext });
+    brainWork.set(String(row.eaId), {
+      input,
+      quant,
+      confluence,
+      learningProfile,
+      knowledgeContext,
+      performanceCalibration: row.aiPerformanceCalibration || null
+    });
   }
 
   await persistDiscordSignalMarketConfirmations(rows, brainWork);
@@ -8001,6 +8525,7 @@ async function automaticTraderBrain(rows, brainWork) {
         learningProfile
       });
       applyMarketKnowledgeLayer(geminiCandidate.row, geminiCandidate.work.knowledgeContext || []);
+      applyDecisionPerformanceCalibration(geminiCandidate.row, decisionPerformanceCache);
       lastGeminiCandidate = {
         eaId: geminiCandidate.row.eaId,
         player: geminiCandidate.row.name,
@@ -8059,6 +8584,7 @@ async function automaticTraderBrain(rows, brainWork) {
           trader_signals_confluence: row.aiTraderConfluence,
           historical_learning: row.aiHistoricalLearning,
           market_knowledge: row.aiMarketKnowledge || null,
+          performance_calibration: row.aiPerformanceCalibration || null,
           recommended_horizon: row.aiRecommendedHorizon,
           eaTaxBreakEven: Math.ceil(row.price / 0.95),
           ai_model_used: row.aiModelUsed
@@ -8100,7 +8626,9 @@ async function evaluatePendingDecisions() {
       d.*,
       e.price_after_5m,
       e.price_after_15m,
+      e.price_after_30m,
       e.price_after_1h,
+      e.price_after_3h,
       e.price_after_6h,
       e.price_after_24h
     FROM fc_trader_brain_decisions d
@@ -8117,7 +8645,9 @@ async function evaluatePendingDecisions() {
     const tracked = {
       after5m: record.price_after_5m == null ? null : Number(record.price_after_5m),
       after15m: record.price_after_15m == null ? null : Number(record.price_after_15m),
+      after30m: record.price_after_30m == null ? null : Number(record.price_after_30m),
       after1h: record.price_after_1h == null ? null : Number(record.price_after_1h),
+      after3h: record.price_after_3h == null ? null : Number(record.price_after_3h),
       after6h: record.price_after_6h == null ? null : Number(record.price_after_6h),
       after24h: record.price_after_24h == null ? null : Number(record.price_after_24h)
     };
@@ -8125,7 +8655,9 @@ async function evaluatePendingDecisions() {
     const horizons = [
       ["after5m", 5 * 60_000],
       ["after15m", 15 * 60_000],
+      ["after30m", 30 * 60_000],
       ["after1h", 60 * 60_000],
+      ["after3h", 3 * 60 * 60_000],
       ["after6h", 6 * 60 * 60_000],
       ["after24h", 24 * 60 * 60_000]
     ];
@@ -8145,62 +8677,121 @@ async function evaluatePendingDecisions() {
       Number(record.initial_price),
       tracked
     );
+    const performance = enhancedDecisionPerformance(record, tracked, evaluation);
 
     await pool.query(`
       INSERT INTO fc_decision_evaluations (
         decision_id,
         price_after_5m,
         price_after_15m,
+        price_after_30m,
         price_after_1h,
+        price_after_3h,
         price_after_6h,
         price_after_24h,
         roi_5m,
         roi_15m,
+        roi_30m,
         roi_1h,
+        roi_3h,
         roi_6h,
         roi_24h,
+        net_roi_5m,
+        net_roi_15m,
+        net_roi_30m,
+        net_roi_1h,
+        net_roi_3h,
+        net_roi_6h,
+        net_roi_24h,
         max_roi,
+        best_net_roi,
+        worst_move_pct,
         was_correct,
         outcome_score,
+        missed_entry,
+        false_buy,
+        sell_timing_score,
+        outcome_class,
+        confidence_error,
         notes,
         evaluated_at
       ) VALUES (
-        $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,NOW()
+        $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,NOW()
       )
       ON CONFLICT (decision_id)
       DO UPDATE SET
         price_after_5m = EXCLUDED.price_after_5m,
         price_after_15m = EXCLUDED.price_after_15m,
+        price_after_30m = EXCLUDED.price_after_30m,
         price_after_1h = EXCLUDED.price_after_1h,
+        price_after_3h = EXCLUDED.price_after_3h,
         price_after_6h = EXCLUDED.price_after_6h,
         price_after_24h = EXCLUDED.price_after_24h,
         roi_5m = EXCLUDED.roi_5m,
         roi_15m = EXCLUDED.roi_15m,
+        roi_30m = EXCLUDED.roi_30m,
         roi_1h = EXCLUDED.roi_1h,
+        roi_3h = EXCLUDED.roi_3h,
         roi_6h = EXCLUDED.roi_6h,
         roi_24h = EXCLUDED.roi_24h,
+        net_roi_5m = EXCLUDED.net_roi_5m,
+        net_roi_15m = EXCLUDED.net_roi_15m,
+        net_roi_30m = EXCLUDED.net_roi_30m,
+        net_roi_1h = EXCLUDED.net_roi_1h,
+        net_roi_3h = EXCLUDED.net_roi_3h,
+        net_roi_6h = EXCLUDED.net_roi_6h,
+        net_roi_24h = EXCLUDED.net_roi_24h,
         max_roi = EXCLUDED.max_roi,
+        best_net_roi = EXCLUDED.best_net_roi,
+        worst_move_pct = EXCLUDED.worst_move_pct,
         was_correct = EXCLUDED.was_correct,
         outcome_score = EXCLUDED.outcome_score,
+        missed_entry = EXCLUDED.missed_entry,
+        false_buy = EXCLUDED.false_buy,
+        sell_timing_score = EXCLUDED.sell_timing_score,
+        outcome_class = EXCLUDED.outcome_class,
+        confidence_error = EXCLUDED.confidence_error,
         notes = EXCLUDED.notes,
         evaluated_at = NOW()
     `, [
       record.id,
       tracked.after5m,
       tracked.after15m,
+      tracked.after30m,
       tracked.after1h,
+      tracked.after3h,
       tracked.after6h,
       tracked.after24h,
       evaluation.roi5m,
       evaluation.roi15m,
+      performance.roi30m,
       evaluation.roi1h,
+      performance.roi3h,
       evaluation.roi6h,
       evaluation.roi24h,
+      performance.netRoi5m,
+      performance.netRoi15m,
+      performance.netRoi30m,
+      performance.netRoi1h,
+      performance.netRoi3h,
+      performance.netRoi6h,
+      performance.netRoi24h,
       evaluation.maxRoi,
+      performance.bestNetRoi,
+      performance.worstMovePct,
       evaluation.wasCorrect,
       evaluation.outcomeScore,
+      performance.missedEntry,
+      performance.falseBuy,
+      performance.sellTimingScore,
+      performance.outcomeClass,
+      performance.confidenceError,
       evaluation.notes
     ]);
+
+    // Neue Outcomes sollen spaetestens im naechsten Marktzyklus in Confidence
+    // und Abstain-Zone einfliessen.
+    decisionPerformanceCache.loadedAt = 0;
   }
 }
 
@@ -8208,7 +8799,7 @@ app.get("/", (req, res) => {
   res.json({
     online: true,
     service: "FC Trading Intelligence",
-    version: "10.46-strict-rating-feed",
+    version: "10.47-decision-performance-lab",
     gameYear: GAME_YEAR,
     marketProfile: marketProfile(),
     refreshSeconds: 60,
@@ -8228,6 +8819,7 @@ app.get("/", (req, res) => {
       ratingIntelligence: "GET /api/ratings-intelligence",
       traderBrainHistory: "GET /api/trader-brain/feedback/history",
       traderBrainLearning: "GET /api/trader-brain/learning/status",
+      decisionPerformance: "GET /api/trader-brain/performance/status",
       geminiHealth: "GET /api/gemini-health",
       discordStatus: "GET /api/discord/status",
       traderSignalsStatus: "GET /api/trader-signals/status",
@@ -8335,7 +8927,7 @@ app.get("/api/readiness", (req, res) => {
   const readiness = runtimeReadinessSnapshot();
   res.status(readiness.ready ? 200 : 503).json({
     ok: readiness.ready,
-    version: "10.46-strict-rating-feed",
+    version: "10.47-decision-performance-lab",
     gameYear: GAME_YEAR,
     readiness,
     note: "Dieser Endpunkt ist absichtlich strenger als /health. /health zeigt, ob der Webdienst lebt; /api/readiness zeigt, ob Marktquelle, Monitoring, Datenbank, Discord und Trader Brain wirklich produktionsbereit sind."
@@ -8345,7 +8937,7 @@ app.get("/api/readiness", (req, res) => {
 app.get("/health", (req, res) => {
   res.json({
     ok: true,
-    version: "10.46-strict-rating-feed",
+    version: "10.47-decision-performance-lab",
     gameYear: GAME_YEAR,
     marketProfile: marketProfile(),
     marketContext: latestMarketContext,
@@ -8375,6 +8967,13 @@ app.get("/health", (req, res) => {
       uniqueLearningEpisodes: brainLearningCache.uniqueLearningEpisodes,
       updatedAt: brainLearningCache.updatedAt,
       lastError: lastBrainLearningError
+    },
+    decisionPerformanceLab: {
+      enabled: dbEnabled,
+      totalMature: decisionPerformanceCache.totalMature,
+      updatedAt: decisionPerformanceCache.updatedAt,
+      calibrationProfiles: decisionPerformanceCache.profileList.length,
+      horizonsMinutes: [5, 15, 30, 60, 180, 360, 1440]
     },
     geminiQuota: getGeminiQuotaInfo(),
     discord: {
@@ -8632,7 +9231,7 @@ app.post("/api/trader-signals/ingest", async (req, res) => {
 
 app.get("/api/trader-sources/status", (req, res) => {
   res.json({
-    ok: true, version: "10.46-strict-rating-feed", mode: "forwarded-or-authorized-only", automaticForeignDiscordReading: false,
+    ok: true, version: "10.47-decision-performance-lab", mode: "forwarded-or-authorized-only", automaticForeignDiscordReading: false,
     sources: CURATED_TRADER_SOURCES.map(source => ({ id: source.id, name: source.displayName, aliases: source.aliases, channels: source.channels.map(channel => ({ channel: channel.name, type: channel.type, category: channel.category, defaultCall: channel.defaultCall, reliabilityWeight: Number(channel.weight || 1) })) })),
     note: "Die Registry normalisiert weitergeleitete/erlaubte Signale. Sie liest keine fremden Discord-Server automatisch oder verdeckt aus."
   });
@@ -8653,7 +9252,7 @@ app.get("/api/alert-sanity/status", (req, res) => {
   }));
   res.json({
     ok: true,
-    version: "10.46-strict-rating-feed",
+    version: "10.47-decision-performance-lab",
     blockedNow: blocked.length,
     thresholds: {
       livePriceDiffPct: ALERT_SANITY_RECHECK_DIFF_PCT,
@@ -8669,7 +9268,7 @@ app.get("/api/buy-guard/status", (req, res) => {
   res.json({
     ok: true,
     enabled: true,
-    version: "10.46-strict-rating-feed",
+    version: "10.47-decision-performance-lab",
     rules: {
       duplicateShortHorizonsCountAsOne: true,
       requiredRecoveryCycles: STRICT_BUY_RECOVERY_CYCLES,
@@ -8702,7 +9301,7 @@ app.get("/api/leak-impact/status", async (req, res) => {
       GROUP BY s.source ORDER BY COUNT(DISTINCT i.signal_id) DESC, s.source ASC
     `);
     return res.json({
-      ok: true, enabled: true, version: "10.46-strict-rating-feed", horizonsMinutes: TRADER_MARKET_IMPACT_HORIZONS,
+      ok: true, enabled: true, version: "10.47-decision-performance-lab", horizonsMinutes: TRADER_MARKET_IMPACT_HORIZONS,
       sourceSummary: sourceSummary.rows.map(row => ({ source: row.source, events: Number(row.events || 0), evaluatedPoints: Number(row.evaluated_points || 0), avgAbsMarketMovePct: Number(row.avg_abs_market_move || 0), avgMarketMovePct: Number(row.avg_market_move || 0) })),
       recent: recent.rows.map(row => ({ signalId: row.signal_id, source: row.source, channel: row.source_channel || null, category: row.category, horizonMinutes: Number(row.horizon_minutes), marketMedianChangePct: Number(row.market_median_change_pct), strongestRating: row.strongest_rating == null ? null : Number(row.strongest_rating), strongestRatingChangePct: row.strongest_rating_change_pct == null ? null : Number(row.strongest_rating_change_pct), affectedRatings: row.affected_ratings || [], direction: row.direction, sourceEventAt: row.source_event_at, evaluatedAt: row.evaluated_at, message: String(row.message || "").slice(0, 500) })),
       note: "Leak/Content-Events loesen keinen Kauf aus. Der Brain misst zuerst, welche Rating-Segmente sich nach 15m/1h/6h/24h real bewegen."
@@ -8746,7 +9345,7 @@ app.get("/api/market-knowledge/status", async (req, res) => {
     return res.json({
       ok: true,
       enabled: true,
-      version: "10.46-strict-rating-feed",
+      version: "10.47-decision-performance-lab",
       policy: {
         hypothesesAreNotTruth: true,
         minimumSamplesBeforeInfluence: MARKET_KNOWLEDGE_MIN_SAMPLES,
@@ -8815,7 +9414,7 @@ app.get("/api/trader-reliability/status", async (req, res) => {
 
     return res.json({
       enabled: true,
-      version: "10.46-strict-rating-feed",
+      version: "10.47-decision-performance-lab",
       gameYear: GAME_YEAR,
       method: {
         priorAccuracy: TRADER_RELIABILITY_PRIOR_ACCURACY,
@@ -8874,7 +9473,7 @@ app.get("/api/trader-reliability/status", async (req, res) => {
 app.get("/api/trader-confluence/status", (req, res) => {
   res.json({
     enabled: DISCORD_CONFIGURED && dbEnabled,
-    version: "10.46-strict-rating-feed",
+    version: "10.47-decision-performance-lab",
     minCardConfidence: DISCORD_TRADER_CONFLUENCE_MIN_CONFIDENCE,
     minRatingConfidence: DISCORD_TRADER_CONFLUENCE_MIN_RATING_CONFIDENCE,
     minTraderReliability: DISCORD_TRADER_CONFLUENCE_MIN_RELIABILITY,
@@ -8907,7 +9506,7 @@ app.get("/api/trader-confluence/status", (req, res) => {
 app.get("/api/discord-rating-mode/status", (req, res) => {
   res.json({
     ok: true,
-    version: "10.46-strict-rating-feed",
+    version: "10.47-decision-performance-lab",
     ratingFirst: DISCORD_RATING_FIRST_BASE_ALERTS,
     strictRatingFeed: true,
     normalPlayerAlerts: false,
@@ -9082,7 +9681,7 @@ app.get("/api/intensive-watchlist", async (req, res) => {
 
     res.json({
       ok: true,
-      version: "10.46-strict-rating-feed",
+      version: "10.47-decision-performance-lab",
       count: items.length,
       settings: {
         moveAlertPct: INTENSIVE_WATCH_MOVE_PCT,
@@ -9195,7 +9794,7 @@ app.get("/api/trading", async (req, res) => {
 
     res.json({
       ok: true,
-      version: "10.46-strict-rating-feed",
+      version: "10.47-decision-performance-lab",
       refreshSeconds: 60,
       dbEnabled,
       sourceHealth: health,
@@ -9276,7 +9875,7 @@ app.get("/api/processing-health", (req, res) => {
   const health = processingHealthSnapshot();
   res.status(health.healthy ? 200 : 503).json({
     ok: health.healthy,
-    version: "10.46-strict-rating-feed",
+    version: "10.47-decision-performance-lab",
     gameYear: GAME_YEAR,
     processingHealth: health,
     note: "DB-, Brain- oder Discord-Fehler werden getrennt von FUT.GG-Quellfehlern bewertet und können den Source Health Guard nicht mehr fälschlich in Quarantäne schicken."
@@ -9287,7 +9886,7 @@ app.get("/api/source-health", (req, res) => {
   const health = sourceHealthSnapshot();
   res.status(health.status === "UNHEALTHY" ? 503 : 200).json({
     ok: health.status !== "UNHEALTHY",
-    version: "10.46-strict-rating-feed",
+    version: "10.47-decision-performance-lab",
     gameYear: GAME_YEAR,
     refreshSeconds: 60,
     source: "FUT.GG PS5 bulk prices",
@@ -9307,7 +9906,7 @@ app.get("/api/futbin/status", (req, res) => {
 
   res.json({
     ok: true,
-    version: "10.46-strict-rating-feed",
+    version: "10.47-decision-performance-lab",
     gameYear: GAME_YEAR,
     configured: Boolean(FUTBIN_AUTHORIZED_FEED_URL || FUTBIN_PARSE_API_KEY),
     status: latestFutbinStatus,
@@ -9348,7 +9947,7 @@ app.get("/api/futbin/status", (req, res) => {
 app.get("/api/market-context", (req, res) => {
   res.json({
     ok: true,
-    version: "10.46-strict-rating-feed",
+    version: "10.47-decision-performance-lab",
     gameYear: GAME_YEAR,
     refreshSeconds: 60,
     context: latestMarketContext,
@@ -9359,7 +9958,7 @@ app.get("/api/market-context", (req, res) => {
 app.get("/api/trader-brain/status", (req, res) => {
   res.json({
     ok: true,
-    version: "10.46-strict-rating-feed",
+    version: "10.47-decision-performance-lab",
     gameYear: GAME_YEAR,
     marketProfile: marketProfile(),
     marketContext: latestMarketContext,
@@ -9369,7 +9968,7 @@ app.get("/api/trader-brain/status", (req, res) => {
     lastBrainError,
     lastGeminiCandidate,
     learning: {
-      version: "10.46-strict-rating-feed",
+      version: "10.47-decision-performance-lab",
       totalMatureDecisions: brainLearningCache.totalMatureDecisions,
       rawMatureDecisions: brainLearningCache.rawMatureDecisions,
       uniqueLearningEpisodes: brainLearningCache.uniqueLearningEpisodes,
@@ -9390,7 +9989,7 @@ app.get("/api/trader-brain/learning/status", async (req, res) => {
     const cache = await loadBrainLearningProfiles(true);
     return res.json({
       enabled: true,
-      version: "10.46-strict-rating-feed",
+      version: "10.47-decision-performance-lab",
       method: {
         windowDays: BRAIN_LEARNING_WINDOW_DAYS,
         priorAccuracy: BRAIN_LEARNING_PRIOR_ACCURACY,
@@ -9422,6 +10021,21 @@ app.get("/api/trader-brain/learning/status", async (req, res) => {
     });
   } catch (error) {
     return res.status(500).json({ enabled: false, error: String(error) });
+  }
+});
+
+app.get("/api/trader-brain/performance/status", async (req, res) => {
+  try {
+    await loadDecisionPerformanceProfiles(true);
+    const limit = Number(req.query.limit || 500);
+    res.json(await buildDecisionPerformanceScorecard(limit));
+  } catch (error) {
+    res.status(500).json({
+      ok: false,
+      enabled: dbEnabled,
+      version: "10.47-decision-performance-lab",
+      error: String(error)
+    });
   }
 });
 
@@ -9461,9 +10075,25 @@ app.get("/api/trader-brain/feedback/history", async (req, res) => {
         e.price_after_24h,
         e.roi_5m,
         e.roi_15m,
+        e.roi_30m,
         e.roi_1h,
+        e.roi_3h,
         e.roi_6h,
         e.roi_24h,
+        e.net_roi_5m,
+        e.net_roi_15m,
+        e.net_roi_30m,
+        e.net_roi_1h,
+        e.net_roi_3h,
+        e.net_roi_6h,
+        e.net_roi_24h,
+        e.best_net_roi,
+        e.worst_move_pct,
+        e.missed_entry,
+        e.false_buy,
+        e.sell_timing_score,
+        e.outcome_class,
+        e.confidence_error,
         e.was_correct,
         e.outcome_score,
         e.notes
@@ -10581,7 +11211,7 @@ httpServer = app.listen(
   port,
   () => {
     console.log(
-      `FC Trading Intelligence v10.46 Rating Only Hard Gate (FC${GAME_YEAR}) running on ${port}`
+      `FC Trading Intelligence v10.47 Rating Only Hard Gate (FC${GAME_YEAR}) running on ${port}`
     );
 
     startMonitoring();
