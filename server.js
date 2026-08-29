@@ -666,6 +666,15 @@ function classifyCard(card) {
   return "Special";
 }
 
+function futggItemIdFromUrl(value) {
+  const url = String(value || "");
+  // FUT.GG card URLs end in /<gameYear>-<itemId>/ .
+  // Transferkarten können denselben Spieler haben, aber eine neue Item-ID.
+  const match = url.match(/\/\d{2}-(\d+)\/?(?:[?#].*)?$/);
+  const itemId = match ? Number(match[1]) : NaN;
+  return Number.isFinite(itemId) && itemId > 0 ? itemId : null;
+}
+
 async function collectAllCardsForRating(rating, force = false) {
   const cached = cardCache.get(rating);
 
@@ -709,30 +718,60 @@ async function collectAllCardsForRating(rating, force = false) {
       let added = 0;
 
       for (const p of rows) {
-        const key = p.eaId ?? p.id ?? p.url;
+        const absoluteUrl = p.url ? new URL(p.url, "https://www.fut.gg").href : null;
+        const urlItemId = futggItemIdFromUrl(absoluteUrl);
 
+        // WICHTIG: nicht nur nach Spieler-ID deduplizieren.
+        // Nach Transfers kann derselbe Spieler zwei handelbare Rare-Items besitzen
+        // (z.B. alter Verein + neuer Verein). FUT.GG trennt sie über die Item-ID
+        // im Karten-URL.
+        const uniqueItemId =
+          urlItemId ??
+          (Number.isFinite(Number(p.itemId)) ? Number(p.itemId) : null) ??
+          (Number.isFinite(Number(p.resourceId)) ? Number(p.resourceId) : null) ??
+          (Number.isFinite(Number(p.eaId)) ? Number(p.eaId) : null) ??
+          (Number.isFinite(Number(p.id)) ? Number(p.id) : null);
+
+        const key = uniqueItemId ?? absoluteUrl;
         if (key == null || seen.has(String(key))) continue;
 
         seen.add(String(key));
         added++;
 
         const card = {
-          id: Number.isFinite(p.id) ? p.id : null,
-          eaId: Number.isFinite(p.eaId) ? p.eaId : null,
-          overall: Number.isFinite(p.overall) ? p.overall : rating,
+          id: Number.isFinite(Number(p.id)) ? Number(p.id) : null,
+          // eaId bleibt im restlichen Brain die eindeutige Markt-/Item-ID.
+          // Bei Transferkarten bevorzugen wir deshalb die ID aus dem FUT.GG-URL.
+          eaId: Number.isFinite(Number(uniqueItemId)) ? Number(uniqueItemId) : null,
+          sourceEaId: Number.isFinite(Number(p.eaId)) ? Number(p.eaId) : null,
+          itemId: Number.isFinite(Number(uniqueItemId)) ? Number(uniqueItemId) : null,
+          overall: Number.isFinite(Number(p.overall)) ? Number(p.overall) : rating,
           name:
             p.commonName ||
             p.cardName ||
             [p.firstName, p.lastName].filter(Boolean).join(" ") ||
             null,
           cardName: p.cardName ?? null,
-          rarityName: p.rarityName ?? null,
-          rarityGroupName: p.rarityGroupName ?? null,
+          rarityName:
+            p.rarityName ??
+            p.rarity?.name ??
+            p.rarity?.label ??
+            null,
+          rarityGroupName:
+            p.rarityGroupName ??
+            p.rarityGroup?.name ??
+            p.rarity?.groupName ??
+            null,
+          gender:
+            p.gender?.name ??
+            p.genderName ??
+            p.gender ??
+            null,
           position: p.position ?? null,
           club: p.club?.name ?? p.uniqueClub?.name ?? null,
           nation: p.nation?.name ?? null,
           league: p.league?.name ?? null,
-          url: p.url ? new URL(p.url, "https://www.fut.gg").href : null,
+          url: absoluteUrl,
           slug: p.slug ?? null
         };
 
@@ -768,6 +807,94 @@ async function collectAllCardsForRating(rating, force = false) {
   }
 }
 
+
+async function collectRatingGenderSupplements(rating) {
+  const targetRating = Number(rating);
+  if (!Number.isFinite(targetRating)) return [];
+
+  // FUT.GG exposes gender as a filter in its player UI. The exact API value has
+  // changed before, so the manual rating-list lookup tries a few harmless variants
+  // and merges whatever FUT.GG accepts. Unknown query parameters simply yield the
+  // normal result and are deduplicated below.
+  const genderVariants = [
+    "gender=female",
+    "gender=women",
+    "gender=1",
+    "gender=2"
+  ];
+
+  const results = await mapLimit(genderVariants, 2, async variant => {
+    const url =
+      `https://www.fut.gg/api/fut/players/v2/${GAME_YEAR}/` +
+      `?overall__gte=${targetRating}&overall__lte=${targetRating}` +
+      `&sorts=current_price&${variant}`;
+
+    try {
+      const json = await fetchJson(url);
+      return Array.isArray(json?.data) ? json.data : [];
+    } catch (error) {
+      return [];
+    }
+  });
+
+  const cards = [];
+  const seen = new Set();
+
+  for (const rows of results) {
+    for (const p of rows || []) {
+      const absoluteUrl = p.url ? new URL(p.url, "https://www.fut.gg").href : null;
+      const urlItemId = futggItemIdFromUrl(absoluteUrl);
+      const uniqueItemId =
+        urlItemId ??
+        (Number.isFinite(Number(p.itemId)) ? Number(p.itemId) : null) ??
+        (Number.isFinite(Number(p.resourceId)) ? Number(p.resourceId) : null) ??
+        (Number.isFinite(Number(p.eaId)) ? Number(p.eaId) : null) ??
+        (Number.isFinite(Number(p.id)) ? Number(p.id) : null);
+
+      if (!Number.isFinite(Number(uniqueItemId))) continue;
+      const key = String(uniqueItemId);
+      if (seen.has(key)) continue;
+      seen.add(key);
+
+      const card = {
+        id: Number.isFinite(Number(p.id)) ? Number(p.id) : null,
+        eaId: Number(uniqueItemId),
+        sourceEaId: Number.isFinite(Number(p.eaId)) ? Number(p.eaId) : null,
+        itemId: Number(uniqueItemId),
+        overall: Number.isFinite(Number(p.overall)) ? Number(p.overall) : targetRating,
+        name:
+          p.commonName ||
+          p.cardName ||
+          [p.firstName, p.lastName].filter(Boolean).join(" ") ||
+          null,
+        cardName: p.cardName ?? null,
+        rarityName:
+          p.rarityName ??
+          p.rarity?.name ??
+          p.rarity?.label ??
+          null,
+        rarityGroupName:
+          p.rarityGroupName ??
+          p.rarityGroup?.name ??
+          p.rarity?.groupName ??
+          null,
+        position: p.position ?? null,
+        club: p.club?.name ?? p.uniqueClub?.name ?? null,
+        nation: p.nation?.name ?? null,
+        league: p.league?.name ?? null,
+        gender: p.gender?.name ?? p.genderName ?? p.gender ?? null,
+        url: absoluteUrl,
+        slug: p.slug ?? null
+      };
+
+      card.cardType = classifyCard(card);
+      cards.push(card);
+    }
+  }
+
+  return cards;
+}
+
 async function ensureUniverse(force = false) {
   if (
     !force &&
@@ -798,14 +925,22 @@ async function ensureUniverse(force = false) {
   const seen = new Set();
 
   for (const card of all) {
-    if (!Number.isFinite(card.eaId)) continue;
+    const uniqueId =
+      (Number.isFinite(Number(card.itemId)) ? Number(card.itemId) : null) ??
+      futggItemIdFromUrl(card.url) ??
+      (Number.isFinite(Number(card.eaId)) ? Number(card.eaId) : null);
 
-    const key = String(card.eaId);
+    if (!Number.isFinite(Number(uniqueId))) continue;
 
+    const key = String(uniqueId);
     if (seen.has(key)) continue;
 
     seen.add(key);
-    deduped.push(card);
+    deduped.push({
+      ...card,
+      eaId: Number(uniqueId),
+      itemId: Number(uniqueId)
+    });
   }
 
   universe = deduped;
@@ -905,14 +1040,31 @@ function currentPricedCards(cards, bulk) {
   const rows = [];
 
   for (const card of cards) {
-    const priceRow = bulk.map.get(card.eaId);
+    const candidates = [
+      Number(card.itemId),
+      Number(card.eaId),
+      Number(card.sourceEaId),
+      Number(card.id)
+    ].filter(value => Number.isFinite(value) && value > 0);
+
+    let priceRow = null;
+    let priceKey = null;
+    for (const candidate of [...new Set(candidates)]) {
+      const hit = bulk.map.get(candidate);
+      if (hit && Number.isFinite(hit.price)) {
+        priceRow = hit;
+        priceKey = candidate;
+        break;
+      }
+    }
 
     if (!priceRow || !Number.isFinite(priceRow.price)) continue;
 
     rows.push({
       ...card,
       price: priceRow.price,
-      priceStatusCode: priceRow.statusCode
+      priceStatusCode: priceRow.statusCode,
+      priceLookupId: priceKey
     });
   }
 
@@ -2288,38 +2440,56 @@ function ratingPlayerListOpenComponents(stat) {
 
 async function ratingPlayerListRows(rating) {
   const targetRating = Number(rating);
-  let rows = (latestTradingRows || [])
-    .filter(row =>
-      row?.cardType === "Base Rare" &&
-      Number(row.overall) === targetRating &&
-      Number.isFinite(Number(row.price)) &&
-      Number(row.price) > 0
-    );
 
-  // Falls der "sichere" Trading-Snapshot gerade leer/kleiner ist, die Liste
-  // direkt aus der gecachten FUT.GG-Kartenwelt + Bulk-Preisen aufbauen.
-  // So kann ein gültiger Rating-Alert nicht mehr in einer leeren Spieler-Liste enden.
-  if (!rows.length) {
-    try {
-      const [cards, bulk] = await Promise.all([
-        ensureUniverse(false),
-        loadBulkPs5Prices(false)
-      ]);
-      rows = currentPricedCards(cards, bulk)
-        .filter(row =>
-          row?.cardType === "Base Rare" &&
-          Number(row.overall) === targetRating &&
-          Number.isFinite(Number(row.price)) &&
-          Number(row.price) > 0
-        );
-    } catch (error) {
-      console.error("Rating player list fallback error:", error);
+  // Die private Liste soll vollständiger sein als der öffentliche Alert-Snapshot.
+  // Deshalb mehrere Quellen zusammenführen statt nur dann zu fallen backen, wenn
+  // latestTradingRows komplett leer ist. Das behebt z.B. fehlende Liga-F-Karten.
+  const merged = new Map();
+
+  const addRows = rows => {
+    for (const row of rows || []) {
+      if (
+        row?.cardType !== "Base Rare" ||
+        Number(row.overall) !== targetRating ||
+        !Number.isFinite(Number(row.price)) ||
+        Number(row.price) <= 0
+      ) {
+        continue;
+      }
+
+      const itemId =
+        (Number.isFinite(Number(row.itemId)) ? Number(row.itemId) : null) ??
+        futggItemIdFromUrl(row.url) ??
+        (Number.isFinite(Number(row.eaId)) ? Number(row.eaId) : null);
+
+      if (!Number.isFinite(Number(itemId))) continue;
+
+      merged.set(String(itemId), {
+        ...row,
+        eaId: Number(itemId),
+        itemId: Number(itemId)
+      });
     }
+  };
+
+  addRows(latestTradingRows || []);
+
+  try {
+    const [cards, supplements, bulk] = await Promise.all([
+      ensureUniverse(false),
+      collectRatingGenderSupplements(targetRating),
+      loadBulkPs5Prices(false)
+    ]);
+
+    addRows(currentPricedCards(cards, bulk));
+    addRows(currentPricedCards(supplements, bulk));
+  } catch (error) {
+    console.error("Rating player list merged fallback error:", error);
   }
 
   const intensiveWatches = await getIntensiveWatchlist().catch(() => new Map());
 
-  return rows
+  return Array.from(merged.values())
     .map(row => ({
       ...row,
       intensiveWatch: intensiveWatches.has(String(row.eaId))
@@ -2341,7 +2511,9 @@ async function buildRatingPlayerListPayload(rating, page = 0) {
 
   const description = slice.length
     ? slice.map((row, index) => {
-        const name = String(row.name || `EA ${row.eaId}`);
+        const baseName = String(row.name || `EA ${row.eaId}`);
+        const duplicateName = rows.filter(item => String(item.name || "") === String(row.name || "")).length > 1;
+        const name = duplicateName && row.club ? `${baseName} (${row.club})` : baseName;
         const label = row.url ? `[${name}](${row.url})` : name;
         const watch = row.intensiveWatch ? " ⭐ **INTENSIV**" : "";
         return `${start + index + 1}. ${label} • **${discordNumber(Number(row.price))} Coins**${watch}`;
@@ -2361,11 +2533,23 @@ async function buildRatingPlayerListPayload(rating, page = 0) {
         placeholder: "⭐ Spieler intensiv überwachen",
         min_values: 1,
         max_values: 1,
-        options: slice.slice(0, 25).map(row => ({
-          label: String(row.name || `EA ${row.eaId}`).slice(0, 100),
-          value: String(row.eaId),
-          description: `${discordNumber(Number(row.price))} Coins${row.intensiveWatch ? " • bereits intensiv" : ""}`.slice(0, 100)
-        }))
+        options: [
+          {
+            label: `⭐ ALLE ${rating}er intensiv überwachen`.slice(0, 100),
+            value: "__ALL__",
+            description: `Alle ${rows.length} Spieler dieses Ratings überwachen`.slice(0, 100)
+          },
+          ...slice.slice(0, 24).map(row => {
+            const baseName = String(row.name || `EA ${row.eaId}`);
+            const duplicateName = rows.filter(item => String(item.name || "") === String(row.name || "")).length > 1;
+            const label = duplicateName && row.club ? `${baseName} (${row.club})` : baseName;
+            return {
+              label: label.slice(0, 100),
+              value: String(row.eaId),
+              description: `${discordNumber(Number(row.price))} Coins${row.intensiveWatch ? " • bereits intensiv" : ""}`.slice(0, 100)
+            };
+          })
+        ]
       }]
     });
   }
@@ -2388,7 +2572,7 @@ async function buildRatingPlayerListPayload(rating, page = 0) {
         { name: "Rating-Preis", value: Number.isFinite(referencePrice) ? `${discordNumber(referencePrice)} Coins` : "-", inline: true },
         { name: "Spieler", value: String(rows.length), inline: true },
         { name: "Seite", value: `${safePage + 1}/${totalPages}`, inline: true },
-        { name: "Intensiv", value: "Spieler unten auswählen. ⭐ markiert bereits überwachte Karten.", inline: false }
+        { name: "Intensiv", value: "Einzelnen Spieler oder ⭐ ALLE auswählen. ⭐ markiert bereits überwachte Karten.", inline: false }
       ],
       footer: { text: `FC Trader Brain • nur für dich sichtbar • FC${GAME_YEAR}` },
       timestamp: new Date().toISOString()
@@ -3051,6 +3235,49 @@ async function handleDiscordButtonInteraction(interaction) {
     try {
       // Sofort bestaetigen, dann DB/Watch speichern.
       await interaction.deferUpdate();
+
+      if (eaId === "__ALL__") {
+        const allRows = await ratingPlayerListRows(rating);
+        if (!allRows.length) {
+          await interaction.followUp({
+            content: `⚠️ Für ${rating}er sind gerade keine gültigen Marktpreise verfügbar.`,
+            flags: 64
+          }).catch(() => {});
+          return;
+        }
+
+        const before = await getIntensiveWatchlist();
+        let added = 0;
+        let already = 0;
+        let failed = 0;
+
+        await mapLimit(allRows, 4, async row => {
+          try {
+            const key = String(row.eaId);
+            if (before.has(key)) {
+              already += 1;
+              return;
+            }
+            await saveIntensiveWatch(row, interaction.user?.id || null);
+            added += 1;
+          } catch (error) {
+            failed += 1;
+          }
+        });
+
+        await interaction.editReply(
+          await buildRatingPlayerListPayload(rating, page)
+        ).catch(() => {});
+
+        await interaction.followUp({
+          content:
+            `⭐ **${rating}ER KOMPLETT INTENSIV** • ${added} neu aktiviert` +
+            `${already ? ` • ${already} bereits aktiv` : ""}` +
+            `${failed ? ` • ${failed} konnten nicht aktiviert werden` : ""}.`,
+          flags: 64
+        }).catch(() => {});
+        return;
+      }
 
       if (!/^\d+$/.test(eaId)) {
         await interaction.followUp({
@@ -4889,7 +5116,7 @@ async function sendDiscordStartupMessage() {
       alertKey,
       alertType: "system",
       action: "CONNECTED",
-      fingerprint: "v10.48"
+      fingerprint: "v10.50"
     });
   } catch (error) {
     lastDiscordError = String(error);
@@ -7624,7 +7851,7 @@ async function buildDecisionPerformanceScorecard(limit = 500) {
   return {
     ok: true,
     enabled: true,
-    version: "10.48-rating-list-intensive",
+    version: "10.50-rating-list-all-watch",
     sampleSize: total,
     scorecard: {
       accuracy: total ? Number(((wins / total) * 100).toFixed(2)) : null,
@@ -8921,7 +9148,7 @@ app.get("/", (req, res) => {
   res.json({
     online: true,
     service: "FC Trading Intelligence",
-    version: "10.48-rating-list-intensive",
+    version: "10.50-rating-list-all-watch",
     gameYear: GAME_YEAR,
     marketProfile: marketProfile(),
     refreshSeconds: 60,
@@ -9049,7 +9276,7 @@ app.get("/api/readiness", (req, res) => {
   const readiness = runtimeReadinessSnapshot();
   res.status(readiness.ready ? 200 : 503).json({
     ok: readiness.ready,
-    version: "10.48-rating-list-intensive",
+    version: "10.50-rating-list-all-watch",
     gameYear: GAME_YEAR,
     readiness,
     note: "Dieser Endpunkt ist absichtlich strenger als /health. /health zeigt, ob der Webdienst lebt; /api/readiness zeigt, ob Marktquelle, Monitoring, Datenbank, Discord und Trader Brain wirklich produktionsbereit sind."
@@ -9059,7 +9286,7 @@ app.get("/api/readiness", (req, res) => {
 app.get("/health", (req, res) => {
   res.json({
     ok: true,
-    version: "10.48-rating-list-intensive",
+    version: "10.50-rating-list-all-watch",
     gameYear: GAME_YEAR,
     marketProfile: marketProfile(),
     marketContext: latestMarketContext,
@@ -9353,7 +9580,7 @@ app.post("/api/trader-signals/ingest", async (req, res) => {
 
 app.get("/api/trader-sources/status", (req, res) => {
   res.json({
-    ok: true, version: "10.48-rating-list-intensive", mode: "forwarded-or-authorized-only", automaticForeignDiscordReading: false,
+    ok: true, version: "10.50-rating-list-all-watch", mode: "forwarded-or-authorized-only", automaticForeignDiscordReading: false,
     sources: CURATED_TRADER_SOURCES.map(source => ({ id: source.id, name: source.displayName, aliases: source.aliases, channels: source.channels.map(channel => ({ channel: channel.name, type: channel.type, category: channel.category, defaultCall: channel.defaultCall, reliabilityWeight: Number(channel.weight || 1) })) })),
     note: "Die Registry normalisiert weitergeleitete/erlaubte Signale. Sie liest keine fremden Discord-Server automatisch oder verdeckt aus."
   });
@@ -9374,7 +9601,7 @@ app.get("/api/alert-sanity/status", (req, res) => {
   }));
   res.json({
     ok: true,
-    version: "10.48-rating-list-intensive",
+    version: "10.50-rating-list-all-watch",
     blockedNow: blocked.length,
     thresholds: {
       livePriceDiffPct: ALERT_SANITY_RECHECK_DIFF_PCT,
@@ -9390,7 +9617,7 @@ app.get("/api/buy-guard/status", (req, res) => {
   res.json({
     ok: true,
     enabled: true,
-    version: "10.48-rating-list-intensive",
+    version: "10.50-rating-list-all-watch",
     rules: {
       duplicateShortHorizonsCountAsOne: true,
       requiredRecoveryCycles: STRICT_BUY_RECOVERY_CYCLES,
@@ -9423,7 +9650,7 @@ app.get("/api/leak-impact/status", async (req, res) => {
       GROUP BY s.source ORDER BY COUNT(DISTINCT i.signal_id) DESC, s.source ASC
     `);
     return res.json({
-      ok: true, enabled: true, version: "10.48-rating-list-intensive", horizonsMinutes: TRADER_MARKET_IMPACT_HORIZONS,
+      ok: true, enabled: true, version: "10.50-rating-list-all-watch", horizonsMinutes: TRADER_MARKET_IMPACT_HORIZONS,
       sourceSummary: sourceSummary.rows.map(row => ({ source: row.source, events: Number(row.events || 0), evaluatedPoints: Number(row.evaluated_points || 0), avgAbsMarketMovePct: Number(row.avg_abs_market_move || 0), avgMarketMovePct: Number(row.avg_market_move || 0) })),
       recent: recent.rows.map(row => ({ signalId: row.signal_id, source: row.source, channel: row.source_channel || null, category: row.category, horizonMinutes: Number(row.horizon_minutes), marketMedianChangePct: Number(row.market_median_change_pct), strongestRating: row.strongest_rating == null ? null : Number(row.strongest_rating), strongestRatingChangePct: row.strongest_rating_change_pct == null ? null : Number(row.strongest_rating_change_pct), affectedRatings: row.affected_ratings || [], direction: row.direction, sourceEventAt: row.source_event_at, evaluatedAt: row.evaluated_at, message: String(row.message || "").slice(0, 500) })),
       note: "Leak/Content-Events loesen keinen Kauf aus. Der Brain misst zuerst, welche Rating-Segmente sich nach 15m/1h/6h/24h real bewegen."
@@ -9467,7 +9694,7 @@ app.get("/api/market-knowledge/status", async (req, res) => {
     return res.json({
       ok: true,
       enabled: true,
-      version: "10.48-rating-list-intensive",
+      version: "10.50-rating-list-all-watch",
       policy: {
         hypothesesAreNotTruth: true,
         minimumSamplesBeforeInfluence: MARKET_KNOWLEDGE_MIN_SAMPLES,
@@ -9536,7 +9763,7 @@ app.get("/api/trader-reliability/status", async (req, res) => {
 
     return res.json({
       enabled: true,
-      version: "10.48-rating-list-intensive",
+      version: "10.50-rating-list-all-watch",
       gameYear: GAME_YEAR,
       method: {
         priorAccuracy: TRADER_RELIABILITY_PRIOR_ACCURACY,
@@ -9595,7 +9822,7 @@ app.get("/api/trader-reliability/status", async (req, res) => {
 app.get("/api/trader-confluence/status", (req, res) => {
   res.json({
     enabled: DISCORD_CONFIGURED && dbEnabled,
-    version: "10.48-rating-list-intensive",
+    version: "10.50-rating-list-all-watch",
     minCardConfidence: DISCORD_TRADER_CONFLUENCE_MIN_CONFIDENCE,
     minRatingConfidence: DISCORD_TRADER_CONFLUENCE_MIN_RATING_CONFIDENCE,
     minTraderReliability: DISCORD_TRADER_CONFLUENCE_MIN_RELIABILITY,
@@ -9628,7 +9855,7 @@ app.get("/api/trader-confluence/status", (req, res) => {
 app.get("/api/discord-rating-mode/status", (req, res) => {
   res.json({
     ok: true,
-    version: "10.48-rating-list-intensive",
+    version: "10.50-rating-list-all-watch",
     ratingFirst: DISCORD_RATING_FIRST_BASE_ALERTS,
     strictRatingFeed: true,
     normalPlayerAlerts: false,
@@ -9638,12 +9865,13 @@ app.get("/api/discord-rating-mode/status", (req, res) => {
       enabled: true,
       button: "Spieler anzeigen",
       intensiveSelector: "Spieler intensiv überwachen",
+      intensiveAllOption: "ALLE Rating-Spieler intensiv überwachen",
       privateToClickingUser: true,
       pageSize: RATING_LIST_PAGE_SIZE
     },
     specialCardsRemainIndividual: false,
     traderPlayerConfluencePublic: false,
-    note: "Öffentlicher Feed bleibt Rating-only. In der privaten Spieler-Liste kann ein konkreter Spieler direkt für Intensive Watch ausgewählt werden; leere Listen nutzen einen FUT.GG-Bulk-Fallback."
+    note: "Öffentlicher Feed bleibt Rating-only. Die private Liste führt Männer- und Frauenkarten zusammen und bietet zusätzlich ALLE Rating-Spieler intensiv überwachen."
   });
 });
 
@@ -9804,7 +10032,7 @@ app.get("/api/intensive-watchlist", async (req, res) => {
 
     res.json({
       ok: true,
-      version: "10.48-rating-list-intensive",
+      version: "10.50-rating-list-all-watch",
       count: items.length,
       settings: {
         moveAlertPct: INTENSIVE_WATCH_MOVE_PCT,
@@ -9917,7 +10145,7 @@ app.get("/api/trading", async (req, res) => {
 
     res.json({
       ok: true,
-      version: "10.48-rating-list-intensive",
+      version: "10.50-rating-list-all-watch",
       refreshSeconds: 60,
       dbEnabled,
       sourceHealth: health,
@@ -9998,7 +10226,7 @@ app.get("/api/processing-health", (req, res) => {
   const health = processingHealthSnapshot();
   res.status(health.healthy ? 200 : 503).json({
     ok: health.healthy,
-    version: "10.48-rating-list-intensive",
+    version: "10.50-rating-list-all-watch",
     gameYear: GAME_YEAR,
     processingHealth: health,
     note: "DB-, Brain- oder Discord-Fehler werden getrennt von FUT.GG-Quellfehlern bewertet und können den Source Health Guard nicht mehr fälschlich in Quarantäne schicken."
@@ -10009,7 +10237,7 @@ app.get("/api/source-health", (req, res) => {
   const health = sourceHealthSnapshot();
   res.status(health.status === "UNHEALTHY" ? 503 : 200).json({
     ok: health.status !== "UNHEALTHY",
-    version: "10.48-rating-list-intensive",
+    version: "10.50-rating-list-all-watch",
     gameYear: GAME_YEAR,
     refreshSeconds: 60,
     source: "FUT.GG PS5 bulk prices",
@@ -10029,7 +10257,7 @@ app.get("/api/futbin/status", (req, res) => {
 
   res.json({
     ok: true,
-    version: "10.48-rating-list-intensive",
+    version: "10.50-rating-list-all-watch",
     gameYear: GAME_YEAR,
     configured: Boolean(FUTBIN_AUTHORIZED_FEED_URL || FUTBIN_PARSE_API_KEY),
     status: latestFutbinStatus,
@@ -10070,7 +10298,7 @@ app.get("/api/futbin/status", (req, res) => {
 app.get("/api/market-context", (req, res) => {
   res.json({
     ok: true,
-    version: "10.48-rating-list-intensive",
+    version: "10.50-rating-list-all-watch",
     gameYear: GAME_YEAR,
     refreshSeconds: 60,
     context: latestMarketContext,
@@ -10081,7 +10309,7 @@ app.get("/api/market-context", (req, res) => {
 app.get("/api/trader-brain/status", (req, res) => {
   res.json({
     ok: true,
-    version: "10.48-rating-list-intensive",
+    version: "10.50-rating-list-all-watch",
     gameYear: GAME_YEAR,
     marketProfile: marketProfile(),
     marketContext: latestMarketContext,
@@ -10091,7 +10319,7 @@ app.get("/api/trader-brain/status", (req, res) => {
     lastBrainError,
     lastGeminiCandidate,
     learning: {
-      version: "10.48-rating-list-intensive",
+      version: "10.50-rating-list-all-watch",
       totalMatureDecisions: brainLearningCache.totalMatureDecisions,
       rawMatureDecisions: brainLearningCache.rawMatureDecisions,
       uniqueLearningEpisodes: brainLearningCache.uniqueLearningEpisodes,
@@ -10112,7 +10340,7 @@ app.get("/api/trader-brain/learning/status", async (req, res) => {
     const cache = await loadBrainLearningProfiles(true);
     return res.json({
       enabled: true,
-      version: "10.48-rating-list-intensive",
+      version: "10.50-rating-list-all-watch",
       method: {
         windowDays: BRAIN_LEARNING_WINDOW_DAYS,
         priorAccuracy: BRAIN_LEARNING_PRIOR_ACCURACY,
@@ -10156,7 +10384,7 @@ app.get("/api/trader-brain/performance/status", async (req, res) => {
     res.status(500).json({
       ok: false,
       enabled: dbEnabled,
-      version: "10.48-rating-list-intensive",
+      version: "10.50-rating-list-all-watch",
       error: String(error)
     });
   }
