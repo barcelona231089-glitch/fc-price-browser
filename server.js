@@ -2865,36 +2865,41 @@ function ratingDiscordAlertCandidate(stat) {
   }
 
   if (stat.confidence < DISCORD_MIN_RATING_CONFIDENCE) return false;
-  return ["KAUFZONE", "STARK STEIGEND", "STARK FALLEND"].includes(stat.marketSignal);
+  return ["KAUFZONE", "VERKAUFSZONE", "STARK STEIGEND", "STARK FALLEND"].includes(stat.marketSignal);
 }
 
 function buildRatingDiscordPayload(stat) {
   const lowWatch = isLowWatchRating(stat.rating);
   const unusualMove = ratingUnusualMoveValue(stat);
-  const unusualMagnitude = Math.abs(unusualMove);
-  const emoji = lowWatch
-    ? "⚡"
-    : stat.marketSignal === "KAUFZONE"
-      ? "🟢"
-      : stat.marketSignal === "STARK FALLEND"
-        ? "🔻"
-        : "🚀";
+  const advice = String(stat.marketAdvice || "BEOBACHTEN");
+
+  let emoji = "📊";
+  if (lowWatch) emoji = "⚡";
+  else if (advice === "JETZT KAUFEN") emoji = "🟢";
+  else if (advice === "JETZT VERKAUFEN") emoji = "💰";
+  else if (advice.includes("WARTEN")) emoji = "⏳";
+  else if (advice.includes("NICHT")) emoji = "🚫";
+  else if (stat.marketSignal === "STARK STEIGEND") emoji = "🚀";
+  else if (stat.marketSignal === "STARK FALLEND") emoji = "🔻";
+
+  const actionTitle = lowWatch
+    ? `${emoji} ${stat.rating}ER RATING: ${discordPct(unusualMove)}`
+    : `${emoji} ${stat.rating}ER RATING: ${advice}`;
 
   return {
     embeds: [{
-      title: lowWatch
-        ? `${emoji} ${stat.rating}ER LOW-WATCH: ${discordPct(unusualMove)}`
-        : `${emoji} ${stat.rating}ER MARKT: ${stat.marketSignal}`,
+      title: actionTitle,
       description: lowWatch
         ? `FC${GAME_YEAR} Low-Rating-Watch: ungewöhnlich starke Bewegung erkannt. Normale Bewegungen unter ${MAIN_RATING_MIN} werden nicht alarmiert.`
         : String(stat.reason || "Rating-Markt-Signal erkannt."),
       fields: [
-        { name: "Rating-Aktion", value: String(stat.marketAdvice), inline: true },
+        { name: "Klare Aktion", value: advice, inline: true },
+        { name: "Marktsignal", value: String(stat.marketSignal || "NEUTRAL"), inline: true },
         { name: "Sicherheit", value: `${stat.confidence}%`, inline: true },
         { name: "Median", value: `${discordNumber(stat.medianPrice)} Coins`, inline: true },
-        { name: "5m / 15m / 1h", value: `${discordPct(stat.change5m)} / ${discordPct(stat.change15m)} / ${discordPct(stat.change1h)}`, inline: false },
+        { name: "1m / 5m / 15m / 1h", value: `${discordPct(stat.change1m)} / ${discordPct(stat.change5m)} / ${discordPct(stat.change15m)} / ${discordPct(stat.change1h)}`, inline: false },
         { name: "Steigen / Fallen (5m)", value: `${Number(stat.risingPct5m || 0).toFixed(1)}% / ${Number(stat.fallingPct5m || 0).toFixed(1)}%`, inline: true },
-        { name: "Nahe 24h-Tief", value: `${Number(stat.near24hLowPct || 0).toFixed(1)}%`, inline: true },
+        { name: "Nahe 24h-Tief / Hoch", value: `${Number(stat.near24hLowPct || 0).toFixed(1)}% / ${Number(stat.near24hHighPct || 0).toFixed(1)}%`, inline: true },
         ...(lowWatch
           ? [{
               name: "FC27 Low-Watch-Regel",
@@ -2903,7 +2908,7 @@ function buildRatingDiscordPayload(stat) {
             }]
           : [])
       ],
-      footer: { text: `FC Trader Brain • Rating-Markt Intelligence • FC${GAME_YEAR}` },
+      footer: { text: `FC Trader Brain • Rating Buy/Sell Intelligence • FC${GAME_YEAR}` },
       timestamp: new Date().toISOString()
     }]
   };
@@ -3816,7 +3821,7 @@ async function sendDiscordStartupMessage() {
           { name: "Kaufalarm ab", value: `${DISCORD_MIN_BUY_CONFIDENCE}% KI-Sicherheit`, inline: true },
           { name: "Spam-Schutz", value: `${Math.round(DISCORD_ALERT_COOLDOWN_MS / 60_000)} Min. Cooldown`, inline: true }
         ],
-        footer: { text: "FC Trading Intelligence v10.34" },
+        footer: { text: "FC Trading Intelligence v10.35" },
         timestamp: new Date().toISOString()
       }]
     });
@@ -3825,7 +3830,7 @@ async function sendDiscordStartupMessage() {
       alertKey,
       alertType: "system",
       action: "CONNECTED",
-      fingerprint: "v10.34"
+      fingerprint: "v10.35"
     });
   } catch (error) {
     lastDiscordError = String(error);
@@ -4651,12 +4656,37 @@ function buildRatingStats(rows) {
       card.change15m >= 1
     );
 
+    const nearHighCards = cards.filter(card =>
+      Number.isFinite(card.high24h) &&
+      card.high24h > 0 &&
+      Number.isFinite(card.price) &&
+      card.price >= card.high24h * 0.97
+    );
+
+    const coolingCards = cards.filter(card =>
+      (Number.isFinite(card.change1m) && card.change1m <= 0) ||
+      (
+        Number.isFinite(card.change5m) &&
+        Number.isFinite(card.change15m) &&
+        card.change15m >= 3 &&
+        card.change5m <= Math.max(0.5, card.change15m - 2)
+      )
+    );
+
     const nearLowPct = cards.length
       ? Number(((nearLowCards.length / cards.length) * 100).toFixed(1))
       : 0;
 
     const recoveryPct = cards.length
       ? Number(((recoveryCards.length / cards.length) * 100).toFixed(1))
+      : 0;
+
+    const nearHighPct = cards.length
+      ? Number(((nearHighCards.length / cards.length) * 100).toFixed(1))
+      : 0;
+
+    const coolingPct = cards.length
+      ? Number(((coolingCards.length / cards.length) * 100).toFixed(1))
       : 0;
 
     let trend = "neutral";
@@ -4691,6 +4721,24 @@ function buildRatingStats(rows) {
         `${w5m.fallingPct.toFixed(0)}% der ${rating}er fallen in 5m; ` +
         `Median-Bewegung ${w5m.medianMove.toFixed(2)}%. Breiter Abverkauf noch aktiv.`;
     } else if (
+      nearHighPct >= 40 &&
+      w15m.medianMove >= 3 &&
+      (
+        w1m.medianMove <= 0 ||
+        w5m.medianMove <= 0.5 ||
+        coolingPct >= 45
+      )
+    ) {
+      marketSignal = "VERKAUFSZONE";
+      marketAdvice = "JETZT VERKAUFEN";
+      confidence = Math.min(
+        95,
+        Math.round(78 + Math.min(10, nearHighPct / 8) + Math.min(7, Math.max(0, w15m.medianMove) / 2))
+      );
+      reason =
+        `${nearHighPct.toFixed(0)}% der ${rating}er liegen nahe ihrem 24h-Hoch; ` +
+        `${coolingPct.toFixed(0)}% zeigen abkühlendes Momentum. 15m-Median ${w15m.medianMove >= 0 ? "+" : ""}${w15m.medianMove.toFixed(2)}%. Gewinnmitnahme im Rating-Segment sinnvoll.`;
+    } else if (
       nearLowPct >= 50 &&
       recoveryPct >= 45 &&
       w5m.risingPct >= 50 &&
@@ -4699,7 +4747,7 @@ function buildRatingStats(rows) {
       w15m.medianMove <= 10
     ) {
       marketSignal = "KAUFZONE";
-      marketAdvice = "JETZT KAUFEN PRÜFEN";
+      marketAdvice = "JETZT KAUFEN";
       confidence = Math.min(
         95,
         Math.round(76 + Math.min(15, recoveryPct / 5))
@@ -4713,7 +4761,17 @@ function buildRatingStats(rows) {
     ) {
       marketSignal = "STARK STEIGEND";
 
-      if (w15m.medianMove >= 10) {
+      if (w15m.medianMove >= 10 && nearHighPct >= 40) {
+        marketSignal = "VERKAUFSZONE";
+        marketAdvice = "JETZT VERKAUFEN";
+        confidence = Math.min(
+          95,
+          Math.round(84 + Math.min(8, w5m.medianMove))
+        );
+        reason =
+          `${w5m.risingPct.toFixed(0)}% der ${rating}er steigen und ${nearHighPct.toFixed(0)}% liegen nahe dem 24h-Hoch; ` +
+          `15m-Median bereits +${w15m.medianMove.toFixed(2)}%. Rating-Segment ist stark ausgedehnt: Gewinnmitnahme bevorzugt.`;
+      } else if (w15m.medianMove >= 10) {
         marketAdvice = "NICHT HINTERHERKAUFEN";
         confidence = Math.min(
           95,
@@ -4784,7 +4842,9 @@ function buildRatingStats(rows) {
       fallingPct15m: w15m.fallingPct,
 
       near24hLowPct: nearLowPct,
+      near24hHighPct: nearHighPct,
       recoveryPct,
+      coolingPct,
       marketSignal,
       marketAdvice,
       confidence,
@@ -6550,7 +6610,7 @@ app.get("/", (req, res) => {
   res.json({
     online: true,
     service: "FC Trading Intelligence",
-    version: "10.34-discord-intensive-watch",
+    version: "10.35-rating-buy-sell-alerts",
     gameYear: GAME_YEAR,
     marketProfile: marketProfile(),
     refreshSeconds: 60,
@@ -6674,7 +6734,7 @@ app.get("/api/readiness", (req, res) => {
   const readiness = runtimeReadinessSnapshot();
   res.status(readiness.ready ? 200 : 503).json({
     ok: readiness.ready,
-    version: "10.34-discord-intensive-watch",
+    version: "10.35-rating-buy-sell-alerts",
     gameYear: GAME_YEAR,
     readiness,
     note: "Dieser Endpunkt ist absichtlich strenger als /health. /health zeigt, ob der Webdienst lebt; /api/readiness zeigt, ob Marktquelle, Monitoring, Datenbank, Discord und Trader Brain wirklich produktionsbereit sind."
@@ -6684,7 +6744,7 @@ app.get("/api/readiness", (req, res) => {
 app.get("/health", (req, res) => {
   res.json({
     ok: true,
-    version: "10.34-discord-intensive-watch",
+    version: "10.35-rating-buy-sell-alerts",
     gameYear: GAME_YEAR,
     marketProfile: marketProfile(),
     marketContext: latestMarketContext,
@@ -7007,7 +7067,7 @@ app.get("/api/trader-reliability/status", async (req, res) => {
 
     return res.json({
       enabled: true,
-      version: "10.34-discord-intensive-watch",
+      version: "10.35-rating-buy-sell-alerts",
       gameYear: GAME_YEAR,
       method: {
         priorAccuracy: TRADER_RELIABILITY_PRIOR_ACCURACY,
@@ -7066,7 +7126,7 @@ app.get("/api/trader-reliability/status", async (req, res) => {
 app.get("/api/trader-confluence/status", (req, res) => {
   res.json({
     enabled: DISCORD_CONFIGURED && dbEnabled,
-    version: "10.34-discord-intensive-watch",
+    version: "10.35-rating-buy-sell-alerts",
     minCardConfidence: DISCORD_TRADER_CONFLUENCE_MIN_CONFIDENCE,
     minRatingConfidence: DISCORD_TRADER_CONFLUENCE_MIN_RATING_CONFIDENCE,
     minTraderReliability: DISCORD_TRADER_CONFLUENCE_MIN_RELIABILITY,
@@ -7253,7 +7313,7 @@ app.get("/api/intensive-watchlist", async (req, res) => {
 
     res.json({
       ok: true,
-      version: "10.34-discord-intensive-watch",
+      version: "10.35-rating-buy-sell-alerts",
       count: items.length,
       settings: {
         moveAlertPct: INTENSIVE_WATCH_MOVE_PCT,
@@ -7366,7 +7426,7 @@ app.get("/api/trading", async (req, res) => {
 
     res.json({
       ok: true,
-      version: "10.34-discord-intensive-watch",
+      version: "10.35-rating-buy-sell-alerts",
       refreshSeconds: 60,
       dbEnabled,
       sourceHealth: health,
@@ -7447,7 +7507,7 @@ app.get("/api/processing-health", (req, res) => {
   const health = processingHealthSnapshot();
   res.status(health.healthy ? 200 : 503).json({
     ok: health.healthy,
-    version: "10.34-discord-intensive-watch",
+    version: "10.35-rating-buy-sell-alerts",
     gameYear: GAME_YEAR,
     processingHealth: health,
     note: "DB-, Brain- oder Discord-Fehler werden getrennt von FUT.GG-Quellfehlern bewertet und können den Source Health Guard nicht mehr fälschlich in Quarantäne schicken."
@@ -7458,7 +7518,7 @@ app.get("/api/source-health", (req, res) => {
   const health = sourceHealthSnapshot();
   res.status(health.status === "UNHEALTHY" ? 503 : 200).json({
     ok: health.status !== "UNHEALTHY",
-    version: "10.34-discord-intensive-watch",
+    version: "10.35-rating-buy-sell-alerts",
     gameYear: GAME_YEAR,
     refreshSeconds: 60,
     source: "FUT.GG PS5 bulk prices",
@@ -7478,7 +7538,7 @@ app.get("/api/futbin/status", (req, res) => {
 
   res.json({
     ok: true,
-    version: "10.34-discord-intensive-watch",
+    version: "10.35-rating-buy-sell-alerts",
     gameYear: GAME_YEAR,
     configured: Boolean(FUTBIN_AUTHORIZED_FEED_URL || FUTBIN_PARSE_API_KEY),
     status: latestFutbinStatus,
@@ -7519,7 +7579,7 @@ app.get("/api/futbin/status", (req, res) => {
 app.get("/api/market-context", (req, res) => {
   res.json({
     ok: true,
-    version: "10.34-discord-intensive-watch",
+    version: "10.35-rating-buy-sell-alerts",
     gameYear: GAME_YEAR,
     refreshSeconds: 60,
     context: latestMarketContext,
@@ -7530,7 +7590,7 @@ app.get("/api/market-context", (req, res) => {
 app.get("/api/trader-brain/status", (req, res) => {
   res.json({
     ok: true,
-    version: "10.34-discord-intensive-watch",
+    version: "10.35-rating-buy-sell-alerts",
     gameYear: GAME_YEAR,
     marketProfile: marketProfile(),
     marketContext: latestMarketContext,
@@ -7540,7 +7600,7 @@ app.get("/api/trader-brain/status", (req, res) => {
     lastBrainError,
     lastGeminiCandidate,
     learning: {
-      version: "10.34-discord-intensive-watch",
+      version: "10.35-rating-buy-sell-alerts",
       totalMatureDecisions: brainLearningCache.totalMatureDecisions,
       rawMatureDecisions: brainLearningCache.rawMatureDecisions,
       uniqueLearningEpisodes: brainLearningCache.uniqueLearningEpisodes,
@@ -7561,7 +7621,7 @@ app.get("/api/trader-brain/learning/status", async (req, res) => {
     const cache = await loadBrainLearningProfiles(true);
     return res.json({
       enabled: true,
-      version: "10.34-discord-intensive-watch",
+      version: "10.35-rating-buy-sell-alerts",
       method: {
         windowDays: BRAIN_LEARNING_WINDOW_DAYS,
         priorAccuracy: BRAIN_LEARNING_PRIOR_ACCURACY,
@@ -8752,7 +8812,7 @@ httpServer = app.listen(
   port,
   () => {
     console.log(
-      `FC Trading Intelligence v10.34 Discord Intensive Watch (FC${GAME_YEAR}) running on ${port}`
+      `FC Trading Intelligence v10.35 Rating Buy Sell Alerts (FC${GAME_YEAR}) running on ${port}`
     );
 
     startMonitoring();
