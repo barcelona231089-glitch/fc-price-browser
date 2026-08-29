@@ -335,7 +335,7 @@ for (const source of CURATED_TRADER_SOURCES) {
 
 const TRADER_MARKET_IMPACT_HORIZONS = [15, 60, 360, 1440];
 
-// v10.39: Discord intensive-watch interaction acknowledgement fix.
+// v10.40: Discord intensive-watch ACK + stale-alert fallback fix.
 // Keeps v10.38 Market Knowledge Learning and all previous features. Öffentliche Trading-Grundsätze werden
 // nicht als Wahrheit behandelt. Lernbare Regeln starten als Hypothesen und
 // dürfen erst nach genügend echten FC26-Beobachtungen die Entscheidung leicht
@@ -2740,6 +2740,81 @@ async function handleTraderSignalMessage(message) {
   }
 }
 
+async function resolveIntensiveWatchRow(eaId) {
+  const key = String(eaId || "");
+  if (!/^\d+$/.test(key)) return null;
+
+  const liveRow = latestTradingRows.find(item => String(item.eaId) === key);
+  if (liveRow) return { row: liveRow, source: "live" };
+
+  if (dbEnabled) {
+    try {
+      const result = await pool.query(`
+        SELECT
+          COALESCE(ps.price, d.initial_price)::int AS price,
+          d.player_name,
+          d.rating,
+          d.card_type,
+          d.action,
+          d.confidence,
+          ps.recorded_at AS price_recorded_at,
+          d.created_at AS decision_created_at
+        FROM (SELECT $1::bigint AS ea_id) x
+        LEFT JOIN fc_price_state ps ON ps.ea_id = x.ea_id
+        LEFT JOIN LATERAL (
+          SELECT player_name, rating, card_type, initial_price, action, confidence, created_at
+          FROM fc_trader_brain_decisions
+          WHERE ea_id = x.ea_id
+          ORDER BY created_at DESC
+          LIMIT 1
+        ) d ON TRUE
+        WHERE ps.price IS NOT NULL OR d.initial_price IS NOT NULL
+        LIMIT 1
+      `, [key]);
+
+      const saved = result.rows[0];
+      const price = Number(saved?.price);
+      if (saved && Number.isFinite(price) && price > 0) {
+        return {
+          source: "stored",
+          row: {
+            eaId: Number(key),
+            name: saved.player_name || `EA ${key}`,
+            overall: saved.rating == null ? null : Number(saved.rating),
+            cardType: saved.card_type || null,
+            type: saved.card_type || null,
+            price,
+            aiAction: saved.action || "BEOBACHTEN",
+            aiConfidence: saved.confidence == null ? null : Number(saved.confidence),
+            watchFallback: true,
+            watchPriceRecordedAt: saved.price_recorded_at || saved.decision_created_at || null
+          }
+        };
+      }
+    } catch (error) {
+      console.error("Intensive watch fallback lookup error:", error);
+    }
+  }
+
+  const previous = memoryBrainState.get(key);
+  const memoryPrice = Number(previous?.lastPrice);
+  if (previous && Number.isFinite(memoryPrice) && memoryPrice > 0) {
+    return {
+      source: "memory",
+      row: {
+        eaId: Number(key),
+        name: `EA ${key}`,
+        price: memoryPrice,
+        aiAction: previous.lastAction || "BEOBACHTEN",
+        aiConfidence: Number.isFinite(Number(previous.lastConfidence)) ? Number(previous.lastConfidence) : null,
+        watchFallback: true
+      }
+    };
+  }
+
+  return null;
+}
+
 async function handleDiscordButtonInteraction(interaction) {
   if (!interaction?.isButton?.()) return;
 
@@ -2764,22 +2839,27 @@ async function handleDiscordButtonInteraction(interaction) {
       return;
     }
 
-    const row = latestTradingRows.find(item => String(item.eaId) === String(eaId));
-    if (!row) {
+    const resolved = await resolveIntensiveWatchRow(eaId);
+    if (!resolved?.row) {
       await interaction.editReply({
-        content: "⚠️ Diese Karte ist im aktuellen sicheren Markt-Snapshot nicht verfügbar. Bitte beim nächsten Alert erneut versuchen."
+        content: "⚠️ Zu dieser Karte ist weder ein aktueller noch ein gespeicherter Marktpreis vorhanden. Beim nächsten Alert erneut versuchen."
       });
       return;
     }
 
+    const row = resolved.row;
     const before = await getIntensiveWatchlist();
     const already = before.has(String(eaId));
     const watch = await saveIntensiveWatch(row, interaction.user?.id || null);
 
+    const fallbackNote = resolved.source === "live"
+      ? ""
+      : " Die Karte ist gerade nicht im aktuellen sicheren Snapshot; die Überwachung ist trotzdem vorgemerkt und greift automatisch wieder, sobald sie im Markt-Snapshot auftaucht.";
+
     await interaction.editReply({
       content: already
-        ? `⭐ **${row.name}** wird bereits intensiv überwacht.`
-        : `⭐ **${row.name}** wird jetzt intensiv überwacht. Referenzpreis: **${discordNumber(watch?.startPrice || row.price)} Coins**. Ab jetzt bekommst du engere Folge-Updates nur für diese aktivierte Karte.`
+        ? `⭐ **${row.name}** wird bereits intensiv überwacht.${fallbackNote}`
+        : `⭐ **${row.name}** wird jetzt intensiv überwacht. Referenzpreis: **${discordNumber(watch?.startPrice || row.price)} Coins**.${fallbackNote} Ab jetzt bekommst du engere Folge-Updates nur für diese aktivierte Karte.`
     });
   } catch (error) {
     lastIntensiveWatchError = String(error);
@@ -4199,7 +4279,7 @@ async function sendDiscordStartupMessage() {
           { name: "Kaufalarm ab", value: `${DISCORD_MIN_BUY_CONFIDENCE}% KI-Sicherheit`, inline: true },
           { name: "Spam-Schutz", value: `${Math.round(DISCORD_ALERT_COOLDOWN_MS / 60_000)} Min. Cooldown`, inline: true }
         ],
-        footer: { text: "FC Trading Intelligence v10.39" },
+        footer: { text: "FC Trading Intelligence v10.40" },
         timestamp: new Date().toISOString()
       }]
     });
@@ -4208,7 +4288,7 @@ async function sendDiscordStartupMessage() {
       alertKey,
       alertType: "system",
       action: "CONNECTED",
-      fingerprint: "v10.39"
+      fingerprint: "v10.40"
     });
   } catch (error) {
     lastDiscordError = String(error);
@@ -7696,7 +7776,7 @@ app.get("/", (req, res) => {
   res.json({
     online: true,
     service: "FC Trading Intelligence",
-    version: "10.39-discord-watch-ack-fix",
+    version: "10.40-discord-watch-stale-alert-fix",
     gameYear: GAME_YEAR,
     marketProfile: marketProfile(),
     refreshSeconds: 60,
@@ -7823,7 +7903,7 @@ app.get("/api/readiness", (req, res) => {
   const readiness = runtimeReadinessSnapshot();
   res.status(readiness.ready ? 200 : 503).json({
     ok: readiness.ready,
-    version: "10.39-discord-watch-ack-fix",
+    version: "10.40-discord-watch-stale-alert-fix",
     gameYear: GAME_YEAR,
     readiness,
     note: "Dieser Endpunkt ist absichtlich strenger als /health. /health zeigt, ob der Webdienst lebt; /api/readiness zeigt, ob Marktquelle, Monitoring, Datenbank, Discord und Trader Brain wirklich produktionsbereit sind."
@@ -7833,7 +7913,7 @@ app.get("/api/readiness", (req, res) => {
 app.get("/health", (req, res) => {
   res.json({
     ok: true,
-    version: "10.39-discord-watch-ack-fix",
+    version: "10.40-discord-watch-stale-alert-fix",
     gameYear: GAME_YEAR,
     marketProfile: marketProfile(),
     marketContext: latestMarketContext,
@@ -8120,7 +8200,7 @@ app.post("/api/trader-signals/ingest", async (req, res) => {
 
 app.get("/api/trader-sources/status", (req, res) => {
   res.json({
-    ok: true, version: "10.39-discord-watch-ack-fix", mode: "forwarded-or-authorized-only", automaticForeignDiscordReading: false,
+    ok: true, version: "10.40-discord-watch-stale-alert-fix", mode: "forwarded-or-authorized-only", automaticForeignDiscordReading: false,
     sources: CURATED_TRADER_SOURCES.map(source => ({ id: source.id, name: source.displayName, aliases: source.aliases, channels: source.channels.map(channel => ({ channel: channel.name, type: channel.type, category: channel.category, defaultCall: channel.defaultCall, reliabilityWeight: Number(channel.weight || 1) })) })),
     note: "Die Registry normalisiert weitergeleitete/erlaubte Signale. Sie liest keine fremden Discord-Server automatisch oder verdeckt aus."
   });
@@ -8130,7 +8210,7 @@ app.get("/api/buy-guard/status", (req, res) => {
   res.json({
     ok: true,
     enabled: true,
-    version: "10.39-discord-watch-ack-fix",
+    version: "10.40-discord-watch-stale-alert-fix",
     rules: {
       duplicateShortHorizonsCountAsOne: true,
       requiredRecoveryCycles: STRICT_BUY_RECOVERY_CYCLES,
@@ -8163,7 +8243,7 @@ app.get("/api/leak-impact/status", async (req, res) => {
       GROUP BY s.source ORDER BY COUNT(DISTINCT i.signal_id) DESC, s.source ASC
     `);
     return res.json({
-      ok: true, enabled: true, version: "10.39-discord-watch-ack-fix", horizonsMinutes: TRADER_MARKET_IMPACT_HORIZONS,
+      ok: true, enabled: true, version: "10.40-discord-watch-stale-alert-fix", horizonsMinutes: TRADER_MARKET_IMPACT_HORIZONS,
       sourceSummary: sourceSummary.rows.map(row => ({ source: row.source, events: Number(row.events || 0), evaluatedPoints: Number(row.evaluated_points || 0), avgAbsMarketMovePct: Number(row.avg_abs_market_move || 0), avgMarketMovePct: Number(row.avg_market_move || 0) })),
       recent: recent.rows.map(row => ({ signalId: row.signal_id, source: row.source, channel: row.source_channel || null, category: row.category, horizonMinutes: Number(row.horizon_minutes), marketMedianChangePct: Number(row.market_median_change_pct), strongestRating: row.strongest_rating == null ? null : Number(row.strongest_rating), strongestRatingChangePct: row.strongest_rating_change_pct == null ? null : Number(row.strongest_rating_change_pct), affectedRatings: row.affected_ratings || [], direction: row.direction, sourceEventAt: row.source_event_at, evaluatedAt: row.evaluated_at, message: String(row.message || "").slice(0, 500) })),
       note: "Leak/Content-Events loesen keinen Kauf aus. Der Brain misst zuerst, welche Rating-Segmente sich nach 15m/1h/6h/24h real bewegen."
@@ -8207,7 +8287,7 @@ app.get("/api/market-knowledge/status", async (req, res) => {
     return res.json({
       ok: true,
       enabled: true,
-      version: "10.39-discord-watch-ack-fix",
+      version: "10.40-discord-watch-stale-alert-fix",
       policy: {
         hypothesesAreNotTruth: true,
         minimumSamplesBeforeInfluence: MARKET_KNOWLEDGE_MIN_SAMPLES,
@@ -8276,7 +8356,7 @@ app.get("/api/trader-reliability/status", async (req, res) => {
 
     return res.json({
       enabled: true,
-      version: "10.39-discord-watch-ack-fix",
+      version: "10.40-discord-watch-stale-alert-fix",
       gameYear: GAME_YEAR,
       method: {
         priorAccuracy: TRADER_RELIABILITY_PRIOR_ACCURACY,
@@ -8335,7 +8415,7 @@ app.get("/api/trader-reliability/status", async (req, res) => {
 app.get("/api/trader-confluence/status", (req, res) => {
   res.json({
     enabled: DISCORD_CONFIGURED && dbEnabled,
-    version: "10.39-discord-watch-ack-fix",
+    version: "10.40-discord-watch-stale-alert-fix",
     minCardConfidence: DISCORD_TRADER_CONFLUENCE_MIN_CONFIDENCE,
     minRatingConfidence: DISCORD_TRADER_CONFLUENCE_MIN_RATING_CONFIDENCE,
     minTraderReliability: DISCORD_TRADER_CONFLUENCE_MIN_RELIABILITY,
@@ -8522,7 +8602,7 @@ app.get("/api/intensive-watchlist", async (req, res) => {
 
     res.json({
       ok: true,
-      version: "10.39-discord-watch-ack-fix",
+      version: "10.40-discord-watch-stale-alert-fix",
       count: items.length,
       settings: {
         moveAlertPct: INTENSIVE_WATCH_MOVE_PCT,
@@ -8635,7 +8715,7 @@ app.get("/api/trading", async (req, res) => {
 
     res.json({
       ok: true,
-      version: "10.39-discord-watch-ack-fix",
+      version: "10.40-discord-watch-stale-alert-fix",
       refreshSeconds: 60,
       dbEnabled,
       sourceHealth: health,
@@ -8716,7 +8796,7 @@ app.get("/api/processing-health", (req, res) => {
   const health = processingHealthSnapshot();
   res.status(health.healthy ? 200 : 503).json({
     ok: health.healthy,
-    version: "10.39-discord-watch-ack-fix",
+    version: "10.40-discord-watch-stale-alert-fix",
     gameYear: GAME_YEAR,
     processingHealth: health,
     note: "DB-, Brain- oder Discord-Fehler werden getrennt von FUT.GG-Quellfehlern bewertet und können den Source Health Guard nicht mehr fälschlich in Quarantäne schicken."
@@ -8727,7 +8807,7 @@ app.get("/api/source-health", (req, res) => {
   const health = sourceHealthSnapshot();
   res.status(health.status === "UNHEALTHY" ? 503 : 200).json({
     ok: health.status !== "UNHEALTHY",
-    version: "10.39-discord-watch-ack-fix",
+    version: "10.40-discord-watch-stale-alert-fix",
     gameYear: GAME_YEAR,
     refreshSeconds: 60,
     source: "FUT.GG PS5 bulk prices",
@@ -8747,7 +8827,7 @@ app.get("/api/futbin/status", (req, res) => {
 
   res.json({
     ok: true,
-    version: "10.39-discord-watch-ack-fix",
+    version: "10.40-discord-watch-stale-alert-fix",
     gameYear: GAME_YEAR,
     configured: Boolean(FUTBIN_AUTHORIZED_FEED_URL || FUTBIN_PARSE_API_KEY),
     status: latestFutbinStatus,
@@ -8788,7 +8868,7 @@ app.get("/api/futbin/status", (req, res) => {
 app.get("/api/market-context", (req, res) => {
   res.json({
     ok: true,
-    version: "10.39-discord-watch-ack-fix",
+    version: "10.40-discord-watch-stale-alert-fix",
     gameYear: GAME_YEAR,
     refreshSeconds: 60,
     context: latestMarketContext,
@@ -8799,7 +8879,7 @@ app.get("/api/market-context", (req, res) => {
 app.get("/api/trader-brain/status", (req, res) => {
   res.json({
     ok: true,
-    version: "10.39-discord-watch-ack-fix",
+    version: "10.40-discord-watch-stale-alert-fix",
     gameYear: GAME_YEAR,
     marketProfile: marketProfile(),
     marketContext: latestMarketContext,
@@ -8809,7 +8889,7 @@ app.get("/api/trader-brain/status", (req, res) => {
     lastBrainError,
     lastGeminiCandidate,
     learning: {
-      version: "10.39-discord-watch-ack-fix",
+      version: "10.40-discord-watch-stale-alert-fix",
       totalMatureDecisions: brainLearningCache.totalMatureDecisions,
       rawMatureDecisions: brainLearningCache.rawMatureDecisions,
       uniqueLearningEpisodes: brainLearningCache.uniqueLearningEpisodes,
@@ -8830,7 +8910,7 @@ app.get("/api/trader-brain/learning/status", async (req, res) => {
     const cache = await loadBrainLearningProfiles(true);
     return res.json({
       enabled: true,
-      version: "10.39-discord-watch-ack-fix",
+      version: "10.40-discord-watch-stale-alert-fix",
       method: {
         windowDays: BRAIN_LEARNING_WINDOW_DAYS,
         priorAccuracy: BRAIN_LEARNING_PRIOR_ACCURACY,
@@ -10021,7 +10101,7 @@ httpServer = app.listen(
   port,
   () => {
     console.log(
-      `FC Trading Intelligence v10.39 Discord Watch ACK Fix (FC${GAME_YEAR}) running on ${port}`
+      `FC Trading Intelligence v10.40 Discord Watch Stale Alert Fix (FC${GAME_YEAR}) running on ${port}`
     );
 
     startMonitoring();
