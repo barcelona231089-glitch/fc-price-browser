@@ -334,6 +334,132 @@ for (const source of CURATED_TRADER_SOURCES) {
 }
 
 const TRADER_MARKET_IMPACT_HORIZONS = [15, 60, 360, 1440];
+
+// v10.38: Market Knowledge Learning. Öffentliche Trading-Grundsätze werden
+// nicht als Wahrheit behandelt. Lernbare Regeln starten als Hypothesen und
+// dürfen erst nach genügend echten FC26-Beobachtungen die Entscheidung leicht
+// beeinflussen. Keine Wissensregel darf alleine ein JETZT KAUFEN erzeugen.
+const MARKET_KNOWLEDGE_HORIZONS = [15, 60, 360, 1440];
+const MARKET_KNOWLEDGE_MIN_SAMPLES = Math.max(6, Math.min(50, Number(process.env.MARKET_KNOWLEDGE_MIN_SAMPLES || 12)));
+const MARKET_KNOWLEDGE_MIN_SUPPORT = Math.max(55, Math.min(90, Number(process.env.MARKET_KNOWLEDGE_MIN_SUPPORT || 65)));
+const MARKET_KNOWLEDGE_PRIOR_STRENGTH = Math.max(2, Math.min(30, Number(process.env.MARKET_KNOWLEDGE_PRIOR_STRENGTH || 8)));
+const FODDER_KNOWLEDGE_RATINGS = Array.from({ length: 9 }, (_, index) => 83 + index);
+
+const MARKET_KNOWLEDGE_RULES = [
+  {
+    id: "sbc_fodder_demand",
+    name: "SBC-Fodder-Nachfrage",
+    kind: "LEARNABLE",
+    expected: "RISING",
+    preferredHorizonMinutes: 60,
+    minMovePct: 0.75,
+    scope: "FODDER",
+    directInfluence: true,
+    hypothesis: "Attraktive SBCs können die tatsächlich benötigten Fodder-Ratings durch zusätzliche Nachfrage anheben."
+  },
+  {
+    id: "pack_supply_pressure",
+    name: "Pack-/Reward-Supply-Druck",
+    kind: "LEARNABLE",
+    expected: "FALLING",
+    preferredHorizonMinutes: 60,
+    minMovePct: 0.75,
+    scope: "MARKET",
+    directInfluence: true,
+    hypothesis: "Viele gleichzeitig geöffnete Packs oder Rewards können kurzfristig zusätzlichen Supply und Preisdruck erzeugen."
+  },
+  {
+    id: "fodder_expiry_cooldown",
+    name: "Fodder nach SBC-Ablauf",
+    kind: "LEARNABLE",
+    expected: "FALLING",
+    preferredHorizonMinutes: 60,
+    minMovePct: 0.65,
+    scope: "FODDER",
+    directInfluence: true,
+    hypothesis: "Wenn relevante SBC-Nachfrage ausläuft, kann die betroffene Fodder-Nachfrage kurzfristig nachlassen."
+  },
+  {
+    id: "out_of_packs_scarcity",
+    name: "Out-of-Packs-Knappheit",
+    kind: "LEARNABLE",
+    expected: "RISING",
+    preferredHorizonMinutes: 360,
+    minMovePct: 1.25,
+    scope: "TARGET",
+    directInfluence: true,
+    hypothesis: "Sinkender zukünftiger Supply kann eine konkrete Karte stützen, sofern echte Nachfrage bestehen bleibt."
+  },
+  {
+    id: "leak_market_reaction",
+    name: "Leak-Marktreaktion",
+    kind: "LEARNABLE",
+    expected: "VOLATILITY",
+    preferredHorizonMinutes: 60,
+    minMovePct: 1.0,
+    scope: "MARKET",
+    directInfluence: false,
+    hypothesis: "Leaks können Erwartungen bereits vor dem eigentlichen Content in den Markt einpreisen. Die Richtung ist nicht vorgegeben."
+  },
+  {
+    id: "promo_price_discovery",
+    name: "Promo-Preisfindung",
+    kind: "LEARNABLE",
+    expected: "VOLATILITY",
+    preferredHorizonMinutes: 60,
+    minMovePct: 1.25,
+    scope: "MARKET",
+    directInfluence: false,
+    hypothesis: "Neue Promo-/Pack-Phasen können zunächst erhöhte Preisfindungs-Volatilität erzeugen."
+  },
+  {
+    id: "panic_sell_requires_bottom",
+    name: "Panic Sell braucht Bodenbestätigung",
+    kind: "POLICY",
+    expected: "WAIT_FOR_STABILIZATION",
+    preferredHorizonMinutes: null,
+    minMovePct: null,
+    scope: "MARKET",
+    directInfluence: true,
+    implementation: "v10.37 Strict Buy Guard",
+    hypothesis: "Ein starker Preissturz ist allein kein Kaufsignal. Erst Boden und Recovery bestätigen."
+  },
+  {
+    id: "leak_never_buys_alone",
+    name: "Leak ist kein Kaufbefehl",
+    kind: "POLICY",
+    expected: "OBSERVE_FIRST",
+    preferredHorizonMinutes: null,
+    minMovePct: null,
+    scope: "MARKET",
+    directInfluence: true,
+    implementation: "Trader Market Event Guard",
+    hypothesis: "Ein Leak startet Beobachtung und Lernen, aber niemals alleine einen Kauf."
+  },
+  {
+    id: "complementary_goods",
+    name: "Komplementäre Karten / Chemistry",
+    kind: "SHADOW",
+    expected: "MIXED",
+    preferredHorizonMinutes: 360,
+    minMovePct: 1.0,
+    scope: "LINKED_CARDS",
+    directInfluence: false,
+    hypothesis: "Neue SBC-/Promo-Karten können passende Links stützen und ähnliche Ersatzkarten gleichzeitig unter Druck setzen.",
+    limitation: "Noch kein belastbarer Chemistry-/Substitutionsgraph vorhanden. Daher nur als Wissensregel dokumentiert."
+  },
+  {
+    id: "diversification_risk_control",
+    name: "Diversifikation / Risikokontrolle",
+    kind: "POLICY",
+    expected: "RISK_CONTROL",
+    preferredHorizonMinutes: null,
+    minMovePct: null,
+    scope: "PORTFOLIO",
+    directInfluence: false,
+    hypothesis: "Kapital nicht blind auf eine einzige Karte oder einen einzigen Investment-Typ konzentrieren."
+  }
+];
 const DISCORD_CONFIGURED = Boolean(DISCORD_BOT_TOKEN);
 const DISCORD_ALERT_COOLDOWN_MS = Math.max(5, Number(process.env.DISCORD_ALERT_COOLDOWN_MIN || 30)) * 60_000;
 const DISCORD_MAX_ALERTS_PER_CYCLE = Math.max(1, Math.min(10, Number(process.env.DISCORD_MAX_ALERTS_PER_CYCLE || 5)));
@@ -1829,6 +1955,27 @@ async function initDb() {
   await pool.query(`
     CREATE INDEX IF NOT EXISTS idx_fc_trader_market_impacts_time
     ON fc_trader_market_impacts (evaluated_at DESC)
+  `);
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS fc_market_knowledge_evaluations (
+      signal_id VARCHAR(120) NOT NULL REFERENCES fc_discord_signals(id) ON DELETE CASCADE,
+      rule_id VARCHAR(80) NOT NULL,
+      horizon_minutes SMALLINT NOT NULL,
+      target_scope VARCHAR(80),
+      observed_change_pct NUMERIC(10,4),
+      expected_mode VARCHAR(30) NOT NULL,
+      support_score SMALLINT NOT NULL CHECK (support_score >= 0 AND support_score <= 100),
+      was_supported BOOLEAN NOT NULL,
+      details JSONB,
+      evaluated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      PRIMARY KEY (signal_id, rule_id, horizon_minutes)
+    )
+  `);
+
+  await pool.query(`
+    CREATE INDEX IF NOT EXISTS idx_fc_market_knowledge_eval_rule_time
+    ON fc_market_knowledge_evaluations (rule_id, evaluated_at DESC)
   `);
 
   await pool.query(`
@@ -4048,7 +4195,7 @@ async function sendDiscordStartupMessage() {
           { name: "Kaufalarm ab", value: `${DISCORD_MIN_BUY_CONFIDENCE}% KI-Sicherheit`, inline: true },
           { name: "Spam-Schutz", value: `${Math.round(DISCORD_ALERT_COOLDOWN_MS / 60_000)} Min. Cooldown`, inline: true }
         ],
-        footer: { text: "FC Trading Intelligence v10.37" },
+        footer: { text: "FC Trading Intelligence v10.38" },
         timestamp: new Date().toISOString()
       }]
     });
@@ -4057,7 +4204,7 @@ async function sendDiscordStartupMessage() {
       alertKey,
       alertType: "system",
       action: "CONNECTED",
-      fingerprint: "v10.37"
+      fingerprint: "v10.38"
     });
   } catch (error) {
     lastDiscordError = String(error);
@@ -4138,6 +4285,7 @@ async function monitorOnce() {
 
       await evaluateTraderSignalReliability(latestTradingRows);
       await evaluateTraderMarketImpact(latestTradingRows);
+      await evaluateMarketKnowledge(latestTradingRows);
       await enrichImportantRowsWithFutbinParse(latestTradingRows, built.brainWork);
       await automaticTraderBrain(latestTradingRows, built.brainWork);
       for (const row of latestTradingRows) {
@@ -5757,6 +5905,341 @@ async function evaluateTraderMarketImpact(rows) {
   return inserted;
 }
 
+
+function curatedTraderChannelMeta(sourceName, channelName) {
+  const source = curatedTraderSourceFor(sourceName);
+  if (!source || !channelName) return null;
+  const wanted = String(channelName).toLowerCase().replace(/^#/, "");
+  const channel = (source.channels || []).find(item => String(item.name || "").toLowerCase() === wanted);
+  if (!channel) return null;
+  return {
+    source: source.displayName,
+    channel: channel.name,
+    type: channel.type || "UNKNOWN",
+    category: channel.category || null,
+    weight: Number.isFinite(Number(channel.weight)) ? Number(channel.weight) : 1
+  };
+}
+
+function marketKnowledgeRulesForSignal(signal) {
+  const text = `${signal?.message || ""} ${signal?.reason || ""}`.toLowerCase();
+  const channel = curatedTraderChannelMeta(signal?.source, signal?.sourceChannel);
+  const type = String(channel?.type || signal?.sourceChannelType || "").toUpperCase();
+  const category = String(channel?.category || signal?.category || "").toUpperCase();
+  const ids = new Set();
+
+  const isExpiry = type === "EXPIRY" || /\b(expir(?:e|es|y|ing)|ablauf|läuft aus|laeuft aus|endet)\b/i.test(text);
+  const isSbc = type === "SBC_CONTENT" || category === "SBC_FODDER" || /\bsbc\b|fodder|squad building|marquee matchup/i.test(text);
+  const isSupply = type === "SUPPLY" || /\b(pack|packs|rewards?|supply|angebot|pack weight|store pack)\b/i.test(text);
+  const isLeak = ["LEAK", "NEWS_LEAK"].includes(type) || /\b(leak|leaked|geleakt|content leak)\b/i.test(text);
+  const isPromo = category === "PROMO_CARDS" || /\b(promo|toty|tots|futties|rttf|future stars|trailblazer|totw)\b/i.test(text);
+  const isOutOfPacks = /out[ -]?of[ -]?packs|leaves? packs|verlässt? packs|verlaesst? packs|nicht mehr in packs/i.test(text);
+  const isPanic = /panic|crash|sell[ -]?off|abverkauf|falling knife|preissturz/i.test(text);
+  const isComplementary = /chemistry|links?|linkt|nation link|league link|club link|ersatzkarte|substitut/i.test(text);
+
+  if (isExpiry) ids.add("fodder_expiry_cooldown");
+  else if (isSbc) ids.add("sbc_fodder_demand");
+  if (isSupply) ids.add("pack_supply_pressure");
+  if (isOutOfPacks) ids.add("out_of_packs_scarcity");
+  if (isLeak) {
+    ids.add("leak_market_reaction");
+    ids.add("leak_never_buys_alone");
+  }
+  if (isPromo || isSupply) ids.add("promo_price_discovery");
+  if (isPanic) ids.add("panic_sell_requires_bottom");
+  if (isComplementary) ids.add("complementary_goods");
+
+  return MARKET_KNOWLEDGE_RULES.filter(rule => ids.has(rule.id));
+}
+
+async function loadMarketKnowledgeSignals() {
+  if (!dbEnabled) return [];
+  const result = await pool.query(`
+    SELECT id, source, source_channel, signal_kind, category, message, reason,
+           player_or_rating, target_ea_id, source_event_at, created_at
+    FROM fc_discord_signals
+    WHERE COALESCE(source_event_at, created_at) >= NOW() - INTERVAL '30 hours'
+    ORDER BY COALESCE(source_event_at, created_at) ASC
+    LIMIT 300
+  `);
+  return result.rows.map(row => ({
+    id: row.id,
+    source: row.source,
+    sourceChannel: row.source_channel || null,
+    signalKind: row.signal_kind || null,
+    category: row.category || "SHORT_TERM_FLIPS",
+    message: row.message || "",
+    reason: row.reason || "",
+    playerOrRating: row.player_or_rating || "MARKT",
+    eaId: row.target_ea_id == null ? null : String(row.target_ea_id),
+    createdAt: row.source_event_at ? new Date(row.source_event_at).getTime() : new Date(row.created_at).getTime()
+  }));
+}
+
+function marketKnowledgeRuleById(ruleId) {
+  return MARKET_KNOWLEDGE_RULES.find(rule => rule.id === ruleId) || null;
+}
+
+function marketKnowledgeTargetRatings(signal, rule, before, after) {
+  const target = String(signal?.playerOrRating || "").trim();
+  const rating = /^\d{2}$/.test(target) ? Number(target) : null;
+  if (Number.isFinite(rating) && rating >= RATING_MIN && rating <= RATING_MAX) return [rating];
+  if (rule.scope === "FODDER") return FODDER_KNOWLEDGE_RATINGS.filter(value => Number.isFinite(Number(before?.[value])) && Number.isFinite(Number(after?.[value])));
+  return Object.keys(before || {})
+    .map(Number)
+    .filter(value => Number.isFinite(value) && Number.isFinite(Number(after?.[value])));
+}
+
+function marketKnowledgeSupport(rule, observedChangePct) {
+  if (!Number.isFinite(Number(observedChangePct))) return null;
+  const move = Number(observedChangePct);
+  const threshold = Math.max(0.1, Number(rule.minMovePct || 1));
+  let directional = 0;
+  if (rule.expected === "RISING") directional = move / threshold;
+  else if (rule.expected === "FALLING") directional = (-move) / threshold;
+  else if (rule.expected === "VOLATILITY") directional = Math.abs(move) / threshold;
+  else return null;
+  const supportScore = Math.max(0, Math.min(100, Math.round(50 + directional * 25)));
+  return { supportScore, wasSupported: directional >= 1 };
+}
+
+async function marketKnowledgeObservation(signal, rule, horizonMinutes, rows, getSnapshot) {
+  const baselineAt = signal.createdAt;
+  const observedAt = signal.createdAt + horizonMinutes * 60_000;
+
+  if (rule.scope === "TARGET" && signal.eaId) {
+    const [beforePrice, afterPrice] = await Promise.all([
+      priceAtOrBefore(signal.eaId, baselineAt),
+      priceAtOrBefore(signal.eaId, observedAt)
+    ]);
+    if (!Number.isFinite(beforePrice) || beforePrice <= 0 || !Number.isFinite(afterPrice) || afterPrice <= 0) return null;
+    const observedChangePct = Number((((afterPrice - beforePrice) / beforePrice) * 100).toFixed(4));
+    return {
+      targetScope: `EA:${signal.eaId}`,
+      observedChangePct,
+      details: { beforePrice, afterPrice, eaId: signal.eaId }
+    };
+  }
+
+  const before = await getSnapshot(baselineAt);
+  const after = await getSnapshot(observedAt);
+  const ratings = marketKnowledgeTargetRatings(signal, rule, before, after);
+  if (!ratings.length) return null;
+  const moves = ratings.map(rating => {
+    const a = Number(before?.[rating]);
+    const b = Number(after?.[rating]);
+    if (!Number.isFinite(a) || a <= 0 || !Number.isFinite(b) || b <= 0) return null;
+    return { rating, before: Math.round(a), after: Math.round(b), changePct: Number((((b - a) / a) * 100).toFixed(4)) };
+  }).filter(Boolean);
+  if (!moves.length) return null;
+  return {
+    targetScope: /^\d{2}$/.test(String(signal.playerOrRating || "")) ? `RATING:${signal.playerOrRating}` : rule.scope,
+    observedChangePct: Number(median(moves.map(item => item.changePct)).toFixed(4)),
+    details: { ratings: moves.slice(0, 25) }
+  };
+}
+
+async function evaluateMarketKnowledge(rows) {
+  if (!dbEnabled || !rows?.length) return 0;
+  const signals = await loadMarketKnowledgeSignals();
+  if (!signals.length) return 0;
+  const learnablePairs = [];
+  for (const signal of signals) {
+    for (const rule of marketKnowledgeRulesForSignal(signal)) {
+      if (rule.kind === "LEARNABLE") learnablePairs.push({ signal, rule });
+    }
+  }
+  if (!learnablePairs.length) return 0;
+
+  const signalIds = [...new Set(learnablePairs.map(item => item.signal.id))];
+  const existingResult = await pool.query(`
+    SELECT signal_id, rule_id, horizon_minutes
+    FROM fc_market_knowledge_evaluations
+    WHERE signal_id = ANY($1::varchar[])
+  `, [signalIds]);
+  const existing = new Set(existingResult.rows.map(row => `${row.signal_id}:${row.rule_id}:${Number(row.horizon_minutes)}`));
+  const snapshotCache = new Map();
+  const getSnapshot = async atMs => {
+    const key = String(Math.floor(atMs / 60_000));
+    if (!snapshotCache.has(key)) snapshotCache.set(key, await ratingMedianSnapshotAt(rows, atMs));
+    return snapshotCache.get(key);
+  };
+
+  let inserted = 0;
+  const now = Date.now();
+  for (const { signal, rule } of learnablePairs) {
+    // Out-of-packs ohne konkrete Karte/Rating nicht künstlich auf den Gesamtmarkt anwenden.
+    if (rule.scope === "TARGET" && !signal.eaId && !/^\d{2}$/.test(String(signal.playerOrRating || ""))) continue;
+    for (const horizonMinutes of MARKET_KNOWLEDGE_HORIZONS) {
+      const key = `${signal.id}:${rule.id}:${horizonMinutes}`;
+      if (existing.has(key) || now < signal.createdAt + horizonMinutes * 60_000) continue;
+      const observation = await marketKnowledgeObservation(signal, rule, horizonMinutes, rows, getSnapshot);
+      if (!observation) continue;
+      const support = marketKnowledgeSupport(rule, observation.observedChangePct);
+      if (!support) continue;
+      const result = await pool.query(`
+        INSERT INTO fc_market_knowledge_evaluations (
+          signal_id, rule_id, horizon_minutes, target_scope, observed_change_pct,
+          expected_mode, support_score, was_supported, details, evaluated_at
+        ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9::jsonb,NOW())
+        ON CONFLICT (signal_id, rule_id, horizon_minutes) DO NOTHING
+      `, [
+        signal.id,
+        rule.id,
+        horizonMinutes,
+        observation.targetScope,
+        observation.observedChangePct,
+        rule.expected,
+        support.supportScore,
+        support.wasSupported,
+        JSON.stringify(observation.details || {})
+      ]);
+      if (result.rowCount) {
+        inserted += 1;
+        existing.add(key);
+      }
+    }
+  }
+  return inserted;
+}
+
+async function loadMarketKnowledgeProfiles() {
+  const empty = {};
+  for (const rule of MARKET_KNOWLEDGE_RULES) {
+    empty[rule.id] = {
+      ruleId: rule.id,
+      samples: 0,
+      supportRate: 50,
+      smoothedSupportRate: 50,
+      avgObservedMovePct: 0,
+      avgSupportScore: 50,
+      preferredHorizonMinutes: rule.preferredHorizonMinutes,
+      mature: rule.kind === "POLICY",
+      state: rule.kind === "POLICY" ? "POLICY_ACTIVE" : rule.kind === "SHADOW" ? "SHADOW" : "LEARNING"
+    };
+  }
+  if (!dbEnabled) return empty;
+  const result = await pool.query(`
+    SELECT rule_id, horizon_minutes, COUNT(*)::int AS samples,
+           ROUND(AVG(CASE WHEN was_supported THEN 100.0 ELSE 0.0 END)::numeric, 2) AS support_rate,
+           ROUND(AVG(observed_change_pct)::numeric, 3) AS avg_move,
+           ROUND(AVG(support_score)::numeric, 2) AS avg_support_score
+    FROM fc_market_knowledge_evaluations
+    WHERE evaluated_at >= NOW() - INTERVAL '120 days'
+    GROUP BY rule_id, horizon_minutes
+  `);
+  for (const row of result.rows) {
+    const rule = marketKnowledgeRuleById(row.rule_id);
+    if (!rule || Number(row.horizon_minutes) !== Number(rule.preferredHorizonMinutes)) continue;
+    const samples = Number(row.samples || 0);
+    const rawSupport = Number(row.support_rate || 0);
+    const smoothed = ((50 * MARKET_KNOWLEDGE_PRIOR_STRENGTH) + (rawSupport * samples)) / (MARKET_KNOWLEDGE_PRIOR_STRENGTH + samples);
+    const mature = samples >= MARKET_KNOWLEDGE_MIN_SAMPLES && smoothed >= MARKET_KNOWLEDGE_MIN_SUPPORT;
+    empty[rule.id] = {
+      ruleId: rule.id,
+      samples,
+      supportRate: Number(rawSupport.toFixed(2)),
+      smoothedSupportRate: Number(smoothed.toFixed(2)),
+      avgObservedMovePct: Number(row.avg_move || 0),
+      avgSupportScore: Number(row.avg_support_score || 50),
+      preferredHorizonMinutes: rule.preferredHorizonMinutes,
+      mature,
+      state: mature ? "VERIFIED" : "LEARNING"
+    };
+  }
+  return empty;
+}
+
+function marketKnowledgeRuleAppliesToRow(rule, signal, row) {
+  if (!rule || !signal || !row) return false;
+  const target = String(signal.playerOrRating || "").trim();
+  const rating = /^\d{2}$/.test(target) ? Number(target) : null;
+  if (signal.eaId) return String(signal.eaId) === String(row.eaId);
+  if (Number.isFinite(rating)) return row.cardType === "Base Rare" && Number(row.overall) === rating;
+  if (rule.scope === "FODDER") return row.cardType === "Base Rare" && FODDER_KNOWLEDGE_RATINGS.includes(Number(row.overall));
+  if (rule.scope === "MARKET") return true;
+  return false;
+}
+
+function marketKnowledgeContextForRow(row, activeSignals, profiles) {
+  const evidence = [];
+  for (const signal of activeSignals || []) {
+    for (const rule of marketKnowledgeRulesForSignal(signal)) {
+      if (rule.kind !== "LEARNABLE" || !rule.directInfluence) continue;
+      if (!marketKnowledgeRuleAppliesToRow(rule, signal, row)) continue;
+      const profile = profiles?.[rule.id];
+      if (!profile?.mature) continue;
+      evidence.push({
+        ruleId: rule.id,
+        ruleName: rule.name,
+        expected: rule.expected,
+        source: signal.source,
+        signalId: signal.id,
+        supportRate: profile.smoothedSupportRate,
+        samples: profile.samples,
+        avgObservedMovePct: profile.avgObservedMovePct
+      });
+    }
+  }
+  // Ein Event soll dieselbe Regel pro Karte nur einmal gewichten.
+  const unique = [];
+  const seen = new Set();
+  for (const item of evidence) {
+    const key = `${item.ruleId}:${item.signalId}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    unique.push(item);
+  }
+  return unique;
+}
+
+function applyMarketKnowledgeLayer(row, evidence) {
+  row.aiMarketKnowledge = {
+    version: "10.38",
+    activeVerifiedRules: evidence || [],
+    influenced: false,
+    note: "Nur verifizierte Regeln mit echten FC-Daten dürfen leicht beeinflussen; keine Regel erzeugt alleine einen Kauf."
+  };
+  if (!Array.isArray(evidence) || !evidence.length) return row;
+
+  const rising = evidence.filter(item => item.expected === "RISING");
+  const falling = evidence.filter(item => item.expected === "FALLING");
+  const strongestRising = [...rising].sort((a, b) => b.supportRate - a.supportRate)[0] || null;
+  const strongestFalling = [...falling].sort((a, b) => b.supportRate - a.supportRate)[0] || null;
+
+  if (row.aiAction === "JETZT KAUFEN" && strongestFalling) {
+    row.aiAction = "NOCH WARTEN";
+    row.aiConfidence = Math.min(Number(row.aiConfidence || 78), 78);
+    row.aiRisk = "mittel";
+    row.aiMarketState = "Verifizierte Marktregel widerspricht Sofort-Kauf";
+    row.aiReason = `${row.aiReason} Market-Knowledge: ${strongestFalling.ruleName} ist nach ${strongestFalling.samples} FC-Beobachtungen mit ${strongestFalling.supportRate.toFixed(1)}% geglätteter Unterstützung verifiziert und spricht aktuell gegen einen Sofort-Kauf.`.slice(0, 1800);
+    row.aiRecommendedHorizon = "Marktregel abklingen lassen und Preis erneut bestätigen";
+    row.aiMarketKnowledge.influenced = true;
+    row.aiMarketKnowledge.effect = "BUY_BLOCKED_TO_WAIT";
+  } else if (row.aiAction === "JETZT KAUFEN" && strongestRising) {
+    const historicalCap = Number(row?.aiBuyGuard?.historicalConfidenceCap);
+    const upper = Number.isFinite(historicalCap) ? Math.min(95, historicalCap) : 95;
+    const bonus = strongestRising.supportRate >= 75 ? 3 : 2;
+    const before = Number(row.aiConfidence || 50);
+    row.aiConfidence = Math.min(upper, before + bonus);
+    if (row.aiConfidence > before) {
+      row.aiReason = `${row.aiReason} Market-Knowledge: ${strongestRising.ruleName} ist nach ${strongestRising.samples} FC-Beobachtungen verifiziert und bestätigt den Kontext leicht (+${row.aiConfidence - before} Confidence).`.slice(0, 1800);
+      row.aiMarketKnowledge.influenced = true;
+      row.aiMarketKnowledge.effect = `CONFIDENCE_PLUS_${row.aiConfidence - before}`;
+    }
+  } else if (["VERKAUF PRÜFEN", "JETZT VERKAUFEN"].includes(row.aiAction) && strongestFalling) {
+    const before = Number(row.aiConfidence || 50);
+    row.aiConfidence = Math.min(95, before + (strongestFalling.supportRate >= 75 ? 2 : 1));
+    row.aiMarketKnowledge.influenced = row.aiConfidence > before;
+    row.aiMarketKnowledge.effect = row.aiConfidence > before ? `SELL_CONFIDENCE_PLUS_${row.aiConfidence - before}` : null;
+  }
+
+  if (row.aiMarketKnowledge.influenced && !String(row.aiModelUsed || "").includes("Market Knowledge")) {
+    row.aiModelUsed = `${row.aiModelUsed || "Quantitative Core"} + Market Knowledge`;
+  }
+  return row;
+}
+
 function brainLearningRatingBand(rating) {
   const value = Number(rating);
   if (!Number.isFinite(value)) return "unknown";
@@ -6677,14 +7160,15 @@ function normalizeDecisionForPosition(row, decision) {
 }
 
 async function buildTradingRows(futbinFeedOverride = null) {
-  const [cards, bulk, positions, intensiveWatches, allSignals, traderProfiles, brainLearning] = await Promise.all([
+  const [cards, bulk, positions, intensiveWatches, allSignals, traderProfiles, brainLearning, marketKnowledgeProfiles] = await Promise.all([
     ensureUniverse(false),
     loadBulkPs5Prices(false),
     getPositions(),
     getIntensiveWatchlist(),
     loadRecentDiscordSignals(),
     loadTraderProfiles(),
-    loadBrainLearningProfiles(false)
+    loadBrainLearningProfiles(false),
+    loadMarketKnowledgeProfiles()
   ]);
 
   const futbinFeed = futbinFeedOverride || await loadAuthorizedFutbinFeedSafe(false);
@@ -6786,6 +7270,7 @@ async function buildTradingRows(futbinFeedOverride = null) {
     };
 
     const signals = matchingSignalsForRow(row, activeSignals);
+    const knowledgeContext = marketKnowledgeContextForRow(row, activeSignals, marketKnowledgeProfiles);
 
     const input = {
       playerName: row.name || `EA ${row.eaId}`,
@@ -6830,6 +7315,7 @@ async function buildTradingRows(futbinFeedOverride = null) {
     const decision = applyBrainLearningToDecision(normalizedDecision, learningProfile);
     applyDecisionToRow(row, decision);
     calibrateStrictBuyDecision(row, { input, quant, confluence, learningProfile });
+    applyMarketKnowledgeLayer(row, knowledgeContext);
 
     row.ratingMarketTrend = rating.trend;
     row.ratingMarketRisingPct = rating.risingPct;
@@ -6838,7 +7324,7 @@ async function buildTradingRows(futbinFeedOverride = null) {
     row.packSupplyActive = globalMarketContext.packSupplyActive;
     row.marketContextConfidence = globalMarketContext.confidence;
 
-    brainWork.set(String(row.eaId), { input, quant, confluence, learningProfile });
+    brainWork.set(String(row.eaId), { input, quant, confluence, learningProfile, knowledgeContext });
   }
 
   await persistDiscordSignalMarketConfirmations(rows, brainWork);
@@ -6998,6 +7484,7 @@ async function automaticTraderBrain(rows, brainWork) {
         ...geminiCandidate.work,
         learningProfile
       });
+      applyMarketKnowledgeLayer(geminiCandidate.row, geminiCandidate.work.knowledgeContext || []);
       lastGeminiCandidate = {
         eaId: geminiCandidate.row.eaId,
         player: geminiCandidate.row.name,
@@ -7055,6 +7542,7 @@ async function automaticTraderBrain(rows, brainWork) {
           target_exit_zone: row.aiTargetExitZone,
           trader_signals_confluence: row.aiTraderConfluence,
           historical_learning: row.aiHistoricalLearning,
+          market_knowledge: row.aiMarketKnowledge || null,
           recommended_horizon: row.aiRecommendedHorizon,
           eaTaxBreakEven: Math.ceil(row.price / 0.95),
           ai_model_used: row.aiModelUsed
@@ -7204,7 +7692,7 @@ app.get("/", (req, res) => {
   res.json({
     online: true,
     service: "FC Trading Intelligence",
-    version: "10.37-strict-buy-calibration",
+    version: "10.38-market-knowledge-learning",
     gameYear: GAME_YEAR,
     marketProfile: marketProfile(),
     refreshSeconds: 60,
@@ -7233,6 +7721,7 @@ app.get("/", (req, res) => {
       traderReliabilityStatus: "GET /api/trader-reliability/status",
       traderSourcesStatus: "GET /api/trader-sources/status",
       leakImpactStatus: "GET /api/leak-impact/status",
+      marketKnowledgeStatus: "GET /api/market-knowledge/status",
       marketContext: "GET /api/market-context",
       sourceHealth: "GET /api/source-health",
       processingHealth: "GET /api/processing-health",
@@ -7330,7 +7819,7 @@ app.get("/api/readiness", (req, res) => {
   const readiness = runtimeReadinessSnapshot();
   res.status(readiness.ready ? 200 : 503).json({
     ok: readiness.ready,
-    version: "10.37-strict-buy-calibration",
+    version: "10.38-market-knowledge-learning",
     gameYear: GAME_YEAR,
     readiness,
     note: "Dieser Endpunkt ist absichtlich strenger als /health. /health zeigt, ob der Webdienst lebt; /api/readiness zeigt, ob Marktquelle, Monitoring, Datenbank, Discord und Trader Brain wirklich produktionsbereit sind."
@@ -7340,7 +7829,7 @@ app.get("/api/readiness", (req, res) => {
 app.get("/health", (req, res) => {
   res.json({
     ok: true,
-    version: "10.37-strict-buy-calibration",
+    version: "10.38-market-knowledge-learning",
     gameYear: GAME_YEAR,
     marketProfile: marketProfile(),
     marketContext: latestMarketContext,
@@ -7627,7 +8116,7 @@ app.post("/api/trader-signals/ingest", async (req, res) => {
 
 app.get("/api/trader-sources/status", (req, res) => {
   res.json({
-    ok: true, version: "10.37-strict-buy-calibration", mode: "forwarded-or-authorized-only", automaticForeignDiscordReading: false,
+    ok: true, version: "10.38-market-knowledge-learning", mode: "forwarded-or-authorized-only", automaticForeignDiscordReading: false,
     sources: CURATED_TRADER_SOURCES.map(source => ({ id: source.id, name: source.displayName, aliases: source.aliases, channels: source.channels.map(channel => ({ channel: channel.name, type: channel.type, category: channel.category, defaultCall: channel.defaultCall, reliabilityWeight: Number(channel.weight || 1) })) })),
     note: "Die Registry normalisiert weitergeleitete/erlaubte Signale. Sie liest keine fremden Discord-Server automatisch oder verdeckt aus."
   });
@@ -7637,7 +8126,7 @@ app.get("/api/buy-guard/status", (req, res) => {
   res.json({
     ok: true,
     enabled: true,
-    version: "10.37-strict-buy-calibration",
+    version: "10.38-market-knowledge-learning",
     rules: {
       duplicateShortHorizonsCountAsOne: true,
       requiredRecoveryCycles: STRICT_BUY_RECOVERY_CYCLES,
@@ -7670,12 +8159,69 @@ app.get("/api/leak-impact/status", async (req, res) => {
       GROUP BY s.source ORDER BY COUNT(DISTINCT i.signal_id) DESC, s.source ASC
     `);
     return res.json({
-      ok: true, enabled: true, version: "10.37-strict-buy-calibration", horizonsMinutes: TRADER_MARKET_IMPACT_HORIZONS,
+      ok: true, enabled: true, version: "10.38-market-knowledge-learning", horizonsMinutes: TRADER_MARKET_IMPACT_HORIZONS,
       sourceSummary: sourceSummary.rows.map(row => ({ source: row.source, events: Number(row.events || 0), evaluatedPoints: Number(row.evaluated_points || 0), avgAbsMarketMovePct: Number(row.avg_abs_market_move || 0), avgMarketMovePct: Number(row.avg_market_move || 0) })),
       recent: recent.rows.map(row => ({ signalId: row.signal_id, source: row.source, channel: row.source_channel || null, category: row.category, horizonMinutes: Number(row.horizon_minutes), marketMedianChangePct: Number(row.market_median_change_pct), strongestRating: row.strongest_rating == null ? null : Number(row.strongest_rating), strongestRatingChangePct: row.strongest_rating_change_pct == null ? null : Number(row.strongest_rating_change_pct), affectedRatings: row.affected_ratings || [], direction: row.direction, sourceEventAt: row.source_event_at, evaluatedAt: row.evaluated_at, message: String(row.message || "").slice(0, 500) })),
       note: "Leak/Content-Events loesen keinen Kauf aus. Der Brain misst zuerst, welche Rating-Segmente sich nach 15m/1h/6h/24h real bewegen."
     });
   } catch (error) { return res.status(500).json({ ok: false, error: String(error) }); }
+});
+
+app.get("/api/market-knowledge/status", async (req, res) => {
+  try {
+    const profiles = await loadMarketKnowledgeProfiles();
+    let recent = [];
+    if (dbEnabled) {
+      const result = await pool.query(`
+        SELECT e.signal_id, e.rule_id, e.horizon_minutes, e.target_scope,
+               e.observed_change_pct, e.expected_mode, e.support_score,
+               e.was_supported, e.details, e.evaluated_at,
+               s.source, s.source_channel, s.message,
+               COALESCE(s.source_event_at, s.created_at) AS source_event_at
+        FROM fc_market_knowledge_evaluations e
+        JOIN fc_discord_signals s ON s.id = e.signal_id
+        ORDER BY e.evaluated_at DESC
+        LIMIT 100
+      `);
+      recent = result.rows.map(row => ({
+        signalId: row.signal_id,
+        ruleId: row.rule_id,
+        source: row.source,
+        channel: row.source_channel || null,
+        horizonMinutes: Number(row.horizon_minutes),
+        targetScope: row.target_scope || null,
+        observedChangePct: row.observed_change_pct == null ? null : Number(row.observed_change_pct),
+        expectedMode: row.expected_mode,
+        supportScore: Number(row.support_score),
+        wasSupported: row.was_supported === true,
+        sourceEventAt: row.source_event_at,
+        evaluatedAt: row.evaluated_at,
+        details: row.details || {},
+        message: String(row.message || "").slice(0, 400)
+      }));
+    }
+    return res.json({
+      ok: true,
+      enabled: true,
+      version: "10.38-market-knowledge-learning",
+      policy: {
+        hypothesesAreNotTruth: true,
+        minimumSamplesBeforeInfluence: MARKET_KNOWLEDGE_MIN_SAMPLES,
+        minimumSmoothedSupportPct: MARKET_KNOWLEDGE_MIN_SUPPORT,
+        canCreateBuyAlone: false,
+        canBlockBuyWhenVerifiedRuleContradicts: true,
+        learningHorizonsMinutes: MARKET_KNOWLEDGE_HORIZONS
+      },
+      rules: MARKET_KNOWLEDGE_RULES.map(rule => ({
+        ...rule,
+        profile: profiles[rule.id] || null
+      })),
+      recent,
+      note: "Trader-Wissen wird als Hypothese gespeichert, mit echten FUT.GG-Marktdaten geprüft und erst nach genügend FC-Beobachtungen vorsichtig gewichtet."
+    });
+  } catch (error) {
+    return res.status(500).json({ ok: false, error: String(error) });
+  }
 });
 
 app.get("/api/trader-reliability/status", async (req, res) => {
@@ -7726,7 +8272,7 @@ app.get("/api/trader-reliability/status", async (req, res) => {
 
     return res.json({
       enabled: true,
-      version: "10.37-strict-buy-calibration",
+      version: "10.38-market-knowledge-learning",
       gameYear: GAME_YEAR,
       method: {
         priorAccuracy: TRADER_RELIABILITY_PRIOR_ACCURACY,
@@ -7785,7 +8331,7 @@ app.get("/api/trader-reliability/status", async (req, res) => {
 app.get("/api/trader-confluence/status", (req, res) => {
   res.json({
     enabled: DISCORD_CONFIGURED && dbEnabled,
-    version: "10.37-strict-buy-calibration",
+    version: "10.38-market-knowledge-learning",
     minCardConfidence: DISCORD_TRADER_CONFLUENCE_MIN_CONFIDENCE,
     minRatingConfidence: DISCORD_TRADER_CONFLUENCE_MIN_RATING_CONFIDENCE,
     minTraderReliability: DISCORD_TRADER_CONFLUENCE_MIN_RELIABILITY,
@@ -7972,7 +8518,7 @@ app.get("/api/intensive-watchlist", async (req, res) => {
 
     res.json({
       ok: true,
-      version: "10.37-strict-buy-calibration",
+      version: "10.38-market-knowledge-learning",
       count: items.length,
       settings: {
         moveAlertPct: INTENSIVE_WATCH_MOVE_PCT,
@@ -8085,7 +8631,7 @@ app.get("/api/trading", async (req, res) => {
 
     res.json({
       ok: true,
-      version: "10.37-strict-buy-calibration",
+      version: "10.38-market-knowledge-learning",
       refreshSeconds: 60,
       dbEnabled,
       sourceHealth: health,
@@ -8166,7 +8712,7 @@ app.get("/api/processing-health", (req, res) => {
   const health = processingHealthSnapshot();
   res.status(health.healthy ? 200 : 503).json({
     ok: health.healthy,
-    version: "10.37-strict-buy-calibration",
+    version: "10.38-market-knowledge-learning",
     gameYear: GAME_YEAR,
     processingHealth: health,
     note: "DB-, Brain- oder Discord-Fehler werden getrennt von FUT.GG-Quellfehlern bewertet und können den Source Health Guard nicht mehr fälschlich in Quarantäne schicken."
@@ -8177,7 +8723,7 @@ app.get("/api/source-health", (req, res) => {
   const health = sourceHealthSnapshot();
   res.status(health.status === "UNHEALTHY" ? 503 : 200).json({
     ok: health.status !== "UNHEALTHY",
-    version: "10.37-strict-buy-calibration",
+    version: "10.38-market-knowledge-learning",
     gameYear: GAME_YEAR,
     refreshSeconds: 60,
     source: "FUT.GG PS5 bulk prices",
@@ -8197,7 +8743,7 @@ app.get("/api/futbin/status", (req, res) => {
 
   res.json({
     ok: true,
-    version: "10.37-strict-buy-calibration",
+    version: "10.38-market-knowledge-learning",
     gameYear: GAME_YEAR,
     configured: Boolean(FUTBIN_AUTHORIZED_FEED_URL || FUTBIN_PARSE_API_KEY),
     status: latestFutbinStatus,
@@ -8238,7 +8784,7 @@ app.get("/api/futbin/status", (req, res) => {
 app.get("/api/market-context", (req, res) => {
   res.json({
     ok: true,
-    version: "10.37-strict-buy-calibration",
+    version: "10.38-market-knowledge-learning",
     gameYear: GAME_YEAR,
     refreshSeconds: 60,
     context: latestMarketContext,
@@ -8249,7 +8795,7 @@ app.get("/api/market-context", (req, res) => {
 app.get("/api/trader-brain/status", (req, res) => {
   res.json({
     ok: true,
-    version: "10.37-strict-buy-calibration",
+    version: "10.38-market-knowledge-learning",
     gameYear: GAME_YEAR,
     marketProfile: marketProfile(),
     marketContext: latestMarketContext,
@@ -8259,7 +8805,7 @@ app.get("/api/trader-brain/status", (req, res) => {
     lastBrainError,
     lastGeminiCandidate,
     learning: {
-      version: "10.37-strict-buy-calibration",
+      version: "10.38-market-knowledge-learning",
       totalMatureDecisions: brainLearningCache.totalMatureDecisions,
       rawMatureDecisions: brainLearningCache.rawMatureDecisions,
       uniqueLearningEpisodes: brainLearningCache.uniqueLearningEpisodes,
@@ -8280,7 +8826,7 @@ app.get("/api/trader-brain/learning/status", async (req, res) => {
     const cache = await loadBrainLearningProfiles(true);
     return res.json({
       enabled: true,
-      version: "10.37-strict-buy-calibration",
+      version: "10.38-market-knowledge-learning",
       method: {
         windowDays: BRAIN_LEARNING_WINDOW_DAYS,
         priorAccuracy: BRAIN_LEARNING_PRIOR_ACCURACY,
@@ -9471,7 +10017,7 @@ httpServer = app.listen(
   port,
   () => {
     console.log(
-      `FC Trading Intelligence v10.37 Strict Buy Calibration (FC${GAME_YEAR}) running on ${port}`
+      `FC Trading Intelligence v10.38 Market Knowledge Learning (FC${GAME_YEAR}) running on ${port}`
     );
 
     startMonitoring();
