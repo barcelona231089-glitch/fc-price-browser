@@ -105,6 +105,12 @@ const STRICT_BUY_SPECIAL_MIN_15M = Number(process.env.STRICT_BUY_SPECIAL_MIN_15M
 const STRICT_BUY_SPECIAL_MIN_1H = Number(process.env.STRICT_BUY_SPECIAL_MIN_1H || -1);
 const STRICT_BUY_INVALIDATION_DROP_PCT = Math.max(0.5, Math.min(5, Number(process.env.STRICT_BUY_INVALIDATION_DROP_PCT || 1)));
 
+// v10.42: Discord alert sanity guard. Contradictory horizons and a materially
+// changed live FUT.GG price must not produce a high-confidence directional alert.
+const ALERT_SANITY_RECHECK_DIFF_PCT = Math.max(2, Math.min(25, Number(process.env.ALERT_SANITY_RECHECK_DIFF_PCT || 7)));
+const ALERT_SANITY_RECHECK_MIN_MOVE_PCT = Math.max(5, Math.min(40, Number(process.env.ALERT_SANITY_RECHECK_MIN_MOVE_PCT || 10)));
+const ALERT_SANITY_OPPOSING_MOVE_PCT = Math.max(3, Math.min(20, Number(process.env.ALERT_SANITY_OPPOSING_MOVE_PCT || 5)));
+
 const cardCache = new Map();
 const cardInflight = new Map();
 
@@ -335,7 +341,7 @@ for (const source of CURATED_TRADER_SOURCES) {
 
 const TRADER_MARKET_IMPACT_HORIZONS = [15, 60, 360, 1440];
 
-// v10.41: Discord intensive-watch stop UI cleanup fix.
+// v10.42: Discord alert sanity + live price recheck. Keeps the v10.41 watch-stop fix.
 // Keeps v10.38 Market Knowledge Learning and all previous features. Öffentliche Trading-Grundsätze werden
 // nicht als Wahrheit behandelt. Lernbare Regeln starten als Hypothesen und
 // dürfen erst nach genügend echten FC26-Beobachtungen die Entscheidung leicht
@@ -3149,7 +3155,162 @@ function discordAlertShouldSend(state, action, price, confidence, fingerprint) {
   return age >= 2 * 60 * 60_000;
 }
 
+function alertSanityNumber(value) {
+  const number = Number(value);
+  return Number.isFinite(number) ? number : 0;
+}
+
+function alertSanitySnapshot(row) {
+  const c1 = alertSanityNumber(row?.change1m);
+  const c5 = alertSanityNumber(row?.change5m);
+  const c15 = alertSanityNumber(row?.change15m);
+  const c1h = alertSanityNumber(row?.change1h);
+  const c24 = alertSanityNumber(row?.change24h);
+  const opposite = ALERT_SANITY_OPPOSING_MOVE_PCT;
+  const values = [c1, c5, c15];
+  const hasPositive = values.some(value => value >= opposite);
+  const hasNegative = values.some(value => value <= -opposite);
+  const spread = Math.max(...values) - Math.min(...values);
+  const mixedDirection = hasPositive && hasNegative;
+  const opposingHorizons = Boolean(
+    (c1 <= -7 && c5 >= opposite) ||
+    (c1 >= opposite && c5 <= -10) ||
+    (c5 <= -10 && c15 >= opposite) ||
+    (c5 >= 10 && c15 <= -opposite) ||
+    (mixedDirection && spread >= 35)
+  );
+
+  const derivedRegime = brainLearningMarketRegime({
+    change5m: c5,
+    change15m: c15,
+    change1h: c1h,
+    change24h: c24,
+    distanceTo24hLow: row?.distanceFrom24hLow,
+    ratingMarketRisingPct: row?.ratingMarketRisingPct,
+    ratingMarketFallingPct: row?.ratingMarketFallingPct
+  });
+
+  const reasonText = String(row?.aiReason || '').toLowerCase();
+  const saysSelloff = /abverkauf|abwärtsdruck|crash|falling knife/.test(reasonText);
+  const saysPump = /pump|fomo|stark steig/.test(reasonText);
+  const pumpVsCrash = Boolean(
+    (derivedRegime === 'PUMP' && (row?.aiAction === 'NOCH WARTEN' || saysSelloff)) ||
+    (derivedRegime === 'CRASH' && ['JETZT KAUFEN', 'JETZT VERKAUFEN'].includes(String(row?.aiAction || '')) && saysPump)
+  );
+
+  const median = Number(row?.ratingMarketMedianPrice);
+  const price = Number(row?.price);
+  const ratingRatio = Number.isFinite(median) && median > 0 && Number.isFinite(price) && price > 0
+    ? price / median
+    : null;
+  const ratingSpikeSuspect = Boolean(
+    String(row?.cardType || '') === 'Base Rare' &&
+    Number.isFinite(ratingRatio) &&
+    ratingRatio >= 2.5 &&
+    (Math.abs(c1) >= 8 || Math.abs(c5) >= 20) &&
+    mixedDirection
+  );
+
+  const reasons = [];
+  if (opposingHorizons) reasons.push(`Kurzfristige Horizonte widersprechen sich (${c1.toFixed(2)}% / ${c5.toFixed(2)}% / ${c15.toFixed(2)}%).`);
+  if (pumpVsCrash) reasons.push(`Marktregime ${derivedRegime} widerspricht der aktuellen Richtungsbegründung.`);
+  if (ratingSpikeSuspect) reasons.push(`Preis liegt auffällig weit vom ${row?.overall}er-Ratingmedian entfernt und die kurzen Horizonte sind instabil.`);
+
+  return {
+    blocked: reasons.length > 0,
+    reasons,
+    opposingHorizons,
+    pumpVsCrash,
+    ratingSpikeSuspect,
+    derivedRegime,
+    mixedDirection,
+    spread: Number(spread.toFixed(2)),
+    checkedAt: new Date().toISOString()
+  };
+}
+
+function applyAlertSanityGuard(row) {
+  if (!row) return row;
+  const sanity = alertSanitySnapshot(row);
+  const old = row.aiAlertSanity || {};
+  row.aiAlertSanity = { ...old, ...sanity, version: '10.42' };
+
+  if (!sanity.blocked) return row;
+
+  // Directional high-confidence states are unsafe while the horizons disagree.
+  if (['JETZT KAUFEN', 'NOCH WARTEN', 'VERKAUF PRÜFEN', 'JETZT VERKAUFEN'].includes(String(row.aiAction || ''))) {
+    row.aiAlertSanity.originalAction = row.aiAction;
+    row.aiAlertSanity.originalConfidence = row.aiConfidence;
+    row.aiAction = 'BEOBACHTEN';
+    row.aiConfidence = Math.min(Number(row.aiConfidence || 60), 60);
+    row.aiRisk = 'mittel';
+    row.aiMarketState = 'DATEN PRÜFEN';
+    row.aiRecommendedHorizon = 'Nächsten sauberen 60-Sekunden-Zyklus abwarten';
+    row.aiReason = `v10.42 Alert-Sanity: ${sanity.reasons.join(' ')} Kein Richtungs-Call, bis die Daten wieder konsistent sind.`.slice(0, 1800);
+  }
+
+  return row;
+}
+
+function discordAlertPrice(row) {
+  const rechecked = Number(row?.aiAlertSanity?.recheckPrice);
+  if (Number.isFinite(rechecked) && rechecked > 0) return rechecked;
+  return Number(row?.price);
+}
+
+function discordAlertNeedsLiveRecheck(row, type) {
+  if (!row) return false;
+  if (type === 'data') return true;
+  if (['buy', 'sell', 'crash'].includes(type)) {
+    const movement = Math.max(
+      Math.abs(alertSanityNumber(row.change1m)),
+      Math.abs(alertSanityNumber(row.change5m)),
+      Math.abs(alertSanityNumber(row.change15m))
+    );
+    return movement >= ALERT_SANITY_RECHECK_MIN_MOVE_PCT;
+  }
+  return false;
+}
+
+function markDiscordLivePriceRecheck(row, freshPrice) {
+  const analyzedPrice = Number(row?.price);
+  const latestPrice = Number(freshPrice);
+  if (!Number.isFinite(analyzedPrice) || analyzedPrice <= 0 || !Number.isFinite(latestPrice) || latestPrice <= 0) return false;
+  const diffPct = Number((((latestPrice - analyzedPrice) / analyzedPrice) * 100).toFixed(2));
+  row.aiAlertSanity = {
+    ...(row.aiAlertSanity || {}),
+    version: '10.42',
+    recheckPrice: latestPrice,
+    recheckDiffPct: diffPct,
+    recheckedAt: new Date().toISOString()
+  };
+
+  if (Math.abs(diffPct) < ALERT_SANITY_RECHECK_DIFF_PCT) return false;
+
+  const extra = `Live-FUT.GG-Recheck: Analysepreis ${discordNumber(analyzedPrice)} → aktuell ${discordNumber(latestPrice)} Coins (${discordPct(diffPct)}).`;
+  row.aiAlertSanity.blocked = true;
+  row.aiAlertSanity.livePriceChanged = true;
+  row.aiAlertSanity.reasons = [...(row.aiAlertSanity.reasons || []), extra];
+  row.aiAlertSanity.originalAction = row.aiAlertSanity.originalAction || row.aiAction;
+  row.aiAlertSanity.originalConfidence = row.aiAlertSanity.originalConfidence ?? row.aiConfidence;
+  row.aiAction = 'BEOBACHTEN';
+  row.aiConfidence = Math.min(Number(row.aiConfidence || 60), 60);
+  row.aiRisk = 'mittel';
+  row.aiMarketState = 'DATEN PRÜFEN';
+  row.aiRecommendedHorizon = 'Preis im nächsten Marktzyklus erneut bestätigen';
+  row.aiReason = `v10.42 Alert-Sanity: ${extra} Richtungsalarm unterdrückt, weil der Preis sich seit der Analyse materiell geändert hat.`.slice(0, 1800);
+  return true;
+}
+
 function cardDiscordAlertCandidate(row) {
+  if (row?.aiAlertSanity?.blocked) {
+    const magnitude = Math.max(Math.abs(alertSanityNumber(row.change1m)), Math.abs(alertSanityNumber(row.change5m)), Math.abs(alertSanityNumber(row.change15m)));
+    if (magnitude >= ALERT_SANITY_RECHECK_MIN_MOVE_PCT || row?.aiAlertSanity?.livePriceChanged) {
+      return { type: "data", priority: 115 + Math.min(30, magnitude) };
+    }
+    return null;
+  }
+
   // Nur ein als belastbar eingestufter FUTBIN-Cross-Check darf Kaufalarme blockieren.
   // Bei marktweit unplausiblen Zweitquellen-Daten ignorieren wir den Einzel-Ausreißer.
   if (
@@ -3181,9 +3342,10 @@ function cardDiscordAlertCandidate(row) {
   const crash =
     row.aiAction === "NOCH WARTEN" &&
     row.aiConfidence >= 90 &&
+    !row?.aiAlertSanity?.blocked &&
     (
-      (Number.isFinite(row.change1m) && row.change1m <= -7) ||
-      (Number.isFinite(row.change5m) && row.change5m <= -10)
+      (Number.isFinite(row.change1m) && row.change1m <= -7 && Number.isFinite(row.change5m) && row.change5m <= -5) ||
+      (Number.isFinite(row.change5m) && row.change5m <= -10 && Number.isFinite(row.change15m) && row.change15m <= -2)
     );
 
   if (crash) return { type: "crash", priority: 90 + row.aiConfidence };
@@ -3191,12 +3353,12 @@ function cardDiscordAlertCandidate(row) {
 }
 
 function buildCardDiscordPayload(row, type) {
-  const emoji = type === "buy" ? "🟢" : type === "sell" ? "💰" : "🚨";
-  const titleAction = type === "crash" ? "NOCH WARTEN" : row.aiAction;
+  const emoji = type === "buy" ? "🟢" : type === "sell" ? "💰" : type === "data" ? "⚠️" : "🚨";
+  const titleAction = type === "crash" ? "NOCH WARTEN" : type === "data" ? "DATEN PRÜFEN" : row.aiAction;
   const title = `${emoji} ${titleAction}: ${row.name || `EA ${row.eaId}`} (${row.overall})`;
 
   const fields = [
-    { name: "Preis", value: `${discordNumber(row.price)} Coins`, inline: true },
+    { name: "Preis", value: `${discordNumber(discordAlertPrice(row))} Coins`, inline: true },
     { name: "KI-Sicherheit", value: `${row.aiConfidence}%`, inline: true },
     { name: "Kartentyp", value: String(row.cardType || "-"), inline: true },
     { name: "1m / 5m / 15m", value: `${discordPct(row.change1m)} / ${discordPct(row.change5m)} / ${discordPct(row.change15m)}`, inline: false },
@@ -3238,6 +3400,8 @@ function buildCardDiscordPayload(row, type) {
           ? "Trader Brain sieht eine bestätigte Kauf-Trendwende."
           : type === "sell"
           ? "Eigener Bestand erreicht eine relevante Gewinn-/Ausstiegszone."
+          : type === "data"
+          ? "Kurzfristige Marktdaten oder der Live-Preis widersprechen sich. Kein Richtungs-Call, bis der nächste saubere Marktcheck bestätigt."
           : "Starker Abverkauf erkannt. Nicht blind in den Fall kaufen.",
       fields,
       footer: { text: "FC Trader Brain • automatische 60-Sekunden-Analyse" },
@@ -3999,6 +4163,7 @@ async function processBrainStateChangeAlerts(rows, alertBudget = null) {
   const candidates = [];
 
   for (const row of rows) {
+    if (row?.aiAlertSanity?.blocked) continue;
     const previous = previousStates.get(String(row.eaId));
     if (!previous?.action || previous.action === row.aiAction) continue;
 
@@ -4072,8 +4237,12 @@ async function processBrainStateChangeAlerts(rows, alertBudget = null) {
     }
   }
 
-  // Fehlgeschlagene oder wegen des Zyklus-Limits noch nicht gesendete Übergänge
-  // bleiben offen und werden im nächsten Zyklus erneut geprüft.
+  // Fehlgeschlagene, limitierte oder durch den v10.42-Daten-Sanity-Guard blockierte
+  // Übergänge bleiben offen. Ein widersprüchlicher Snapshot darf den Brain-State
+  // nicht als neue Wahrheit speichern.
+  for (const row of rows) {
+    if (row?.aiAlertSanity?.blocked) retryIds.add(String(row.eaId));
+  }
   await saveBrainStates(rows, retryIds);
 }
 
@@ -4217,6 +4386,27 @@ async function processDiscordAlerts(rows, ratingStats, alertBudget = null) {
       if (candidate) candidates.push({ kind: "card", row, ...candidate });
     }
 
+    // Volatile Directional-Alerts werden direkt vor Discord einmal gegen einen
+    // frischen FUT.GG-Bulk-Snapshot gegengeprüft. Wenn der Preis seit der Analyse
+    // materiell weitergesprungen ist, senden wir DATEN PRÜFEN statt einer alten
+    // Kauf-/Verkauf-/Crash-Aussage.
+    const needsRecheck = candidates.filter(item => item.kind === "card" && discordAlertNeedsLiveRecheck(item.row, item.type));
+    if (needsRecheck.length) {
+      try {
+        const freshBulk = await loadBulkPs5Prices(true);
+        for (const item of needsRecheck) {
+          const fresh = freshBulk?.map?.get(Number(item.row.eaId))?.price;
+          if (!Number.isFinite(fresh) || fresh <= 0) continue;
+          if (markDiscordLivePriceRecheck(item.row, fresh)) {
+            item.type = "data";
+            item.priority = Math.max(item.priority || 0, 125);
+          }
+        }
+      } catch (error) {
+        console.warn("v10.42 Discord live price recheck skipped:", String(error));
+      }
+    }
+
     for (const stat of Object.values(ratingStats || {})) {
       if (ratingDiscordAlertCandidate(stat)) {
         candidates.push({ kind: "rating", stat, type: "rating", priority: 120 + stat.confidence });
@@ -4234,17 +4424,18 @@ async function processDiscordAlerts(rows, ratingStats, alertBudget = null) {
       if (item.kind === "card") {
         const row = item.row;
         const alertKey = `card:${row.eaId}`;
-        const fingerprint = `${row.aiAction}|${Math.round((row.change5m ?? 0) * 10)}|${Math.round((row.change15m ?? 0) * 10)}`;
+        const alertPrice = discordAlertPrice(row);
+        const fingerprint = `${item.type}|${row.aiAction}|${Math.round((row.change5m ?? 0) * 10)}|${Math.round((row.change15m ?? 0) * 10)}|${Math.round(Number(row?.aiAlertSanity?.recheckDiffPct || 0) * 10)}`;
         const state = await getDiscordAlertState(alertKey);
-        if (!discordAlertShouldSend(state, row.aiAction, row.price, row.aiConfidence, fingerprint)) continue;
+        if (!discordAlertShouldSend(state, item.type === "data" ? "DATEN PRÜFEN" : row.aiAction, alertPrice, row.aiConfidence, fingerprint)) continue;
 
         await sendDiscordPayload(buildCardDiscordPayload(row, item.type));
         discordCycleConsume(alertBudget);
         await saveDiscordAlertState({
           alertKey,
           alertType: item.type,
-          action: row.aiAction,
-          price: row.price,
+          action: item.type === "data" ? "DATEN PRÜFEN" : row.aiAction,
+          price: alertPrice,
           confidence: row.aiConfidence,
           fingerprint
         });
@@ -4291,7 +4482,7 @@ async function sendDiscordStartupMessage() {
           { name: "Kaufalarm ab", value: `${DISCORD_MIN_BUY_CONFIDENCE}% KI-Sicherheit`, inline: true },
           { name: "Spam-Schutz", value: `${Math.round(DISCORD_ALERT_COOLDOWN_MS / 60_000)} Min. Cooldown`, inline: true }
         ],
-        footer: { text: "FC Trading Intelligence v10.41" },
+        footer: { text: "FC Trading Intelligence v10.42" },
         timestamp: new Date().toISOString()
       }]
     });
@@ -4300,7 +4491,7 @@ async function sendDiscordStartupMessage() {
       alertKey,
       alertType: "system",
       action: "CONNECTED",
-      fingerprint: "v10.40"
+      fingerprint: "v10.42"
     });
   } catch (error) {
     lastDiscordError = String(error);
@@ -4387,6 +4578,7 @@ async function monitorOnce() {
       for (const row of latestTradingRows) {
         const work = built.brainWork.get(String(row.eaId));
         calibrateStrictBuyDecision(row, work);
+        applyAlertSanityGuard(row);
         recordStrictBuyGuardOutcome(row);
       }
       await processIntensiveWatchAlerts(latestTradingRows, cycleAlertBudget);
@@ -7416,9 +7608,11 @@ async function buildTradingRows(futbinFeedOverride = null) {
     row.ratingMarketTrend = rating.trend;
     row.ratingMarketRisingPct = rating.risingPct;
     row.ratingMarketFallingPct = rating.fallingPct;
+    row.ratingMarketMedianPrice = Number.isFinite(Number(rating.medianPrice)) ? Number(rating.medianPrice) : null;
     row.globalMarketMood = globalMarketContext.mood;
     row.packSupplyActive = globalMarketContext.packSupplyActive;
     row.marketContextConfidence = globalMarketContext.confidence;
+    applyAlertSanityGuard(row);
 
     brainWork.set(String(row.eaId), { input, quant, confluence, learningProfile, knowledgeContext });
   }
@@ -7788,7 +7982,7 @@ app.get("/", (req, res) => {
   res.json({
     online: true,
     service: "FC Trading Intelligence",
-    version: "10.41-discord-watch-stop-ui-fix",
+    version: "10.42-alert-sanity-guard",
     gameYear: GAME_YEAR,
     marketProfile: marketProfile(),
     refreshSeconds: 60,
@@ -7915,7 +8109,7 @@ app.get("/api/readiness", (req, res) => {
   const readiness = runtimeReadinessSnapshot();
   res.status(readiness.ready ? 200 : 503).json({
     ok: readiness.ready,
-    version: "10.41-discord-watch-stop-ui-fix",
+    version: "10.42-alert-sanity-guard",
     gameYear: GAME_YEAR,
     readiness,
     note: "Dieser Endpunkt ist absichtlich strenger als /health. /health zeigt, ob der Webdienst lebt; /api/readiness zeigt, ob Marktquelle, Monitoring, Datenbank, Discord und Trader Brain wirklich produktionsbereit sind."
@@ -7925,7 +8119,7 @@ app.get("/api/readiness", (req, res) => {
 app.get("/health", (req, res) => {
   res.json({
     ok: true,
-    version: "10.41-discord-watch-stop-ui-fix",
+    version: "10.42-alert-sanity-guard",
     gameYear: GAME_YEAR,
     marketProfile: marketProfile(),
     marketContext: latestMarketContext,
@@ -8212,9 +8406,36 @@ app.post("/api/trader-signals/ingest", async (req, res) => {
 
 app.get("/api/trader-sources/status", (req, res) => {
   res.json({
-    ok: true, version: "10.41-discord-watch-stop-ui-fix", mode: "forwarded-or-authorized-only", automaticForeignDiscordReading: false,
+    ok: true, version: "10.42-alert-sanity-guard", mode: "forwarded-or-authorized-only", automaticForeignDiscordReading: false,
     sources: CURATED_TRADER_SOURCES.map(source => ({ id: source.id, name: source.displayName, aliases: source.aliases, channels: source.channels.map(channel => ({ channel: channel.name, type: channel.type, category: channel.category, defaultCall: channel.defaultCall, reliabilityWeight: Number(channel.weight || 1) })) })),
     note: "Die Registry normalisiert weitergeleitete/erlaubte Signale. Sie liest keine fremden Discord-Server automatisch oder verdeckt aus."
+  });
+});
+
+app.get("/api/alert-sanity/status", (req, res) => {
+  const blocked = (latestTradingRows || []).filter(row => row?.aiAlertSanity?.blocked).slice(0, 25).map(row => ({
+    eaId: row.eaId,
+    player: row.name,
+    rating: row.overall,
+    analyzedPrice: row.price,
+    recheckPrice: row?.aiAlertSanity?.recheckPrice ?? null,
+    recheckDiffPct: row?.aiAlertSanity?.recheckDiffPct ?? null,
+    action: row.aiAction,
+    confidence: row.aiConfidence,
+    regime: row?.aiAlertSanity?.derivedRegime,
+    reasons: row?.aiAlertSanity?.reasons || []
+  }));
+  res.json({
+    ok: true,
+    version: "10.42-alert-sanity-guard",
+    blockedNow: blocked.length,
+    thresholds: {
+      livePriceDiffPct: ALERT_SANITY_RECHECK_DIFF_PCT,
+      liveRecheckMinMovePct: ALERT_SANITY_RECHECK_MIN_MOVE_PCT,
+      opposingMovePct: ALERT_SANITY_OPPOSING_MOVE_PCT
+    },
+    blocked,
+    note: "Widerspruechliche Horizonte oder ein materiell veraenderter Live-FUT.GG-Preis erzeugen keinen Richtungsalarm."
   });
 });
 
@@ -8222,7 +8443,7 @@ app.get("/api/buy-guard/status", (req, res) => {
   res.json({
     ok: true,
     enabled: true,
-    version: "10.41-discord-watch-stop-ui-fix",
+    version: "10.42-alert-sanity-guard",
     rules: {
       duplicateShortHorizonsCountAsOne: true,
       requiredRecoveryCycles: STRICT_BUY_RECOVERY_CYCLES,
@@ -8255,7 +8476,7 @@ app.get("/api/leak-impact/status", async (req, res) => {
       GROUP BY s.source ORDER BY COUNT(DISTINCT i.signal_id) DESC, s.source ASC
     `);
     return res.json({
-      ok: true, enabled: true, version: "10.41-discord-watch-stop-ui-fix", horizonsMinutes: TRADER_MARKET_IMPACT_HORIZONS,
+      ok: true, enabled: true, version: "10.42-alert-sanity-guard", horizonsMinutes: TRADER_MARKET_IMPACT_HORIZONS,
       sourceSummary: sourceSummary.rows.map(row => ({ source: row.source, events: Number(row.events || 0), evaluatedPoints: Number(row.evaluated_points || 0), avgAbsMarketMovePct: Number(row.avg_abs_market_move || 0), avgMarketMovePct: Number(row.avg_market_move || 0) })),
       recent: recent.rows.map(row => ({ signalId: row.signal_id, source: row.source, channel: row.source_channel || null, category: row.category, horizonMinutes: Number(row.horizon_minutes), marketMedianChangePct: Number(row.market_median_change_pct), strongestRating: row.strongest_rating == null ? null : Number(row.strongest_rating), strongestRatingChangePct: row.strongest_rating_change_pct == null ? null : Number(row.strongest_rating_change_pct), affectedRatings: row.affected_ratings || [], direction: row.direction, sourceEventAt: row.source_event_at, evaluatedAt: row.evaluated_at, message: String(row.message || "").slice(0, 500) })),
       note: "Leak/Content-Events loesen keinen Kauf aus. Der Brain misst zuerst, welche Rating-Segmente sich nach 15m/1h/6h/24h real bewegen."
@@ -8299,7 +8520,7 @@ app.get("/api/market-knowledge/status", async (req, res) => {
     return res.json({
       ok: true,
       enabled: true,
-      version: "10.41-discord-watch-stop-ui-fix",
+      version: "10.42-alert-sanity-guard",
       policy: {
         hypothesesAreNotTruth: true,
         minimumSamplesBeforeInfluence: MARKET_KNOWLEDGE_MIN_SAMPLES,
@@ -8368,7 +8589,7 @@ app.get("/api/trader-reliability/status", async (req, res) => {
 
     return res.json({
       enabled: true,
-      version: "10.41-discord-watch-stop-ui-fix",
+      version: "10.42-alert-sanity-guard",
       gameYear: GAME_YEAR,
       method: {
         priorAccuracy: TRADER_RELIABILITY_PRIOR_ACCURACY,
@@ -8427,7 +8648,7 @@ app.get("/api/trader-reliability/status", async (req, res) => {
 app.get("/api/trader-confluence/status", (req, res) => {
   res.json({
     enabled: DISCORD_CONFIGURED && dbEnabled,
-    version: "10.41-discord-watch-stop-ui-fix",
+    version: "10.42-alert-sanity-guard",
     minCardConfidence: DISCORD_TRADER_CONFLUENCE_MIN_CONFIDENCE,
     minRatingConfidence: DISCORD_TRADER_CONFLUENCE_MIN_RATING_CONFIDENCE,
     minTraderReliability: DISCORD_TRADER_CONFLUENCE_MIN_RELIABILITY,
@@ -8614,7 +8835,7 @@ app.get("/api/intensive-watchlist", async (req, res) => {
 
     res.json({
       ok: true,
-      version: "10.41-discord-watch-stop-ui-fix",
+      version: "10.42-alert-sanity-guard",
       count: items.length,
       settings: {
         moveAlertPct: INTENSIVE_WATCH_MOVE_PCT,
@@ -8727,7 +8948,7 @@ app.get("/api/trading", async (req, res) => {
 
     res.json({
       ok: true,
-      version: "10.41-discord-watch-stop-ui-fix",
+      version: "10.42-alert-sanity-guard",
       refreshSeconds: 60,
       dbEnabled,
       sourceHealth: health,
@@ -8808,7 +9029,7 @@ app.get("/api/processing-health", (req, res) => {
   const health = processingHealthSnapshot();
   res.status(health.healthy ? 200 : 503).json({
     ok: health.healthy,
-    version: "10.41-discord-watch-stop-ui-fix",
+    version: "10.42-alert-sanity-guard",
     gameYear: GAME_YEAR,
     processingHealth: health,
     note: "DB-, Brain- oder Discord-Fehler werden getrennt von FUT.GG-Quellfehlern bewertet und können den Source Health Guard nicht mehr fälschlich in Quarantäne schicken."
@@ -8819,7 +9040,7 @@ app.get("/api/source-health", (req, res) => {
   const health = sourceHealthSnapshot();
   res.status(health.status === "UNHEALTHY" ? 503 : 200).json({
     ok: health.status !== "UNHEALTHY",
-    version: "10.41-discord-watch-stop-ui-fix",
+    version: "10.42-alert-sanity-guard",
     gameYear: GAME_YEAR,
     refreshSeconds: 60,
     source: "FUT.GG PS5 bulk prices",
@@ -8839,7 +9060,7 @@ app.get("/api/futbin/status", (req, res) => {
 
   res.json({
     ok: true,
-    version: "10.41-discord-watch-stop-ui-fix",
+    version: "10.42-alert-sanity-guard",
     gameYear: GAME_YEAR,
     configured: Boolean(FUTBIN_AUTHORIZED_FEED_URL || FUTBIN_PARSE_API_KEY),
     status: latestFutbinStatus,
@@ -8880,7 +9101,7 @@ app.get("/api/futbin/status", (req, res) => {
 app.get("/api/market-context", (req, res) => {
   res.json({
     ok: true,
-    version: "10.41-discord-watch-stop-ui-fix",
+    version: "10.42-alert-sanity-guard",
     gameYear: GAME_YEAR,
     refreshSeconds: 60,
     context: latestMarketContext,
@@ -8891,7 +9112,7 @@ app.get("/api/market-context", (req, res) => {
 app.get("/api/trader-brain/status", (req, res) => {
   res.json({
     ok: true,
-    version: "10.41-discord-watch-stop-ui-fix",
+    version: "10.42-alert-sanity-guard",
     gameYear: GAME_YEAR,
     marketProfile: marketProfile(),
     marketContext: latestMarketContext,
@@ -8901,7 +9122,7 @@ app.get("/api/trader-brain/status", (req, res) => {
     lastBrainError,
     lastGeminiCandidate,
     learning: {
-      version: "10.41-discord-watch-stop-ui-fix",
+      version: "10.42-alert-sanity-guard",
       totalMatureDecisions: brainLearningCache.totalMatureDecisions,
       rawMatureDecisions: brainLearningCache.rawMatureDecisions,
       uniqueLearningEpisodes: brainLearningCache.uniqueLearningEpisodes,
@@ -8922,7 +9143,7 @@ app.get("/api/trader-brain/learning/status", async (req, res) => {
     const cache = await loadBrainLearningProfiles(true);
     return res.json({
       enabled: true,
-      version: "10.41-discord-watch-stop-ui-fix",
+      version: "10.42-alert-sanity-guard",
       method: {
         windowDays: BRAIN_LEARNING_WINDOW_DAYS,
         priorAccuracy: BRAIN_LEARNING_PRIOR_ACCURACY,
@@ -10113,7 +10334,7 @@ httpServer = app.listen(
   port,
   () => {
     console.log(
-      `FC Trading Intelligence v10.41 Discord Watch Stop UI Fix (FC${GAME_YEAR}) running on ${port}`
+      `FC Trading Intelligence v10.42 Alert Sanity Guard (FC${GAME_YEAR}) running on ${port}`
     );
 
     startMonitoring();
