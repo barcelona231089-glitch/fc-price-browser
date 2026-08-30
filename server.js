@@ -319,6 +319,34 @@ const TRADER_FEED_ALLOWED_SOURCE_MAP = new Map(
   TRADER_FEED_ALLOWED_SOURCES.map(source => [traderFeedSourceIdentityKey(source), source])
 );
 
+// v10.56: Public Leak Intelligence. Nur frei oeffentliche Seiten werden gelesen.
+// Kein Login, keine Paywall, keine privaten Discord-/Telegram-Bereiche.
+// Standardmaessig nutzen wir zwei oeffentliche Telegram-Preview-Aggregatoren,
+// die ihre Originalquelle im Post nennen. Eigene oeffentliche Channels koennen
+// ueber PUBLIC_LEAK_TELEGRAM_CHANNELS konfiguriert werden.
+const PUBLIC_LEAK_POLL_ENABLED = String(process.env.PUBLIC_LEAK_POLL_ENABLED || "true").trim().toLowerCase() !== "false";
+const PUBLIC_LEAK_POLL_INTERVAL_MS = Math.max(2, Math.min(30, Number(process.env.PUBLIC_LEAK_POLL_INTERVAL_MIN || 5))) * 60_000;
+const PUBLIC_LEAK_MAX_AGE_MS = Math.max(1, Math.min(24, Number(process.env.PUBLIC_LEAK_MAX_AGE_HOURS || 8))) * 60 * 60_000;
+const PUBLIC_LEAK_MAX_POSTS_PER_SOURCE = Math.max(5, Math.min(80, Number(process.env.PUBLIC_LEAK_MAX_POSTS_PER_SOURCE || 35)));
+const PUBLIC_LEAK_PROFILE_MIN_EVENTS = Math.max(3, Math.min(30, Number(process.env.PUBLIC_LEAK_PROFILE_MIN_EVENTS || 6)));
+const PUBLIC_LEAK_TELEGRAM_CHANNELS = String(
+  process.env.PUBLIC_LEAK_TELEGRAM_CHANNELS || "EAFC_PRIME,FIFA_TIPS"
+)
+  .split(/[;,\n]+/)
+  .map(value => String(value || "").trim().replace(/^@/, ""))
+  .filter(value => /^[A-Za-z0-9_]{4,64}$/.test(value));
+
+const PUBLIC_LEAK_KNOWN_SOURCES = [
+  { name: "Fut Sheriff", pattern: /\bfut\s*sheriff\b/i },
+  { name: "FUT Police Leaks", pattern: /\bfut\s*police\s*leaks?\b/i },
+  { name: "Criminal__x", pattern: /\bcriminal_?_?x\b/i },
+  { name: "FutDonk", pattern: /\bfut\s*donk\b|\bfutdonk\b/i },
+  { name: "Donk", pattern: /(?:^|\n|source\s*:)\s*donk\b/i },
+  { name: "RobosFUT", pattern: /\brobosfut\b/i },
+  { name: "UTSources", pattern: /\butsources?\b/i },
+  { name: "FIFATradingRomania", pattern: /\bfifatradingromania\b/i }
+];
+
 // v10.36: kuratierte kostenlose Trader-/Content-Quellen.
 // Diese Registry liest KEINE fremden Discord-Server automatisch aus. Sie
 // normalisiert nur weitergeleitete oder explizit autorisierte Signale.
@@ -568,6 +596,24 @@ const memoryDiscordAlertState = new Map();
 const memoryBrainState = new Map();
 const memoryTraderSignals = [];
 const memoryIntensiveWatchlist = new Map();
+
+let publicLeakInflight = null;
+let publicLeakPollState = {
+  enabled: PUBLIC_LEAK_POLL_ENABLED,
+  channels: [...PUBLIC_LEAK_TELEGRAM_CHANNELS],
+  pollIntervalMinutes: Math.round(PUBLIC_LEAK_POLL_INTERVAL_MS / 60_000),
+  maxAgeHours: Number((PUBLIC_LEAK_MAX_AGE_MS / 3_600_000).toFixed(1)),
+  lastPollAt: null,
+  lastSuccessAt: null,
+  lastError: null,
+  fetchedPosts: 0,
+  relevantPosts: 0,
+  acceptedEvents: 0,
+  duplicateEvents: 0,
+  skippedOld: 0,
+  skippedOtherGameYear: 0,
+  sourceStatus: {}
+};
 let intensiveWatchAlertsSent = 0;
 let lastIntensiveWatchAlertAt = null;
 let lastIntensiveWatchError = null;
@@ -627,6 +673,264 @@ async function fetchJson(url) {
     return await response.json();
   } finally {
     clearTimeout(timer);
+  }
+}
+
+async function fetchText(url) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
+
+  try {
+    const response = await fetch(url, {
+      signal: controller.signal,
+      headers: {
+        accept: "text/html,application/xhtml+xml,text/plain;q=0.9,*/*;q=0.8",
+        "user-agent": "Mozilla/5.0 FC-Trader-Brain-Public-Leak-Reader/10.56"
+      }
+    });
+
+    if (!response.ok) {
+      const error = new Error(`${url} -> HTTP ${response.status}`);
+      error.status = response.status;
+      throw error;
+    }
+
+    return await response.text();
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+function decodePublicHtmlEntities(value) {
+  return String(value || "")
+    .replace(/&nbsp;/gi, " ")
+    .replace(/&amp;/gi, "&")
+    .replace(/&quot;/gi, '"')
+    .replace(/&#39;|&apos;/gi, "'")
+    .replace(/&lt;/gi, "<")
+    .replace(/&gt;/gi, ">")
+    .replace(/&#x([0-9a-f]+);/gi, (_, hex) => {
+      try { return String.fromCodePoint(parseInt(hex, 16)); } catch { return " "; }
+    })
+    .replace(/&#(\d+);/g, (_, dec) => {
+      try { return String.fromCodePoint(parseInt(dec, 10)); } catch { return " "; }
+    });
+}
+
+function publicHtmlToText(fragment) {
+  return compactWhitespace(
+    decodePublicHtmlEntities(
+      String(fragment || "")
+        .replace(/<br\s*\/?\s*>/gi, "\n")
+        .replace(/<\/(?:p|div|blockquote|li|h\d)>/gi, "\n")
+        .replace(/<[^>]+>/g, " ")
+    ).replace(/[\u200b-\u200f\u202a-\u202e]/g, " ")
+  );
+}
+
+function parsePublicTelegramPreview(html, handle) {
+  const raw = String(html || "");
+  const markers = [];
+  const markerRe = /data-post="([^"]+)"/gi;
+  let match;
+
+  while ((match = markerRe.exec(raw))) {
+    markers.push({ index: match.index, postId: match[1] });
+  }
+
+  const posts = [];
+  for (let i = 0; i < markers.length; i++) {
+    const start = markers[i].index;
+    const end = i + 1 < markers.length ? markers[i + 1].index : raw.length;
+    const chunk = raw.slice(start, end);
+    const textMatch = chunk.match(/<div[^>]+class="[^"]*tgme_widget_message_text[^"]*"[^>]*>([\s\S]*?)<\/div>/i);
+    if (!textMatch) continue;
+    const text = publicHtmlToText(textMatch[1]);
+    if (!text || text.length < 4) continue;
+    const timeMatch = chunk.match(/<time[^>]+datetime="([^"]+)"/i);
+    const sourceEventAt = timeMatch && Number.isFinite(Date.parse(timeMatch[1]))
+      ? Date.parse(timeMatch[1])
+      : null;
+    posts.push({
+      handle,
+      postId: markers[i].postId,
+      text,
+      sourceEventAt,
+      publicUrl: `https://t.me/${markers[i].postId}`
+    });
+  }
+
+  return posts.slice(-PUBLIC_LEAK_MAX_POSTS_PER_SOURCE);
+}
+
+function publicLeakMatchesGameYear(text) {
+  const matches = [...String(text || "").matchAll(/\b(?:EA\s*SPORTS\s*)?FC\s*(2[67])\b/gi)]
+    .map(item => item[1]);
+  if (!matches.length) return true;
+  return matches.includes(GAME_YEAR);
+}
+
+function publicTelegramPageMatchesGameYear(html) {
+  const titleMatch = String(html || "").match(/<title[^>]*>([\s\S]*?)<\/title>/i);
+  if (!titleMatch) return true;
+  const title = publicHtmlToText(titleMatch[1]);
+  return publicLeakMatchesGameYear(title);
+}
+
+function identifyPublicLeakSource(text, fallbackHandle) {
+  const raw = String(text || "");
+  const sourceLine = raw.match(/\bsource\s*:\s*([^\n•|]{2,80})/i);
+  if (sourceLine) {
+    const candidate = compactWhitespace(sourceLine[1]).slice(0, 80);
+    const known = PUBLIC_LEAK_KNOWN_SOURCES.find(item => item.pattern.test(candidate));
+    if (known) return { source: known.name, attributed: true };
+    if (candidate) return { source: candidate, attributed: true };
+  }
+
+  for (const item of PUBLIC_LEAK_KNOWN_SOURCES) {
+    if (item.pattern.test(raw)) return { source: item.name, attributed: true };
+  }
+
+  return { source: `Public ${fallbackHandle}`, attributed: false };
+}
+
+function classifyPublicLeakText(text) {
+  const raw = String(text || "");
+  const lower = raw.toLowerCase();
+  const isSbc = /\bsbc\b|squad building|marquee matchup|icon sbc|hero sbc/i.test(raw);
+  const isEvo = /\bevo(?:lution)?s?\b|evolution|evolutions|evoluci[oó]n|evoluzione/i.test(raw);
+  const isSupply = /\bpacks?\b|rewards?|store pack|pack weight|supply|player pick|upgrade pack/i.test(raw);
+  const isPromo = /\bpromo\b|toty|tots|futties|future stars|rttf|ultimate scream|winter wildcards|trailblazers?|fantasy fc|team of the week|totw/i.test(raw);
+  const isObjective = /objectives?|tokens?|gauntlet/i.test(raw);
+  const hasLeakMarker = /\bleaks?\b|leaked|rumou?r|upcoming|coming tonight|tomorrow|tonight|#?لیک/i.test(raw);
+
+  let type = "LEAK";
+  let category = "LEAKS_CONTENT";
+  let topic = "GENERAL";
+  if (isSbc) { type = "SBC_CONTENT"; category = "SBC_FODDER"; topic = "SBC"; }
+  else if (isEvo) { type = "EVO_CONTENT"; category = "LEAKS_CONTENT"; topic = "EVO"; }
+  else if (isSupply) { type = "SUPPLY"; category = "PROMO_CARDS"; topic = "SUPPLY"; }
+  else if (isPromo) { type = "LEAK"; category = "PROMO_CARDS"; topic = "PROMO"; }
+  else if (isObjective) { type = "CONTENT"; category = "LEAKS_CONTENT"; topic = "OBJECTIVE"; }
+
+  const marketRelevant = Boolean(
+    hasLeakMarker || isSbc || isEvo || isSupply || isPromo || isObjective ||
+    /\brating|ratings|playstyle|icon|hero|token|out of packs|leaves packs\b/i.test(lower)
+  );
+
+  return { type, category, topic, marketRelevant, hasLeakMarker };
+}
+
+function publicLeakSignalFromPost(post) {
+  const classification = classifyPublicLeakText(post.text);
+  if (!classification.marketRelevant) return null;
+  if (!publicLeakMatchesGameYear(post.text)) return { skipReason: "OTHER_GAME_YEAR" };
+
+  const attribution = identifyPublicLeakSource(post.text, post.handle);
+  let targetInfo = detectSignalTarget(post.text);
+  if (!targetInfo) targetInfo = { target: "MARKT", eaId: null, kind: "market" };
+  const eventAt = Number.isFinite(Number(post.sourceEventAt)) ? Number(post.sourceEventAt) : Date.now();
+  const fingerprint = crypto
+    .createHash("sha1")
+    .update(`${post.handle}|${post.postId}|${post.text}`)
+    .digest("hex")
+    .slice(0, 28);
+
+  return {
+    id: `public_leak_${fingerprint}`,
+    source: canonicalTraderSourceName(attribution.source),
+    sourceChannel: `telegram:${post.handle}`.slice(0, 120),
+    sourceChannelType: classification.type,
+    sourceChannelWeight: attribution.attributed ? 1 : 0.55,
+    signalKind: "MARKET_EVENT",
+    message: post.text.slice(0, 3000),
+    playerOrRating: targetInfo.target,
+    eaId: targetInfo.eaId || null,
+    call: "BEOBACHTEN",
+    reason: `Public Leak Intelligence: ${classification.topic} aus frei oeffentlicher Telegram-Preview. Quelle: ${attribution.source}.`,
+    expectedTimeframe: detectExpectedTimeframe(post.text) || "Content-/Marktreaktion beobachten",
+    sourceReliability: 50,
+    category: classification.category,
+    timestamp: eventAt,
+    sourceEventAt: eventAt,
+    ingestOrigin: "public_leak_poll",
+    externalEventId: `telegram:${post.postId}`.slice(0, 180),
+    publicLeakTopic: classification.topic,
+    publicUrl: post.publicUrl
+  };
+}
+
+async function pollPublicLeakSources(force = false) {
+  if (!PUBLIC_LEAK_POLL_ENABLED || !PUBLIC_LEAK_TELEGRAM_CHANNELS.length) return publicLeakPollState;
+  const now = Date.now();
+  const lastPollMs = publicLeakPollState.lastPollAt ? Date.parse(publicLeakPollState.lastPollAt) : 0;
+  if (!force && lastPollMs && now - lastPollMs < PUBLIC_LEAK_POLL_INTERVAL_MS) return publicLeakPollState;
+  if (publicLeakInflight) return publicLeakInflight;
+
+  publicLeakInflight = (async () => {
+    const cycle = {
+      fetchedPosts: 0, relevantPosts: 0, acceptedEvents: 0, duplicateEvents: 0,
+      skippedOld: 0, skippedOtherGameYear: 0, sourceStatus: {}
+    };
+    publicLeakPollState.lastPollAt = new Date(now).toISOString();
+
+    for (const handle of PUBLIC_LEAK_TELEGRAM_CHANNELS) {
+      const url = `https://t.me/s/${handle}`;
+      try {
+        const html = await fetchText(url);
+        if (!publicTelegramPageMatchesGameYear(html)) {
+          cycle.sourceStatus[handle] = { ok: true, url, fetched: 0, relevant: 0, accepted: 0, skippedReason: `PAGE_GAME_YEAR_NOT_${GAME_YEAR}` };
+          cycle.skippedOtherGameYear += 1;
+          continue;
+        }
+        const posts = parsePublicTelegramPreview(html, handle);
+        cycle.fetchedPosts += posts.length;
+        let sourceRelevant = 0;
+        let sourceAccepted = 0;
+
+        for (const post of posts) {
+          const eventAt = Number.isFinite(Number(post.sourceEventAt)) ? Number(post.sourceEventAt) : now;
+          if (now - eventAt > PUBLIC_LEAK_MAX_AGE_MS || eventAt > now + 5 * 60_000) {
+            cycle.skippedOld += 1;
+            continue;
+          }
+          const signal = publicLeakSignalFromPost(post);
+          if (!signal) continue;
+          if (signal.skipReason === "OTHER_GAME_YEAR") {
+            cycle.skippedOtherGameYear += 1;
+            continue;
+          }
+          sourceRelevant += 1;
+          cycle.relevantPosts += 1;
+          const inserted = await saveIncomingTraderSignal(signal);
+          if (inserted) {
+            cycle.acceptedEvents += 1;
+            sourceAccepted += 1;
+          } else {
+            cycle.duplicateEvents += 1;
+          }
+        }
+
+        cycle.sourceStatus[handle] = { ok: true, url, fetched: posts.length, relevant: sourceRelevant, accepted: sourceAccepted };
+      } catch (error) {
+        cycle.sourceStatus[handle] = { ok: false, url, error: String(error) };
+      }
+    }
+
+    const anyOk = Object.values(cycle.sourceStatus).some(item => item.ok);
+    publicLeakPollState = {
+      ...publicLeakPollState,
+      ...cycle,
+      lastSuccessAt: anyOk ? new Date().toISOString() : publicLeakPollState.lastSuccessAt,
+      lastError: anyOk ? null : Object.values(cycle.sourceStatus).map(item => item.error).filter(Boolean).join(" | ") || "Keine Public-Leak-Quelle erreichbar"
+    };
+    return publicLeakPollState;
+  })();
+
+  try {
+    return await publicLeakInflight;
+  } finally {
+    publicLeakInflight = null;
   }
 }
 
@@ -4537,6 +4841,7 @@ function buildCardDiscordPayload(row, type) {
     { name: "Rating-Markt", value: `${row.overall}er: ${String(row.ratingMarketTrend || "neutral").replaceAll("_", " ")}`, inline: true },
     { name: "Combined Brain", value: `Player ${row.aiPlayerScore ?? "-"}/100 • Market ${row.aiMarketLogicScore ?? "-"}/100 • Combined ${row.aiCombinedScore ?? "-"}/100`, inline: false },
     { name: "Market Logic", value: `${String(row.aiMarketPhase || "DATA_BUILDING").replaceAll("_", " ")} • These ${row.aiThesisConfirmed ?? 0}/${row.aiThesisTotal ?? 0} • Fortsetzung ${row.aiContinuationProbability ?? "-"}%`, inline: false },
+    { name: "Leak Intel", value: row.aiLeakIntel?.active ? `${row.aiLeakIntel.sourceCount || 0} Quelle(n) • ${(row.aiLeakIntel.topics || []).join(", ") || "GENERAL"} • Impact ${row.aiLeakIntel.impactScore ?? 0}/100 • Marktreaktion ${row.aiLeakIntel.marketReaction ? "JA" : "NEIN"}` : "Kein relevanter oeffentlicher Leak aktiv", inline: false },
     { name: "Gesamtmarkt", value: `${String(row.globalMarketMood || "neutral").replaceAll("_", " ")} • ${row.packSupplyActive ? "Angebotsdruck erkannt" : "kein Angebotsdruck"}`, inline: false }
   ];
 
@@ -5762,7 +6067,7 @@ async function sendDiscordStartupMessage() {
           { name: "Kaufalarm ab", value: `${DISCORD_MIN_BUY_CONFIDENCE}% KI-Sicherheit`, inline: true },
           { name: "Spam-Schutz", value: `${Math.round(DISCORD_ALERT_COOLDOWN_MS / 60_000)} Min. Cooldown`, inline: true }
         ],
-        footer: { text: "FC Trading Intelligence v10.47" },
+        footer: { text: "FC Trading Intelligence v10.56" },
         timestamp: new Date().toISOString()
       }]
     });
@@ -5771,7 +6076,7 @@ async function sendDiscordStartupMessage() {
       alertKey,
       alertType: "system",
       action: "CONNECTED",
-      fingerprint: "v10.55"
+      fingerprint: "v10.56"
     });
   } catch (error) {
     lastDiscordError = String(error);
@@ -5842,6 +6147,13 @@ async function monitorOnce() {
 
       if (dbEnabled) {
         await recordDb(currentRows, at);
+      }
+
+      try {
+        await pollPublicLeakSources(false);
+      } catch (error) {
+        publicLeakPollState.lastError = String(error);
+        console.warn("Public Leak poll error:", error?.message || error);
       }
 
       const built = await buildTradingRows(futbinFeed);
@@ -6431,6 +6743,105 @@ async function loadTraderProfiles() {
   return profiles;
 }
 
+async function loadPublicLeakSourceProfiles() {
+  if (!dbEnabled) return {};
+  const result = await pool.query(`
+    SELECT
+      s.source,
+      COUNT(DISTINCT i.signal_id)::int AS events,
+      COUNT(*)::int AS evaluated_points,
+      ROUND(AVG(ABS(i.market_median_change_pct))::numeric, 3) AS avg_abs_move,
+      ROUND(AVG(CASE WHEN ABS(i.market_median_change_pct) >= 1 THEN 100.0 ELSE 0.0 END)::numeric, 2) AS reaction_rate,
+      ROUND(AVG(CASE WHEN i.horizon_minutes = 60 THEN ABS(i.market_median_change_pct) END)::numeric, 3) AS avg_abs_move_1h
+    FROM fc_trader_market_impacts i
+    JOIN fc_discord_signals s ON s.id = i.signal_id
+    WHERE s.ingest_origin = 'public_leak_poll'
+      AND i.evaluated_at >= NOW() - INTERVAL '120 days'
+    GROUP BY s.source
+  `);
+
+  const profiles = {};
+  for (const row of result.rows) {
+    const events = Number(row.events || 0);
+    const reactionRate = Number(row.reaction_rate || 0);
+    const avgAbsMove = Number(row.avg_abs_move || 0);
+    const avgAbsMove1h = Number(row.avg_abs_move_1h || 0);
+    const mature = events >= PUBLIC_LEAK_PROFILE_MIN_EVENTS;
+    const sampleTrust = Math.min(1, events / Math.max(1, PUBLIC_LEAK_PROFILE_MIN_EVENTS));
+    const rawScore = 35 + reactionRate * 0.35 + Math.min(20, avgAbsMove1h * 4);
+    const impactScore = Math.round(clampBrainScore(50 + (rawScore - 50) * sampleTrust, 25, 95));
+    profiles[String(row.source).toLowerCase()] = {
+      source: row.source,
+      events,
+      evaluatedPoints: Number(row.evaluated_points || 0),
+      reactionRatePct: Number(reactionRate.toFixed(2)),
+      avgAbsMarketMovePct: Number(avgAbsMove.toFixed(3)),
+      avgAbsMarketMove1hPct: Number(avgAbsMove1h.toFixed(3)),
+      mature,
+      impactScore
+    };
+  }
+  return profiles;
+}
+
+function publicLeakAppliesToRow(signal, row) {
+  if (!signal || signal.ingestOrigin !== "public_leak_poll") return false;
+  if (!row) return true;
+  if (signal.eaId != null) return String(signal.eaId) === String(row.eaId);
+  const target = String(signal.playerOrRating || "").trim();
+  if (/^\d{2}$/.test(target)) return Number(row.overall) === Number(target);
+  if (target === "MARKT") return true;
+  return false;
+}
+
+function buildPublicLeakContext(row, activeSignals, leakProfiles, ratingStat = null) {
+  const now = Date.now();
+  const recent = (activeSignals || [])
+    .filter(signal => publicLeakAppliesToRow(signal, row))
+    .filter(signal => now - Number(signal.sourceEventAt || signal.timestamp || 0) <= PUBLIC_LEAK_MAX_AGE_MS);
+
+  if (!recent.length) {
+    return {
+      active: false, count: 0, sourceCount: 0, sources: [], topics: [],
+      consensus: 0, impactScore: 0, marketReaction: false, marketReactionStrength: 0,
+      note: "Kein relevanter oeffentlicher Leak im aktiven Zeitfenster."
+    };
+  }
+
+  const distinctSources = [...new Set(recent.map(signal => signal.source).filter(Boolean))];
+  const topics = [...new Set(recent.map(signal => classifyPublicLeakText(signal.message).topic).filter(Boolean))];
+  const sourceImpactScores = distinctSources.map(source => leakProfiles?.[String(source).toLowerCase()]?.impactScore ?? 50);
+  const avgSourceImpact = sourceImpactScores.length ? sourceImpactScores.reduce((a, b) => a + b, 0) / sourceImpactScores.length : 50;
+  const matureSources = distinctSources.filter(source => leakProfiles?.[String(source).toLowerCase()]?.mature).length;
+  const c5 = Math.abs(Number(ratingStat?.change5m || 0));
+  const c15 = Math.abs(Number(ratingStat?.change15m || 0));
+  const breadth = Math.max(Number(ratingStat?.risingPct5m || 0), Number(ratingStat?.fallingPct5m || 0));
+  const marketReactionStrength = Math.round(clampBrainScore(c5 * 12 + c15 * 5 + Math.max(0, breadth - 50) * 0.6, 0, 100));
+  const marketReaction = Boolean(c5 >= 0.75 || c15 >= 1.25 || breadth >= 65);
+  let impactScore = 30 + Math.min(24, distinctSources.length * 8) + Math.min(18, matureSources * 5) + Math.min(18, (avgSourceImpact - 50) * 0.4);
+  if (marketReaction) impactScore += Math.min(20, marketReactionStrength * 0.2);
+  impactScore = Math.round(clampBrainScore(impactScore, 20, marketReaction ? 92 : 68));
+
+  return {
+    active: true,
+    count: recent.length,
+    sourceCount: distinctSources.length,
+    sources: distinctSources.slice(0, 6),
+    topics: topics.slice(0, 6),
+    consensus: distinctSources.length,
+    matureSources,
+    avgSourceImpact: Number(avgSourceImpact.toFixed(1)),
+    impactScore,
+    marketReaction,
+    marketReactionStrength,
+    newestAgeMinutes: Math.max(0, Math.round((now - Math.max(...recent.map(signal => Number(signal.sourceEventAt || signal.timestamp || 0)))) / 60_000)),
+    signalIds: recent.slice(0, 12).map(signal => signal.id),
+    note: marketReaction
+      ? "Leak vorhanden und Preis-/Marktreaktion messbar. Darf Event Catalyst bestaetigen, aber nie alleine kaufen."
+      : "Leak vorhanden, aber noch keine belastbare Preisreaktion. Beobachten statt vorweg kaufen."
+  };
+}
+
 function median(values) {
   const clean = values.filter(Number.isFinite).sort((a, b) => a - b);
   if (!clean.length) return null;
@@ -6954,6 +7365,14 @@ function buildRatingMarketLogic(ratingStats, rating, globalContext = {}) {
   if (Number(stat.coolingPct || 0) >= 45) {
     risks.push(`${Number(stat.coolingPct || 0).toFixed(0)}% der ${rating}er zeigen abkühlendes Momentum.`);
   }
+  if (globalContext?.publicLeaks?.active) {
+    const leak = globalContext.publicLeaks;
+    if (leak.marketReaction) {
+      reasons.push(`Public-Leak-Intel: ${leak.sourceCount} Quelle(n), Themen ${leak.topics.join(", ") || "GENERAL"}; der Markt zeigt bereits eine messbare Reaktion.`);
+    } else {
+      risks.push(`Public-Leak-Intel ist aktiv (${leak.sourceCount} Quelle(n)), aber der Markt hat den Leak noch nicht bestaetigt. Nicht vorweg kaufen.`);
+    }
+  }
   if (!reasons.length) {
     reasons.push(`Der ${rating}er-Markt zeigt aktuell keine dominante Supply-/Demand-These. Weiter Daten sammeln.`);
   }
@@ -7057,9 +7476,13 @@ function buildPlayerMarketBrain(row, ratingStat, globalContext = {}) {
   const verifiedMarketRules = Array.isArray(row?.aiMarketKnowledge?.activeVerifiedRules)
     ? row.aiMarketKnowledge.activeVerifiedRules.length
     : 0;
+  const leakIntel = globalContext?.publicLeaks || null;
+  const leakConfirmedBoost = leakIntel?.active && leakIntel?.marketReaction
+    ? Math.min(14, Number(leakIntel.impactScore || 0) * 0.14)
+    : 0;
   const eventCatalyst = Math.round(clampBrainScore(
     42 + Math.min(24, traderSignalCount * 5) + Math.min(18, confirmedSignalCount * 7) +
-    Math.min(12, verifiedMarketRules * 4) + (marketLogic?.rotationFromLower ? 8 : 0)
+    Math.min(12, verifiedMarketRules * 4) + (marketLogic?.rotationFromLower ? 8 : 0) + leakConfirmedBoost
   , 25, 95));
 
   let risk = 24;
@@ -7067,6 +7490,7 @@ function buildPlayerMarketBrain(row, ratingStat, globalContext = {}) {
   risk += Math.min(12, Math.abs(Number(row?.change15m || 0)) * 0.7);
   if (Number.isFinite(high) && high > 0 && current >= high * 0.97) risk += 12;
   if (globalContext?.packSupplyActive) risk += 18;
+  if (leakIntel?.active && !leakIntel?.marketReaction) risk += 7;
   if (["SELL_OFF", "SUPPLY_SHOCK", "DISTRIBUTION"].includes(marketLogic?.phase)) risk += 15;
   if (row?.futbinCrossCheck === "OUTLIER") risk += 25;
   else if (row?.futbinCrossCheck === "DIVERGENCE") risk += 10;
@@ -7136,6 +7560,14 @@ function buildPlayerMarketBrain(row, ratingStat, globalContext = {}) {
     }
   ];
 
+  if (leakIntel?.active) {
+    thesisChecks.push({
+      key: "public_leak_confirmation",
+      label: "Aktiver Leak wird vom Markt bestaetigt",
+      passed: leakIntel.marketReaction === true
+    });
+  }
+
   const confirmedChecks = thesisChecks.filter(check => check.passed).length;
   const thesisScore = Math.round((confirmedChecks / thesisChecks.length) * 100);
   let combinedScore = Math.round(clampBrainScore(
@@ -7188,7 +7620,8 @@ function buildPlayerMarketBrain(row, ratingStat, globalContext = {}) {
     marketPhase: marketLogic?.phase || "DATA_BUILDING",
     marketReasons: marketLogic?.reasons || [],
     marketRisks: marketLogic?.risks || [],
-    rotationFromLower: Boolean(marketLogic?.rotationFromLower)
+    rotationFromLower: Boolean(marketLogic?.rotationFromLower),
+    leakIntel
   };
 }
 
@@ -7203,6 +7636,7 @@ function applyCombinedMarketBrain(row, ratingStat, globalContext = {}) {
     if (brain.risk >= 60) blockers.push(`Risiko ${brain.risk}/100`);
     if (brain.confirmedChecks < 4) blockers.push(`nur ${brain.confirmedChecks}/${brain.totalChecks} Buy-Thesen bestätigt`);
     if (["SELL_OFF", "SUPPLY_SHOCK", "DISTRIBUTION"].includes(brain.marketPhase)) blockers.push(`Marktphase ${brain.marketPhase}`);
+    if (brain.leakIntel?.active && !brain.leakIntel?.marketReaction) blockers.push("aktiver Public Leak noch ohne Markt-Bestaetigung");
 
     if (blockers.length) {
       finalAction = "NOCH WARTEN";
@@ -7241,9 +7675,10 @@ function applyCombinedMarketBrain(row, ratingStat, globalContext = {}) {
   row.aiMarketLogicReasons = brain.marketReasons;
   row.aiMarketLogicRisks = brain.marketRisks;
   row.aiRatingRotationFromLower = brain.rotationFromLower;
+  row.aiLeakIntel = brain.leakIntel || { active: false, count: 0, sourceCount: 0, sources: [], topics: [] };
   row.aiCombinedOriginalAction = originalAction;
   row.aiCombinedGuardChangedAction = finalAction !== originalAction;
-  row.aiModelUsed = `${row.aiModelUsed || "Quantitative Core"} + v10.55 Market Logic`;
+  row.aiModelUsed = `${row.aiModelUsed || "Quantitative Core"} + v10.55 Market Logic + v10.56 Leak Intel`;
 
   return row;
 }
@@ -8920,7 +9355,7 @@ async function buildDecisionPerformanceScorecard(limit = 500) {
   return {
     ok: true,
     enabled: true,
-    version: "10.55-combined-market-logic-brain",
+    version: "10.56-public-leak-learning-brain",
     sampleSize: total,
     scorecard: {
       accuracy: total ? Number(((wins / total) * 100).toFixed(2)) : null,
@@ -9607,7 +10042,7 @@ function normalizeDecisionForPosition(row, decision) {
 }
 
 async function buildTradingRows(futbinFeedOverride = null) {
-  const [cards, bulk, positions, intensiveWatches, allSignals, traderProfiles, brainLearning, marketKnowledgeProfiles, performanceProfiles] = await Promise.all([
+  const [cards, bulk, positions, intensiveWatches, allSignals, traderProfiles, brainLearning, marketKnowledgeProfiles, performanceProfiles, publicLeakProfiles] = await Promise.all([
     ensureUniverse(false),
     loadBulkPs5Prices(false),
     getPositions(),
@@ -9616,7 +10051,8 @@ async function buildTradingRows(futbinFeedOverride = null) {
     loadTraderProfiles(),
     loadBrainLearningProfiles(false),
     loadMarketKnowledgeProfiles(),
-    loadDecisionPerformanceProfiles(false)
+    loadDecisionPerformanceProfiles(false),
+    loadPublicLeakSourceProfiles()
   ]);
 
   const futbinFeed = futbinFeedOverride || await loadAuthorizedFutbinFeedSafe(false);
@@ -9707,6 +10143,13 @@ async function buildTradingRows(futbinFeedOverride = null) {
 
   const ratingStats = buildRatingStats(rows);
   const globalMarketContext = buildGlobalMarketContext(rows);
+  const globalLeakMarketProxy = {
+    change5m: globalMarketContext.windows?.m5?.medianMove ?? 0,
+    change15m: globalMarketContext.windows?.m15?.medianMove ?? 0,
+    risingPct5m: globalMarketContext.windows?.m5?.risingPct ?? 0,
+    fallingPct5m: globalMarketContext.windows?.m5?.fallingPct ?? 0
+  };
+  globalMarketContext.publicLeaks = buildPublicLeakContext(null, activeSignals, publicLeakProfiles, globalLeakMarketProxy);
   enrichRatingMarketLogic(ratingStats, globalMarketContext);
   latestMarketContext = globalMarketContext;
   const brainWork = new Map();
@@ -9722,6 +10165,8 @@ async function buildTradingRows(futbinFeedOverride = null) {
 
     const signals = matchingSignalsForRow(row, activeSignals);
     const knowledgeContext = marketKnowledgeContextForRow(row, activeSignals, marketKnowledgeProfiles);
+    const rowLeakContext = buildPublicLeakContext(row, activeSignals, publicLeakProfiles, rating);
+    const rowMarketContext = { ...globalMarketContext, publicLeaks: rowLeakContext };
 
     const input = {
       playerName: row.name || `EA ${row.eaId}`,
@@ -9750,7 +10195,8 @@ async function buildTradingRows(futbinFeedOverride = null) {
         overallMarketMood: globalMarketContext.mood,
         contextConfidence: globalMarketContext.confidence,
         contextSource: globalMarketContext.source,
-        packSupplyInference: globalMarketContext.packSupplyInference
+        packSupplyInference: globalMarketContext.packSupplyInference,
+        publicLeaks: rowLeakContext
       },
       discordSignals: signals
     };
@@ -9780,7 +10226,7 @@ async function buildTradingRows(futbinFeedOverride = null) {
     row.packSupplyActive = globalMarketContext.packSupplyActive;
     row.marketContextConfidence = globalMarketContext.confidence;
     applyAlertSanityGuard(row);
-    applyCombinedMarketBrain(row, rating, globalMarketContext);
+    applyCombinedMarketBrain(row, rating, rowMarketContext);
 
     brainWork.set(String(row.eaId), {
       input,
@@ -10232,7 +10678,7 @@ app.get("/", (req, res) => {
   res.json({
     online: true,
     service: "FC Trading Intelligence",
-    version: "10.55-combined-market-logic-brain",
+    version: "10.56-public-leak-learning-brain",
     gameYear: GAME_YEAR,
     marketProfile: marketProfile(),
     refreshSeconds: 60,
@@ -10263,6 +10709,7 @@ app.get("/", (req, res) => {
       traderReliabilityStatus: "GET /api/trader-reliability/status",
       traderSourcesStatus: "GET /api/trader-sources/status",
       leakImpactStatus: "GET /api/leak-impact/status",
+      publicLeakIntelligence: "GET /api/public-leaks/status",
       marketKnowledgeStatus: "GET /api/market-knowledge/status",
       marketContext: "GET /api/market-context",
       sourceHealth: "GET /api/source-health",
@@ -10361,7 +10808,7 @@ app.get("/api/readiness", (req, res) => {
   const readiness = runtimeReadinessSnapshot();
   res.status(readiness.ready ? 200 : 503).json({
     ok: readiness.ready,
-    version: "10.55-combined-market-logic-brain",
+    version: "10.56-public-leak-learning-brain",
     gameYear: GAME_YEAR,
     readiness,
     note: "Dieser Endpunkt ist absichtlich strenger als /health. /health zeigt, ob der Webdienst lebt; /api/readiness zeigt, ob Marktquelle, Monitoring, Datenbank, Discord und Trader Brain wirklich produktionsbereit sind."
@@ -10371,7 +10818,7 @@ app.get("/api/readiness", (req, res) => {
 app.get("/health", (req, res) => {
   res.json({
     ok: true,
-    version: "10.55-combined-market-logic-brain",
+    version: "10.56-public-leak-learning-brain",
     gameYear: GAME_YEAR,
     marketProfile: marketProfile(),
     marketContext: latestMarketContext,
@@ -10665,7 +11112,7 @@ app.post("/api/trader-signals/ingest", async (req, res) => {
 
 app.get("/api/trader-sources/status", (req, res) => {
   res.json({
-    ok: true, version: "10.55-combined-market-logic-brain", mode: "forwarded-or-authorized-only", automaticForeignDiscordReading: false,
+    ok: true, version: "10.56-public-leak-learning-brain", mode: "forwarded-or-authorized-only", automaticForeignDiscordReading: false,
     sources: CURATED_TRADER_SOURCES.map(source => ({ id: source.id, name: source.displayName, aliases: source.aliases, channels: source.channels.map(channel => ({ channel: channel.name, type: channel.type, category: channel.category, defaultCall: channel.defaultCall, reliabilityWeight: Number(channel.weight || 1) })) })),
     note: "Die Registry normalisiert weitergeleitete/erlaubte Signale. Sie liest keine fremden Discord-Server automatisch oder verdeckt aus."
   });
@@ -10686,7 +11133,7 @@ app.get("/api/alert-sanity/status", (req, res) => {
   }));
   res.json({
     ok: true,
-    version: "10.55-combined-market-logic-brain",
+    version: "10.56-public-leak-learning-brain",
     blockedNow: blocked.length,
     thresholds: {
       livePriceDiffPct: ALERT_SANITY_RECHECK_DIFF_PCT,
@@ -10702,7 +11149,7 @@ app.get("/api/buy-guard/status", (req, res) => {
   res.json({
     ok: true,
     enabled: true,
-    version: "10.55-combined-market-logic-brain",
+    version: "10.56-public-leak-learning-brain",
     rules: {
       duplicateShortHorizonsCountAsOne: true,
       requiredRecoveryCycles: STRICT_BUY_RECOVERY_CYCLES,
@@ -10717,6 +11164,59 @@ app.get("/api/buy-guard/status", (req, res) => {
     stats: strictBuyGuardStats,
     note: "v10.37 verhindert den Lauren-James-Fehler: ein erster gruener Tick oder identische 1m/5m/15m-Werte reichen nach einem Selloff nicht mehr fuer JETZT KAUFEN."
   });
+});
+
+app.get("/api/public-leaks/status", async (req, res) => {
+  try {
+    const profiles = await loadPublicLeakSourceProfiles();
+    let recent = [];
+    if (dbEnabled) {
+      const result = await pool.query(`
+        SELECT id, source, source_channel, category, message, player_or_rating, source_event_at, created_at
+        FROM fc_discord_signals
+        WHERE ingest_origin = 'public_leak_poll'
+          AND COALESCE(source_event_at, created_at) >= NOW() - INTERVAL '24 hours'
+        ORDER BY COALESCE(source_event_at, created_at) DESC
+        LIMIT 50
+      `);
+      recent = result.rows.map(row => ({
+        id: row.id, source: row.source, channel: row.source_channel || null, category: row.category,
+        target: row.player_or_rating, topic: classifyPublicLeakText(row.message).topic,
+        sourceEventAt: row.source_event_at || row.created_at,
+        message: String(row.message || "").slice(0, 500)
+      }));
+    } else {
+      recent = memoryTraderSignals
+        .filter(signal => signal.ingestOrigin === "public_leak_poll")
+        .slice(0, 50)
+        .map(signal => ({
+          id: signal.id, source: signal.source, channel: signal.sourceChannel || null, category: signal.category,
+          target: signal.playerOrRating, topic: classifyPublicLeakText(signal.message).topic,
+          sourceEventAt: new Date(signal.sourceEventAt || signal.timestamp || Date.now()).toISOString(),
+          message: String(signal.message || "").slice(0, 500)
+        }));
+    }
+
+    return res.json({
+      ok: true,
+      version: "10.56-public-leak-learning-brain",
+      mode: "public-only",
+      automaticPrivateReading: false,
+      poll: publicLeakPollState,
+      sourceProfiles: Object.values(profiles),
+      recent,
+      learning: {
+        marketImpactHorizonsMinutes: TRADER_MARKET_IMPACT_HORIZONS,
+        knowledgeHorizonsMinutes: MARKET_KNOWLEDGE_HORIZONS,
+        minimumEventsForMatureSourceImpact: PUBLIC_LEAK_PROFILE_MIN_EVENTS,
+        leakCanBuyAlone: false,
+        unconfirmedLeakCanBlockImmediateBuy: true
+      },
+      note: "Der Brain liest nur frei oeffentliche Preview-Seiten. Er misst danach 15m/1h/6h/24h Marktreaktionen und lernt, welche Quellen/Leak-Typen wirklich Markt-Impact haben. Ein Leak allein erzeugt niemals einen Kauf."
+    });
+  } catch (error) {
+    return res.status(500).json({ ok: false, error: String(error) });
+  }
 });
 
 app.get("/api/leak-impact/status", async (req, res) => {
@@ -10735,7 +11235,7 @@ app.get("/api/leak-impact/status", async (req, res) => {
       GROUP BY s.source ORDER BY COUNT(DISTINCT i.signal_id) DESC, s.source ASC
     `);
     return res.json({
-      ok: true, enabled: true, version: "10.55-combined-market-logic-brain", horizonsMinutes: TRADER_MARKET_IMPACT_HORIZONS,
+      ok: true, enabled: true, version: "10.56-public-leak-learning-brain", horizonsMinutes: TRADER_MARKET_IMPACT_HORIZONS,
       sourceSummary: sourceSummary.rows.map(row => ({ source: row.source, events: Number(row.events || 0), evaluatedPoints: Number(row.evaluated_points || 0), avgAbsMarketMovePct: Number(row.avg_abs_market_move || 0), avgMarketMovePct: Number(row.avg_market_move || 0) })),
       recent: recent.rows.map(row => ({ signalId: row.signal_id, source: row.source, channel: row.source_channel || null, category: row.category, horizonMinutes: Number(row.horizon_minutes), marketMedianChangePct: Number(row.market_median_change_pct), strongestRating: row.strongest_rating == null ? null : Number(row.strongest_rating), strongestRatingChangePct: row.strongest_rating_change_pct == null ? null : Number(row.strongest_rating_change_pct), affectedRatings: row.affected_ratings || [], direction: row.direction, sourceEventAt: row.source_event_at, evaluatedAt: row.evaluated_at, message: String(row.message || "").slice(0, 500) })),
       note: "Leak/Content-Events loesen keinen Kauf aus. Der Brain misst zuerst, welche Rating-Segmente sich nach 15m/1h/6h/24h real bewegen."
@@ -10779,7 +11279,7 @@ app.get("/api/market-knowledge/status", async (req, res) => {
     return res.json({
       ok: true,
       enabled: true,
-      version: "10.55-combined-market-logic-brain",
+      version: "10.56-public-leak-learning-brain",
       policy: {
         hypothesesAreNotTruth: true,
         minimumSamplesBeforeInfluence: MARKET_KNOWLEDGE_MIN_SAMPLES,
@@ -10848,7 +11348,7 @@ app.get("/api/trader-reliability/status", async (req, res) => {
 
     return res.json({
       enabled: true,
-      version: "10.55-combined-market-logic-brain",
+      version: "10.56-public-leak-learning-brain",
       gameYear: GAME_YEAR,
       method: {
         priorAccuracy: TRADER_RELIABILITY_PRIOR_ACCURACY,
@@ -10907,7 +11407,7 @@ app.get("/api/trader-reliability/status", async (req, res) => {
 app.get("/api/trader-confluence/status", (req, res) => {
   res.json({
     enabled: DISCORD_CONFIGURED && dbEnabled,
-    version: "10.55-combined-market-logic-brain",
+    version: "10.56-public-leak-learning-brain",
     minCardConfidence: DISCORD_TRADER_CONFLUENCE_MIN_CONFIDENCE,
     minRatingConfidence: DISCORD_TRADER_CONFLUENCE_MIN_RATING_CONFIDENCE,
     minTraderReliability: DISCORD_TRADER_CONFLUENCE_MIN_RELIABILITY,
@@ -10940,7 +11440,7 @@ app.get("/api/trader-confluence/status", (req, res) => {
 app.get("/api/discord-rating-mode/status", (req, res) => {
   res.json({
     ok: true,
-    version: "10.55-combined-market-logic-brain",
+    version: "10.56-public-leak-learning-brain",
     ratingFirst: DISCORD_RATING_FIRST_BASE_ALERTS,
     strictRatingFeed: true,
     normalPlayerAlerts: false,
@@ -11117,7 +11617,7 @@ app.get("/api/intensive-watchlist", async (req, res) => {
 
     res.json({
       ok: true,
-      version: "10.55-combined-market-logic-brain",
+      version: "10.56-public-leak-learning-brain",
       count: items.length,
       settings: {
         moveAlertPct: INTENSIVE_WATCH_MOVE_PCT,
@@ -11230,11 +11730,12 @@ app.get("/api/trading", async (req, res) => {
 
     res.json({
       ok: true,
-      version: "10.55-combined-market-logic-brain",
+      version: "10.56-public-leak-learning-brain",
       refreshSeconds: 60,
       dbEnabled,
       sourceHealth: health,
       futbin: latestFutbinStatus,
+      publicLeaks: publicLeakPollState,
       dataMode: mode,
       historyNote:
         dbEnabled
@@ -11311,7 +11812,7 @@ app.get("/api/processing-health", (req, res) => {
   const health = processingHealthSnapshot();
   res.status(health.healthy ? 200 : 503).json({
     ok: health.healthy,
-    version: "10.55-combined-market-logic-brain",
+    version: "10.56-public-leak-learning-brain",
     gameYear: GAME_YEAR,
     processingHealth: health,
     note: "DB-, Brain- oder Discord-Fehler werden getrennt von FUT.GG-Quellfehlern bewertet und können den Source Health Guard nicht mehr fälschlich in Quarantäne schicken."
@@ -11322,7 +11823,7 @@ app.get("/api/source-health", (req, res) => {
   const health = sourceHealthSnapshot();
   res.status(health.status === "UNHEALTHY" ? 503 : 200).json({
     ok: health.status !== "UNHEALTHY",
-    version: "10.55-combined-market-logic-brain",
+    version: "10.56-public-leak-learning-brain",
     gameYear: GAME_YEAR,
     refreshSeconds: 60,
     source: "FUT.GG PS5 bulk prices",
@@ -11342,7 +11843,7 @@ app.get("/api/futbin/status", (req, res) => {
 
   res.json({
     ok: true,
-    version: "10.55-combined-market-logic-brain",
+    version: "10.56-public-leak-learning-brain",
     gameYear: GAME_YEAR,
     configured: Boolean(FUTBIN_AUTHORIZED_FEED_URL || FUTBIN_PARSE_API_KEY),
     status: latestFutbinStatus,
@@ -11383,7 +11884,7 @@ app.get("/api/futbin/status", (req, res) => {
 app.get("/api/market-context", (req, res) => {
   res.json({
     ok: true,
-    version: "10.55-combined-market-logic-brain",
+    version: "10.56-public-leak-learning-brain",
     gameYear: GAME_YEAR,
     refreshSeconds: 60,
     context: latestMarketContext,
@@ -11394,7 +11895,7 @@ app.get("/api/market-context", (req, res) => {
 app.get("/api/trader-brain/status", (req, res) => {
   res.json({
     ok: true,
-    version: "10.55-combined-market-logic-brain",
+    version: "10.56-public-leak-learning-brain",
     gameYear: GAME_YEAR,
     marketProfile: marketProfile(),
     marketContext: latestMarketContext,
@@ -11404,7 +11905,7 @@ app.get("/api/trader-brain/status", (req, res) => {
     lastBrainError,
     lastGeminiCandidate,
     learning: {
-      version: "10.55-combined-market-logic-brain",
+      version: "10.56-public-leak-learning-brain",
       totalMatureDecisions: brainLearningCache.totalMatureDecisions,
       rawMatureDecisions: brainLearningCache.rawMatureDecisions,
       uniqueLearningEpisodes: brainLearningCache.uniqueLearningEpisodes,
@@ -11425,7 +11926,7 @@ app.get("/api/trader-brain/learning/status", async (req, res) => {
     const cache = await loadBrainLearningProfiles(true);
     return res.json({
       enabled: true,
-      version: "10.55-combined-market-logic-brain",
+      version: "10.56-public-leak-learning-brain",
       method: {
         windowDays: BRAIN_LEARNING_WINDOW_DAYS,
         priorAccuracy: BRAIN_LEARNING_PRIOR_ACCURACY,
@@ -11469,7 +11970,7 @@ app.get("/api/trader-brain/performance/status", async (req, res) => {
     res.status(500).json({
       ok: false,
       enabled: dbEnabled,
-      version: "10.55-combined-market-logic-brain",
+      version: "10.56-public-leak-learning-brain",
       error: String(error)
     });
   }
@@ -11487,7 +11988,7 @@ app.get("/api/rating-list/debug/:rating", async (req, res) => {
 
     res.json({
       ok: true,
-      version: "10.55-combined-market-logic-brain",
+      version: "10.56-public-leak-learning-brain",
       rating,
       discoveredBaseRare: discovered.length,
       pricedBaseRare: priced.length,
@@ -11523,7 +12024,7 @@ app.get("/api/rating-list/debug/:rating", async (req, res) => {
   } catch (error) {
     res.status(500).json({
       ok: false,
-      version: "10.55-combined-market-logic-brain",
+      version: "10.56-public-leak-learning-brain",
       error: String(error)
     });
   }
@@ -11930,6 +12431,7 @@ app.get("/trading", (req, res) => {
         <th>Combined Brain</th>
         <th>Fair Value / Ziele</th>
         <th>Market Logic / These</th>
+        <th>Leak Intel</th>
         <th>KI-Grund</th>
         <th>Kaufpreis</th>
         <th>Menge</th>
@@ -12281,6 +12783,12 @@ function render() {
         <span class="muted">\${(row.aiMarketLogicReasons || []).slice(0,2).join(" ")}</span>
       </td>
 
+      <td style="text-align:left; white-space:normal; min-width:230px">
+        <b>\${row.aiLeakIntel?.active ? "📡 AKTIV" : "kein aktiver Leak"}</b><br>
+        \${row.aiLeakIntel?.active ? ((row.aiLeakIntel.topics || []).join(", ") || "GENERAL") : "-"}<br>
+        <span class="muted">\${row.aiLeakIntel?.active ? ((row.aiLeakIntel.sourceCount || 0) + " Quelle(n) • Impact " + (row.aiLeakIntel.impactScore ?? 0) + "/100 • Marktreaktion " + (row.aiLeakIntel.marketReaction ? "JA" : "NEIN")) : "Public-Leak-Layer wartet"}</span>
+      </td>
+
       <td style="text-align:left; white-space:normal; min-width:320px">
         \${row.aiReason}
       </td>
@@ -12548,6 +13056,8 @@ async function load() {
         (json.geminiQuota?.dailyBudget ?? 15) +
         " • Discord: " +
         (json.discord?.configured ? "AN" : "AUS") +
+        " • Leak Intel: " +
+        (json.publicLeaks?.enabled ? ((json.publicLeaks?.acceptedEvents ?? 0) + " neu / " + (json.publicLeaks?.relevantPosts ?? 0) + " relevant") : "AUS") +
         " • Aktualisiert " +
         new Date(
           json.updatedAt
