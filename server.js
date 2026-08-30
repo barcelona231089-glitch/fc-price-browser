@@ -4968,11 +4968,13 @@ function isBaseRatingCard(row) {
 
 function suppressNormalPlayerDiscord(row) {
   if (!DISCORD_RATING_FIRST_BASE_ALERTS) return false;
-  // v10.46: Der normale öffentliche Feed ist strikt Rating-first.
-  // Das gilt jetzt für ALLE Kartentypen, nicht nur Base Rare/Common.
-  // Namentliche Einzelkarten sind nur persönliche Ausnahmen:
-  // eigene gespeicherte Käufe oder bewusst per Button intensiv überwachte Karten.
-  return !row?.tracked && !row?.intensiveWatch;
+  // v10.57: Der automatische Hauptfeed ist kompromisslos Rating-first.
+  // Auch eigene gespeicherte Positionen duerfen keinen namentlichen Einzelkarten-
+  // Alarm mehr erzeugen. Sonst kann ein einzelner Preis-Ausreisser (z. B. eine
+  // 75er Common) den saubereren Rating-Call ueberstimmen. Namen erscheinen im
+  // Hauptfeed nur hinter "Spieler anzeigen". Bewusst aktivierte Intensiv-
+  // Ueberwachung laeuft separat und darf weiterhin kartenspezifisch alarmieren.
+  return true;
 }
 
 function ratingUnusualMoveValue(stat) {
@@ -5960,9 +5962,9 @@ async function processDiscordAlerts(rows, ratingStats, alertBudget = null) {
 
     for (const row of rows) {
       if (row.intensiveWatch) continue;
-      // v10.46 Strict Rating Feed: normale automatische Einzelspieler-Alarme aller
-      // Kartentypen werden unterdrückt. Nur eigene Positionen und bewusst intensiv
-      // überwachte Karten bleiben namentliche persönliche Ausnahmen.
+      // v10.57 Strict Rating Feed: normale automatische Einzelspieler-Alarme aller
+      // Kartentypen werden unterdrueckt, auch fuer eigene gespeicherte Positionen.
+      // Namentliche Alerts gibt es nur im separaten Intensiv-Watch-Pfad.
       if (suppressNormalPlayerDiscord(row)) continue;
       const candidate = cardDiscordAlertCandidate(row);
       if (candidate) candidates.push({ kind: "card", row, ...candidate });
@@ -6067,7 +6069,7 @@ async function sendDiscordStartupMessage() {
           { name: "Kaufalarm ab", value: `${DISCORD_MIN_BUY_CONFIDENCE}% KI-Sicherheit`, inline: true },
           { name: "Spam-Schutz", value: `${Math.round(DISCORD_ALERT_COOLDOWN_MS / 60_000)} Min. Cooldown`, inline: true }
         ],
-        footer: { text: "FC Trading Intelligence v10.56" },
+        footer: { text: "FC Trading Intelligence v10.57" },
         timestamp: new Date().toISOString()
       }]
     });
@@ -6076,7 +6078,7 @@ async function sendDiscordStartupMessage() {
       alertKey,
       alertType: "system",
       action: "CONNECTED",
-      fingerprint: "v10.56"
+      fingerprint: "v10.57"
     });
   } catch (error) {
     lastDiscordError = String(error);
@@ -7678,7 +7680,7 @@ function applyCombinedMarketBrain(row, ratingStat, globalContext = {}) {
   row.aiLeakIntel = brain.leakIntel || { active: false, count: 0, sourceCount: 0, sources: [], topics: [] };
   row.aiCombinedOriginalAction = originalAction;
   row.aiCombinedGuardChangedAction = finalAction !== originalAction;
-  row.aiModelUsed = `${row.aiModelUsed || "Quantitative Core"} + v10.55 Market Logic + v10.56 Leak Intel`;
+  row.aiModelUsed = `${row.aiModelUsed || "Quantitative Core"} + v10.55 Market Logic + v10.56 Leak Intel + v10.57 Rating-First Alerts`;
 
   return row;
 }
@@ -9355,7 +9357,7 @@ async function buildDecisionPerformanceScorecard(limit = 500) {
   return {
     ok: true,
     enabled: true,
-    version: "10.56-public-leak-learning-brain",
+    version: "10.57-rating-first-alert-guard",
     sampleSize: total,
     scorecard: {
       accuracy: total ? Number(((wins / total) * 100).toFixed(2)) : null,
@@ -10678,7 +10680,7 @@ app.get("/", (req, res) => {
   res.json({
     online: true,
     service: "FC Trading Intelligence",
-    version: "10.56-public-leak-learning-brain",
+    version: "10.57-rating-first-alert-guard",
     gameYear: GAME_YEAR,
     marketProfile: marketProfile(),
     refreshSeconds: 60,
@@ -10808,7 +10810,7 @@ app.get("/api/readiness", (req, res) => {
   const readiness = runtimeReadinessSnapshot();
   res.status(readiness.ready ? 200 : 503).json({
     ok: readiness.ready,
-    version: "10.56-public-leak-learning-brain",
+    version: "10.57-rating-first-alert-guard",
     gameYear: GAME_YEAR,
     readiness,
     note: "Dieser Endpunkt ist absichtlich strenger als /health. /health zeigt, ob der Webdienst lebt; /api/readiness zeigt, ob Marktquelle, Monitoring, Datenbank, Discord und Trader Brain wirklich produktionsbereit sind."
@@ -10818,7 +10820,7 @@ app.get("/api/readiness", (req, res) => {
 app.get("/health", (req, res) => {
   res.json({
     ok: true,
-    version: "10.56-public-leak-learning-brain",
+    version: "10.57-rating-first-alert-guard",
     gameYear: GAME_YEAR,
     marketProfile: marketProfile(),
     marketContext: latestMarketContext,
@@ -11112,7 +11114,7 @@ app.post("/api/trader-signals/ingest", async (req, res) => {
 
 app.get("/api/trader-sources/status", (req, res) => {
   res.json({
-    ok: true, version: "10.56-public-leak-learning-brain", mode: "forwarded-or-authorized-only", automaticForeignDiscordReading: false,
+    ok: true, version: "10.57-rating-first-alert-guard", mode: "forwarded-or-authorized-only", automaticForeignDiscordReading: false,
     sources: CURATED_TRADER_SOURCES.map(source => ({ id: source.id, name: source.displayName, aliases: source.aliases, channels: source.channels.map(channel => ({ channel: channel.name, type: channel.type, category: channel.category, defaultCall: channel.defaultCall, reliabilityWeight: Number(channel.weight || 1) })) })),
     note: "Die Registry normalisiert weitergeleitete/erlaubte Signale. Sie liest keine fremden Discord-Server automatisch oder verdeckt aus."
   });
@@ -11133,7 +11135,7 @@ app.get("/api/alert-sanity/status", (req, res) => {
   }));
   res.json({
     ok: true,
-    version: "10.56-public-leak-learning-brain",
+    version: "10.57-rating-first-alert-guard",
     blockedNow: blocked.length,
     thresholds: {
       livePriceDiffPct: ALERT_SANITY_RECHECK_DIFF_PCT,
@@ -11149,7 +11151,7 @@ app.get("/api/buy-guard/status", (req, res) => {
   res.json({
     ok: true,
     enabled: true,
-    version: "10.56-public-leak-learning-brain",
+    version: "10.57-rating-first-alert-guard",
     rules: {
       duplicateShortHorizonsCountAsOne: true,
       requiredRecoveryCycles: STRICT_BUY_RECOVERY_CYCLES,
@@ -11199,7 +11201,7 @@ app.get("/api/public-leaks/status", async (req, res) => {
 
     return res.json({
       ok: true,
-      version: "10.56-public-leak-learning-brain",
+      version: "10.57-rating-first-alert-guard",
       mode: "public-only",
       automaticPrivateReading: false,
       poll: publicLeakPollState,
@@ -11235,7 +11237,7 @@ app.get("/api/leak-impact/status", async (req, res) => {
       GROUP BY s.source ORDER BY COUNT(DISTINCT i.signal_id) DESC, s.source ASC
     `);
     return res.json({
-      ok: true, enabled: true, version: "10.56-public-leak-learning-brain", horizonsMinutes: TRADER_MARKET_IMPACT_HORIZONS,
+      ok: true, enabled: true, version: "10.57-rating-first-alert-guard", horizonsMinutes: TRADER_MARKET_IMPACT_HORIZONS,
       sourceSummary: sourceSummary.rows.map(row => ({ source: row.source, events: Number(row.events || 0), evaluatedPoints: Number(row.evaluated_points || 0), avgAbsMarketMovePct: Number(row.avg_abs_market_move || 0), avgMarketMovePct: Number(row.avg_market_move || 0) })),
       recent: recent.rows.map(row => ({ signalId: row.signal_id, source: row.source, channel: row.source_channel || null, category: row.category, horizonMinutes: Number(row.horizon_minutes), marketMedianChangePct: Number(row.market_median_change_pct), strongestRating: row.strongest_rating == null ? null : Number(row.strongest_rating), strongestRatingChangePct: row.strongest_rating_change_pct == null ? null : Number(row.strongest_rating_change_pct), affectedRatings: row.affected_ratings || [], direction: row.direction, sourceEventAt: row.source_event_at, evaluatedAt: row.evaluated_at, message: String(row.message || "").slice(0, 500) })),
       note: "Leak/Content-Events loesen keinen Kauf aus. Der Brain misst zuerst, welche Rating-Segmente sich nach 15m/1h/6h/24h real bewegen."
@@ -11279,7 +11281,7 @@ app.get("/api/market-knowledge/status", async (req, res) => {
     return res.json({
       ok: true,
       enabled: true,
-      version: "10.56-public-leak-learning-brain",
+      version: "10.57-rating-first-alert-guard",
       policy: {
         hypothesesAreNotTruth: true,
         minimumSamplesBeforeInfluence: MARKET_KNOWLEDGE_MIN_SAMPLES,
@@ -11348,7 +11350,7 @@ app.get("/api/trader-reliability/status", async (req, res) => {
 
     return res.json({
       enabled: true,
-      version: "10.56-public-leak-learning-brain",
+      version: "10.57-rating-first-alert-guard",
       gameYear: GAME_YEAR,
       method: {
         priorAccuracy: TRADER_RELIABILITY_PRIOR_ACCURACY,
@@ -11407,7 +11409,7 @@ app.get("/api/trader-reliability/status", async (req, res) => {
 app.get("/api/trader-confluence/status", (req, res) => {
   res.json({
     enabled: DISCORD_CONFIGURED && dbEnabled,
-    version: "10.56-public-leak-learning-brain",
+    version: "10.57-rating-first-alert-guard",
     minCardConfidence: DISCORD_TRADER_CONFLUENCE_MIN_CONFIDENCE,
     minRatingConfidence: DISCORD_TRADER_CONFLUENCE_MIN_RATING_CONFIDENCE,
     minTraderReliability: DISCORD_TRADER_CONFLUENCE_MIN_RELIABILITY,
@@ -11440,7 +11442,7 @@ app.get("/api/trader-confluence/status", (req, res) => {
 app.get("/api/discord-rating-mode/status", (req, res) => {
   res.json({
     ok: true,
-    version: "10.56-public-leak-learning-brain",
+    version: "10.57-rating-first-alert-guard",
     ratingFirst: DISCORD_RATING_FIRST_BASE_ALERTS,
     strictRatingFeed: true,
     normalPlayerAlerts: false,
@@ -11617,7 +11619,7 @@ app.get("/api/intensive-watchlist", async (req, res) => {
 
     res.json({
       ok: true,
-      version: "10.56-public-leak-learning-brain",
+      version: "10.57-rating-first-alert-guard",
       count: items.length,
       settings: {
         moveAlertPct: INTENSIVE_WATCH_MOVE_PCT,
@@ -11730,7 +11732,7 @@ app.get("/api/trading", async (req, res) => {
 
     res.json({
       ok: true,
-      version: "10.56-public-leak-learning-brain",
+      version: "10.57-rating-first-alert-guard",
       refreshSeconds: 60,
       dbEnabled,
       sourceHealth: health,
@@ -11812,7 +11814,7 @@ app.get("/api/processing-health", (req, res) => {
   const health = processingHealthSnapshot();
   res.status(health.healthy ? 200 : 503).json({
     ok: health.healthy,
-    version: "10.56-public-leak-learning-brain",
+    version: "10.57-rating-first-alert-guard",
     gameYear: GAME_YEAR,
     processingHealth: health,
     note: "DB-, Brain- oder Discord-Fehler werden getrennt von FUT.GG-Quellfehlern bewertet und können den Source Health Guard nicht mehr fälschlich in Quarantäne schicken."
@@ -11823,7 +11825,7 @@ app.get("/api/source-health", (req, res) => {
   const health = sourceHealthSnapshot();
   res.status(health.status === "UNHEALTHY" ? 503 : 200).json({
     ok: health.status !== "UNHEALTHY",
-    version: "10.56-public-leak-learning-brain",
+    version: "10.57-rating-first-alert-guard",
     gameYear: GAME_YEAR,
     refreshSeconds: 60,
     source: "FUT.GG PS5 bulk prices",
@@ -11843,7 +11845,7 @@ app.get("/api/futbin/status", (req, res) => {
 
   res.json({
     ok: true,
-    version: "10.56-public-leak-learning-brain",
+    version: "10.57-rating-first-alert-guard",
     gameYear: GAME_YEAR,
     configured: Boolean(FUTBIN_AUTHORIZED_FEED_URL || FUTBIN_PARSE_API_KEY),
     status: latestFutbinStatus,
@@ -11884,7 +11886,7 @@ app.get("/api/futbin/status", (req, res) => {
 app.get("/api/market-context", (req, res) => {
   res.json({
     ok: true,
-    version: "10.56-public-leak-learning-brain",
+    version: "10.57-rating-first-alert-guard",
     gameYear: GAME_YEAR,
     refreshSeconds: 60,
     context: latestMarketContext,
@@ -11895,7 +11897,7 @@ app.get("/api/market-context", (req, res) => {
 app.get("/api/trader-brain/status", (req, res) => {
   res.json({
     ok: true,
-    version: "10.56-public-leak-learning-brain",
+    version: "10.57-rating-first-alert-guard",
     gameYear: GAME_YEAR,
     marketProfile: marketProfile(),
     marketContext: latestMarketContext,
@@ -11905,7 +11907,7 @@ app.get("/api/trader-brain/status", (req, res) => {
     lastBrainError,
     lastGeminiCandidate,
     learning: {
-      version: "10.56-public-leak-learning-brain",
+      version: "10.57-rating-first-alert-guard",
       totalMatureDecisions: brainLearningCache.totalMatureDecisions,
       rawMatureDecisions: brainLearningCache.rawMatureDecisions,
       uniqueLearningEpisodes: brainLearningCache.uniqueLearningEpisodes,
@@ -11926,7 +11928,7 @@ app.get("/api/trader-brain/learning/status", async (req, res) => {
     const cache = await loadBrainLearningProfiles(true);
     return res.json({
       enabled: true,
-      version: "10.56-public-leak-learning-brain",
+      version: "10.57-rating-first-alert-guard",
       method: {
         windowDays: BRAIN_LEARNING_WINDOW_DAYS,
         priorAccuracy: BRAIN_LEARNING_PRIOR_ACCURACY,
@@ -11970,7 +11972,7 @@ app.get("/api/trader-brain/performance/status", async (req, res) => {
     res.status(500).json({
       ok: false,
       enabled: dbEnabled,
-      version: "10.56-public-leak-learning-brain",
+      version: "10.57-rating-first-alert-guard",
       error: String(error)
     });
   }
@@ -11988,7 +11990,7 @@ app.get("/api/rating-list/debug/:rating", async (req, res) => {
 
     res.json({
       ok: true,
-      version: "10.56-public-leak-learning-brain",
+      version: "10.57-rating-first-alert-guard",
       rating,
       discoveredBaseRare: discovered.length,
       pricedBaseRare: priced.length,
@@ -12024,7 +12026,7 @@ app.get("/api/rating-list/debug/:rating", async (req, res) => {
   } catch (error) {
     res.status(500).json({
       ok: false,
-      version: "10.56-public-leak-learning-brain",
+      version: "10.57-rating-first-alert-guard",
       error: String(error)
     });
   }
