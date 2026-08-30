@@ -336,6 +336,16 @@ const PUBLIC_LEAK_TELEGRAM_CHANNELS = String(
   .map(value => String(value || "").trim().replace(/^@/, ""))
   .filter(value => /^[A-Za-z0-9_]{4,64}$/.test(value));
 
+// v10.58: Direkte oeffentliche X-Quelle ueber X/Twitter-Syndication.
+// Das ist derselbe oeffentliche Embed-Pfad, den X fuer Profil-Timelines bereitstellt.
+// Kein Login, kein X-API-Key und kein Drittanbieter-Mirror erforderlich.
+const PUBLIC_LEAK_X_HANDLES = String(
+  process.env.PUBLIC_LEAK_X_HANDLES || "FutSheriff"
+)
+  .split(/[;,\n]+/)
+  .map(value => String(value || "").trim().replace(/^@/, ""))
+  .filter(value => /^[A-Za-z0-9_]{1,15}$/.test(value));
+
 const PUBLIC_LEAK_KNOWN_SOURCES = [
   { name: "Fut Sheriff", pattern: /\bfut\s*sheriff\b/i },
   { name: "FUT Police Leaks", pattern: /\bfut\s*police\s*leaks?\b/i },
@@ -601,6 +611,7 @@ let publicLeakInflight = null;
 let publicLeakPollState = {
   enabled: PUBLIC_LEAK_POLL_ENABLED,
   channels: [...PUBLIC_LEAK_TELEGRAM_CHANNELS],
+  directXHandles: [...PUBLIC_LEAK_X_HANDLES],
   pollIntervalMinutes: Math.round(PUBLIC_LEAK_POLL_INTERVAL_MS / 60_000),
   maxAgeHours: Number((PUBLIC_LEAK_MAX_AGE_MS / 3_600_000).toFixed(1)),
   lastPollAt: null,
@@ -763,6 +774,65 @@ function parsePublicTelegramPreview(html, handle) {
   return posts.slice(-PUBLIC_LEAK_MAX_POSTS_PER_SOURCE);
 }
 
+function parsePublicXSyndication(html, handle) {
+  const raw = String(html || "");
+  const nextDataMatch = raw.match(/<script[^>]+id=["']__NEXT_DATA__["'][^>]*>([\s\S]*?)<\/script>/i);
+  if (!nextDataMatch) throw new Error(`X syndication ${handle}: __NEXT_DATA__ fehlt`);
+
+  let data;
+  try {
+    data = JSON.parse(nextDataMatch[1]);
+  } catch (error) {
+    throw new Error(`X syndication ${handle}: __NEXT_DATA__ ungueltig (${String(error)})`);
+  }
+
+  const entries = data?.props?.pageProps?.timeline?.entries;
+  if (!Array.isArray(entries)) throw new Error(`X syndication ${handle}: Timeline fehlt`);
+
+  const wantedHandle = String(handle || "").toLowerCase();
+  const posts = [];
+  const seenIds = new Set();
+
+  for (const entry of entries) {
+    const tweet = entry?.content?.tweet;
+    if (!tweet || typeof tweet !== "object") continue;
+
+    const authorHandle = String(tweet?.user?.screen_name || handle || "").trim();
+    if (wantedHandle && authorHandle && authorHandle.toLowerCase() !== wantedHandle) continue;
+
+    // Reine Retweets anderer Accounts sind keine direkten Sheriff-Leaks.
+    if (tweet.retweeted_status || /^RT\s+@/i.test(String(tweet.full_text || tweet.text || ""))) continue;
+
+    const postId = String(tweet.id_str || tweet.id || "").trim();
+    if (!postId || seenIds.has(postId)) continue;
+    seenIds.add(postId);
+
+    const text = compactWhitespace(tweet.full_text || tweet.text || "");
+    if (!text || text.length < 4) continue;
+
+    const parsedAt = Date.parse(String(tweet.created_at || ""));
+    const sourceEventAt = Number.isFinite(parsedAt) ? parsedAt : null;
+    const permalink = String(tweet.permalink || "").trim();
+    const publicUrl = /^https?:\/\//i.test(permalink)
+      ? permalink
+      : `https://x.com/${encodeURIComponent(authorHandle || handle)}/status/${encodeURIComponent(postId)}`;
+
+    posts.push({
+      platform: "x",
+      handle: authorHandle || handle,
+      postId,
+      text,
+      sourceEventAt,
+      publicUrl,
+      directSource: wantedHandle === "futsheriff" ? "Fut Sheriff" : (authorHandle || handle)
+    });
+  }
+
+  return posts
+    .sort((a, b) => Number(a.sourceEventAt || 0) - Number(b.sourceEventAt || 0))
+    .slice(-PUBLIC_LEAK_MAX_POSTS_PER_SOURCE);
+}
+
 function publicLeakMatchesGameYear(text) {
   const matches = [...String(text || "").matchAll(/\b(?:EA\s*SPORTS\s*)?FC\s*(2[67])\b/gi)]
     .map(item => item[1]);
@@ -826,42 +896,48 @@ function publicLeakSignalFromPost(post) {
   if (!classification.marketRelevant) return null;
   if (!publicLeakMatchesGameYear(post.text)) return { skipReason: "OTHER_GAME_YEAR" };
 
-  const attribution = identifyPublicLeakSource(post.text, post.handle);
+  const isDirectX = post.platform === "x" && Boolean(post.directSource);
+  const attribution = isDirectX
+    ? { source: post.directSource, attributed: true }
+    : identifyPublicLeakSource(post.text, post.handle);
+  const platform = isDirectX ? "x" : "telegram";
   let targetInfo = detectSignalTarget(post.text);
   if (!targetInfo) targetInfo = { target: "MARKT", eaId: null, kind: "market" };
   const eventAt = Number.isFinite(Number(post.sourceEventAt)) ? Number(post.sourceEventAt) : Date.now();
   const fingerprint = crypto
     .createHash("sha1")
-    .update(`${post.handle}|${post.postId}|${post.text}`)
+    .update(`${platform}|${post.handle}|${post.postId}|${post.text}`)
     .digest("hex")
     .slice(0, 28);
 
   return {
     id: `public_leak_${fingerprint}`,
     source: canonicalTraderSourceName(attribution.source),
-    sourceChannel: `telegram:${post.handle}`.slice(0, 120),
+    sourceChannel: `${platform}:${post.handle}`.slice(0, 120),
     sourceChannelType: classification.type,
-    sourceChannelWeight: attribution.attributed ? 1 : 0.55,
+    sourceChannelWeight: isDirectX ? 1 : (attribution.attributed ? 1 : 0.55),
     signalKind: "MARKET_EVENT",
     message: post.text.slice(0, 3000),
     playerOrRating: targetInfo.target,
     eaId: targetInfo.eaId || null,
     call: "BEOBACHTEN",
-    reason: `Public Leak Intelligence: ${classification.topic} aus frei oeffentlicher Telegram-Preview. Quelle: ${attribution.source}.`,
+    reason: isDirectX
+      ? `Public Leak Intelligence: ${classification.topic} direkt vom oeffentlichen X-Profil ${post.handle}. Quelle: ${attribution.source}.`
+      : `Public Leak Intelligence: ${classification.topic} aus frei oeffentlicher Telegram-Preview. Quelle: ${attribution.source}.`,
     expectedTimeframe: detectExpectedTimeframe(post.text) || "Content-/Marktreaktion beobachten",
     sourceReliability: 50,
     category: classification.category,
     timestamp: eventAt,
     sourceEventAt: eventAt,
     ingestOrigin: "public_leak_poll",
-    externalEventId: `telegram:${post.postId}`.slice(0, 180),
+    externalEventId: `${platform}:${post.postId}`.slice(0, 180),
     publicLeakTopic: classification.topic,
     publicUrl: post.publicUrl
   };
 }
 
 async function pollPublicLeakSources(force = false) {
-  if (!PUBLIC_LEAK_POLL_ENABLED || !PUBLIC_LEAK_TELEGRAM_CHANNELS.length) return publicLeakPollState;
+  if (!PUBLIC_LEAK_POLL_ENABLED || (!PUBLIC_LEAK_TELEGRAM_CHANNELS.length && !PUBLIC_LEAK_X_HANDLES.length)) return publicLeakPollState;
   const now = Date.now();
   const lastPollMs = publicLeakPollState.lastPollAt ? Date.parse(publicLeakPollState.lastPollAt) : 0;
   if (!force && lastPollMs && now - lastPollMs < PUBLIC_LEAK_POLL_INTERVAL_MS) return publicLeakPollState;
@@ -873,6 +949,63 @@ async function pollPublicLeakSources(force = false) {
       skippedOld: 0, skippedOtherGameYear: 0, sourceStatus: {}
     };
     publicLeakPollState.lastPollAt = new Date(now).toISOString();
+
+    // Direkte Originalquelle zuerst. Falls X/Syndication temporaer 429/5xx liefert,
+    // laufen die Telegram-Fallbacks danach unveraendert weiter.
+    for (const handle of PUBLIC_LEAK_X_HANDLES) {
+      const url = `https://syndication.twitter.com/srv/timeline-profile/screen-name/${encodeURIComponent(handle)}`;
+      const statusKey = `x:${handle}`;
+      try {
+        const html = await fetchText(url);
+        const posts = parsePublicXSyndication(html, handle);
+        cycle.fetchedPosts += posts.length;
+        let sourceRelevant = 0;
+        let sourceAccepted = 0;
+
+        for (const post of posts) {
+          const eventAt = Number.isFinite(Number(post.sourceEventAt)) ? Number(post.sourceEventAt) : now;
+          if (now - eventAt > PUBLIC_LEAK_MAX_AGE_MS || eventAt > now + 5 * 60_000) {
+            cycle.skippedOld += 1;
+            continue;
+          }
+          const signal = publicLeakSignalFromPost(post);
+          if (!signal) continue;
+          if (signal.skipReason === "OTHER_GAME_YEAR") {
+            cycle.skippedOtherGameYear += 1;
+            continue;
+          }
+          sourceRelevant += 1;
+          cycle.relevantPosts += 1;
+          const inserted = await saveIncomingTraderSignal(signal);
+          if (inserted) {
+            cycle.acceptedEvents += 1;
+            sourceAccepted += 1;
+          } else {
+            cycle.duplicateEvents += 1;
+          }
+        }
+
+        cycle.sourceStatus[statusKey] = {
+          ok: true,
+          direct: true,
+          provider: "X public syndication",
+          profile: `https://x.com/${handle}`,
+          url,
+          fetched: posts.length,
+          relevant: sourceRelevant,
+          accepted: sourceAccepted
+        };
+      } catch (error) {
+        cycle.sourceStatus[statusKey] = {
+          ok: false,
+          direct: true,
+          provider: "X public syndication",
+          profile: `https://x.com/${handle}`,
+          url,
+          error: String(error)
+        };
+      }
+    }
 
     for (const handle of PUBLIC_LEAK_TELEGRAM_CHANNELS) {
       const url = `https://t.me/s/${handle}`;
@@ -11244,9 +11377,16 @@ app.get("/api/public-leaks/status", async (req, res) => {
 
     return res.json({
       ok: true,
-      version: "10.56-public-leak-learning-brain",
+      version: "10.58-direct-sheriff-leak-source",
       mode: "public-only",
       automaticPrivateReading: false,
+      directSources: PUBLIC_LEAK_X_HANDLES.map(handle => ({
+        source: handle.toLowerCase() === "futsheriff" ? "Fut Sheriff" : handle,
+        platform: "X",
+        handle: `@${handle}`,
+        transport: "X public syndication"
+      })),
+      fallbackTelegramSources: [...PUBLIC_LEAK_TELEGRAM_CHANNELS],
       poll: publicLeakPollState,
       sourceProfiles: Object.values(profiles),
       recent,
@@ -11257,7 +11397,7 @@ app.get("/api/public-leaks/status", async (req, res) => {
         leakCanBuyAlone: false,
         unconfirmedLeakCanBlockImmediateBuy: true
       },
-      note: "Der Brain liest nur frei oeffentliche Preview-Seiten. Er misst danach 15m/1h/6h/24h Marktreaktionen und lernt, welche Quellen/Leak-Typen wirklich Markt-Impact haben. Ein Leak allein erzeugt niemals einen Kauf."
+      note: "Der Brain liest Fut Sheriff direkt ueber die frei oeffentliche X-Profil-Syndication und nutzt die bestehenden oeffentlichen Telegram-Previews als Fallback/Ergaenzung. Danach misst er 15m/1h/6h/24h Marktreaktionen und lernt den echten Impact. Ein Leak allein erzeugt niemals einen Kauf."
     });
   } catch (error) {
     return res.status(500).json({ ok: false, error: String(error) });
