@@ -7433,9 +7433,11 @@ function ratingWindowStats(cards, changeField) {
 }
 
 function marketHorizonEvidence(source, epsilon = STRICT_BUY_DUPLICATE_HORIZON_EPS) {
-  // 5m ist der primaere Trading-Horizont. Wenn 1m/5m/15m denselben
-  // Preisimpuls spiegeln, bleibt deshalb der 5m-Impuls erhalten und wird
-  // nicht versehentlich nur dem 1m-Fenster zugerechnet.
+  // v10.61: Horizont-Evidenz muss zwei Dinge gleichzeitig respektieren:
+  // 1) identische Preisimpulse sind keine mehrfachen Bestaetigungen;
+  // 2) gegensaetzliche Richtungen duerfen niemals zusammen als Confluence zaehlen.
+  // 5m bleibt der primaere Trading-Horizont, damit ein gespiegelt gespeicherter
+  // 1m/5m/15m-Impuls nicht versehentlich nur dem 1m-Fenster zugerechnet wird.
   const order = ["5m", "15m", "1h", "1m"];
   const raw = order
     .map(key => ({ key, value: Number(source?.[key]) }))
@@ -7469,8 +7471,26 @@ function marketHorizonEvidence(source, epsilon = STRICT_BUY_DUPLICATE_HORIZON_EP
   const duplicateShort = short.length >= 2 && short.every(item => Math.sign(item.value) === Math.sign(short[0].value)) &&
     (Math.max(...short.map(item => item.value)) - Math.min(...short.map(item => item.value)) <= epsilon);
 
-  const hasIndependentLong = independentKeys.includes("15m") || independentKeys.includes("1h");
-  const strongActionConfirmed = groups.length >= 2 && hasIndependentLong;
+  const positiveGroups = groups.filter(group => group.sign > 0);
+  const negativeGroups = groups.filter(group => group.sign < 0);
+  const positiveIndependentKeys = positiveGroups.map(group => group.keys[0]);
+  const negativeIndependentKeys = negativeGroups.map(group => group.keys[0]);
+  const positiveConfirmations = positiveGroups.length;
+  const negativeConfirmations = negativeGroups.length;
+  const directionConflict = positiveConfirmations > 0 && negativeConfirmations > 0;
+
+  const positiveHasIndependentLong = positiveIndependentKeys.includes("15m") || positiveIndependentKeys.includes("1h");
+  const negativeHasIndependentLong = negativeIndependentKeys.includes("15m") || negativeIndependentKeys.includes("1h");
+  const hasIndependentLong = positiveHasIndependentLong || negativeHasIndependentLong;
+
+  // Struktur bestaetigt = mindestens zwei unabhaengige Impulse derselben Richtung,
+  // davon mindestens einer auf 15m/1h. Fuer eine starke Aktion verlangen wir
+  // zusaetzlich Richtungs-Konsens ohne gleichzeitig gegensaetzlichen Impuls.
+  const upwardStructureConfirmed = positiveConfirmations >= 2 && positiveHasIndependentLong;
+  const downwardStructureConfirmed = negativeConfirmations >= 2 && negativeHasIndependentLong;
+  const strongUpConfirmed = upwardStructureConfirmed && !directionConflict;
+  const strongDownConfirmed = downwardStructureConfirmed && !directionConflict;
+  const strongActionConfirmed = strongUpConfirmed || strongDownConfirmed;
 
   return {
     epsilon,
@@ -7478,9 +7498,28 @@ function marketHorizonEvidence(source, epsilon = STRICT_BUY_DUPLICATE_HORIZON_EP
     effective,
     independentKeys,
     duplicateKeys,
-    directionalIndependentConfirmations: groups.length,
+    positiveIndependentKeys,
+    negativeIndependentKeys,
+    positiveConfirmations,
+    negativeConfirmations,
+    totalIndependentImpulses: groups.length,
+    directionalIndependentConfirmations: Math.max(positiveConfirmations, negativeConfirmations),
+    directionConflict,
+    dominantDirection: directionConflict
+      ? "MIXED"
+      : positiveConfirmations > 0
+      ? "UP"
+      : negativeConfirmations > 0
+      ? "DOWN"
+      : "FLAT",
     duplicateShort,
     hasIndependentLong,
+    positiveHasIndependentLong,
+    negativeHasIndependentLong,
+    upwardStructureConfirmed,
+    downwardStructureConfirmed,
+    strongUpConfirmed,
+    strongDownConfirmed,
     strongActionConfirmed
   };
 }
@@ -7512,7 +7551,8 @@ function buildRatingStats(rows) {
       "15m": w15m.medianMove,
       "1h": w1h.medianMove
     });
-    const strongActionHorizonConfirmed = horizonEvidence.strongActionConfirmed;
+    const strongUpHorizonConfirmed = horizonEvidence.strongUpConfirmed;
+    const upwardStructureConfirmed = horizonEvidence.upwardStructureConfirmed;
 
     const nearLowCards = cards.filter(card =>
       Number.isFinite(card.distanceFrom24hLow) &&
@@ -7593,7 +7633,7 @@ function buildRatingStats(rows) {
     } else if (
       nearHighPct >= 40 &&
       w15m.medianMove >= 3 &&
-      strongActionHorizonConfirmed &&
+      upwardStructureConfirmed &&
       (
         w1m.medianMove <= 0 ||
         w5m.medianMove <= 0.5 ||
@@ -7616,7 +7656,7 @@ function buildRatingStats(rows) {
       w5m.fallingPct < 40 &&
       w15m.medianMove >= 0.8 &&
       w15m.medianMove <= 10 &&
-      strongActionHorizonConfirmed
+      strongUpHorizonConfirmed
     ) {
       marketSignal = "KAUFZONE";
       marketAdvice = "JETZT KAUFEN";
@@ -7633,7 +7673,7 @@ function buildRatingStats(rows) {
     ) {
       marketSignal = "STARK STEIGEND";
 
-      if (w15m.medianMove >= 10 && nearHighPct >= 40 && strongActionHorizonConfirmed) {
+      if (w15m.medianMove >= 10 && nearHighPct >= 40 && upwardStructureConfirmed) {
         marketSignal = "VERKAUFSZONE";
         marketAdvice = "JETZT VERKAUFEN";
         confidence = Math.min(
@@ -7643,7 +7683,7 @@ function buildRatingStats(rows) {
         reason =
           `${w5m.risingPct.toFixed(0)}% der ${rating}er steigen und ${nearHighPct.toFixed(0)}% liegen nahe dem 24h-Hoch; ` +
           `15m-Median bereits +${w15m.medianMove.toFixed(2)}%. Rating-Segment ist stark ausgedehnt: Gewinnmitnahme bevorzugt.`;
-      } else if (w15m.medianMove >= 10 && strongActionHorizonConfirmed) {
+      } else if (w15m.medianMove >= 10 && upwardStructureConfirmed) {
         marketAdvice = "NICHT HINTERHERKAUFEN";
         confidence = Math.min(
           95,
@@ -7727,6 +7767,10 @@ function buildRatingStats(rows) {
       confidence,
       reason,
       independentHorizonConfirmations: horizonEvidence.directionalIndependentConfirmations,
+      positiveHorizonConfirmations: horizonEvidence.positiveConfirmations,
+      negativeHorizonConfirmations: horizonEvidence.negativeConfirmations,
+      horizonDirectionConflict: horizonEvidence.directionConflict,
+      strongHorizonActionConfirmed: horizonEvidence.strongActionConfirmed,
       duplicateHorizonMove: horizonEvidence.duplicateShort,
       horizonEvidence,
       marketTier: isLowWatchRating(rating) ? "LOW_WATCH" : "MAIN",
@@ -7785,7 +7829,7 @@ function ratingMarketPhase(stat, globalContext = {}) {
   if (measured < 5) return "DATA_BUILDING";
   if (globalContext?.packSupplyActive && falling >= 60 && c5 <= -1) return "SUPPLY_SHOCK";
   if (falling >= 70 && c5 <= -1.5) return "SELL_OFF";
-  if (nearHigh >= 40 && cooling >= 40 && c15 >= 2 && horizonEvidence.strongActionConfirmed) return "DISTRIBUTION";
+  if (nearHigh >= 40 && cooling >= 40 && c15 >= 2 && horizonEvidence.upwardStructureConfirmed) return "DISTRIBUTION";
   if (
     rising >= 65 && c5 >= 1 &&
     ((horizonEvidence.independentKeys.includes("15m") && c15 >= 0.5) ||
@@ -7899,6 +7943,9 @@ function buildRatingMarketLogic(ratingStats, rating, globalContext = {}) {
       risks.push(`Public-Leak-Intel ist aktiv (${leak.sourceCount} Quelle(n)), aber der Markt hat den Leak noch nicht bestaetigt. Nicht vorweg kaufen.`);
     }
   }
+  if (horizonEvidence.directionConflict) {
+    risks.push(`Horizonte widersprechen sich: ${horizonEvidence.positiveConfirmations} positive vs. ${horizonEvidence.negativeConfirmations} negative unabhaengige Impulse. Keine starke Aktion, bis die Richtung wieder konsistent ist.`);
+  }
   if (!reasons.length) {
     reasons.push(`Der ${rating}er-Markt zeigt aktuell keine dominante Supply-/Demand-These. Weiter Daten sammeln.`);
   }
@@ -7906,6 +7953,9 @@ function buildRatingMarketLogic(ratingStats, rating, globalContext = {}) {
   score = Math.round(clampBrainScore(score, 5, 95));
   if (horizonEvidence.duplicateShort && horizonEvidence.directionalIndependentConfirmations <= 1) {
     score = Math.min(score, 78);
+  }
+  if (horizonEvidence.directionConflict) {
+    score = Math.max(28, Math.min(72, score));
   }
   const localConfidence = Number(stat.confidence || 50);
   const globalConfidence = Number(globalContext?.confidence || 0);
@@ -7915,6 +7965,9 @@ function buildRatingMarketLogic(ratingStats, rating, globalContext = {}) {
   , 20, 95));
   if (horizonEvidence.duplicateShort && horizonEvidence.directionalIndependentConfirmations <= 1) {
     marketConfidence = Math.min(marketConfidence, 74);
+  }
+  if (horizonEvidence.directionConflict) {
+    marketConfidence = Math.min(marketConfidence, 70);
   }
 
   const continuationProbability = Math.round(clampBrainScore(
@@ -7930,6 +7983,10 @@ function buildRatingMarketLogic(ratingStats, rating, globalContext = {}) {
     continuationProbability,
     horizonEvidence,
     independentHorizonConfirmations: horizonEvidence.directionalIndependentConfirmations,
+    positiveHorizonConfirmations: horizonEvidence.positiveConfirmations,
+    negativeHorizonConfirmations: horizonEvidence.negativeConfirmations,
+    horizonDirectionConflict: horizonEvidence.directionConflict,
+    strongHorizonActionConfirmed: horizonEvidence.strongActionConfirmed,
     duplicateHorizonMove: horizonEvidence.duplicateShort,
     rotationFromLower,
     lowerLeadPct,
@@ -8037,6 +8094,8 @@ function buildPlayerMarketBrain(row, ratingStat, globalContext = {}) {
   if (["SELL_OFF", "SUPPLY_SHOCK", "DISTRIBUTION"].includes(marketLogic?.phase)) risk += 15;
   if (row?.futbinCrossCheck === "OUTLIER") risk += 25;
   else if (row?.futbinCrossCheck === "DIVERGENCE") risk += 10;
+  if (playerHorizonEvidence.directionConflict) risk += 12;
+  if (ratingHorizonEvidence.directionConflict) risk += 10;
   if (relativeStrength >= 70) risk -= 7;
   if (marketLogic?.phase === "EARLY_DEMAND_EXPANSION") risk -= 5;
   risk = Math.round(clampBrainScore(risk, 5, 95));
@@ -8162,6 +8221,7 @@ function buildPlayerMarketBrain(row, ratingStat, globalContext = {}) {
     idealEntryHigh,
     marketPhase: marketLogic?.phase || "DATA_BUILDING",
     playerHorizonEvidence,
+    ratingHorizonEvidence,
     marketReasons: marketLogic?.reasons || [],
     marketRisks: marketLogic?.risks || [],
     rotationFromLower: Boolean(marketLogic?.rotationFromLower),
@@ -8181,6 +8241,8 @@ function applyCombinedMarketBrain(row, ratingStat, globalContext = {}) {
     if (brain.confirmedChecks < 4) blockers.push(`nur ${brain.confirmedChecks}/${brain.totalChecks} Buy-Thesen bestätigt`);
     if (["SELL_OFF", "SUPPLY_SHOCK", "DISTRIBUTION"].includes(brain.marketPhase)) blockers.push(`Marktphase ${brain.marketPhase}`);
     if (brain.leakIntel?.active && !brain.leakIntel?.marketReaction) blockers.push("aktiver Public Leak noch ohne Markt-Bestaetigung");
+    if (brain.playerHorizonEvidence?.directionConflict) blockers.push("Spieler-Horizonte widersprechen sich");
+    if (brain.ratingHorizonEvidence?.directionConflict) blockers.push("Rating-Horizonte widersprechen sich");
 
     if (blockers.length) {
       finalAction = "NOCH WARTEN";
@@ -8218,11 +8280,13 @@ function applyCombinedMarketBrain(row, ratingStat, globalContext = {}) {
   row.aiIdealEntryHigh = brain.idealEntryHigh;
   row.aiMarketLogicReasons = brain.marketReasons;
   row.aiMarketLogicRisks = brain.marketRisks;
+  row.aiPlayerHorizonEvidence = brain.playerHorizonEvidence;
+  row.aiRatingHorizonEvidence = brain.ratingHorizonEvidence;
   row.aiRatingRotationFromLower = brain.rotationFromLower;
   row.aiLeakIntel = brain.leakIntel || { active: false, count: 0, sourceCount: 0, sources: [], topics: [] };
   row.aiCombinedOriginalAction = originalAction;
   row.aiCombinedGuardChangedAction = finalAction !== originalAction;
-  row.aiModelUsed = `${row.aiModelUsed || "Quantitative Core"} + v10.55 Market Logic + v10.56 Leak Intel`;
+  row.aiModelUsed = `${row.aiModelUsed || "Quantitative Core"} + v10.61 Direction Consensus + v10.56 Leak Intel`;
 
   return row;
 }
@@ -13840,7 +13904,7 @@ httpServer = app.listen(
   port,
   () => {
     console.log(
-      `FC Trading Intelligence v10.60 AI Horizon Dedupe + Sheriff Multi-Source (FC${GAME_YEAR}) running on ${port}`
+      `FC Trading Intelligence v10.61 AI Direction Consensus + Sheriff Multi-Source (FC${GAME_YEAR}) running on ${port}`
     );
 
     startMonitoring();
