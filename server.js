@@ -348,18 +348,25 @@ const PUBLIC_LEAK_X_HANDLES = String(
 
 // v10.59: X-429-Resilience. Der offizielle Syndication-Pfad wird respektvoll
 // langsamer abgefragt und bei 429 exponentiell gebremst. Waehrend des Backoffs
-// darf ein frei oeffentlicher X-Mirror einspringen. Telegram bleibt die letzte
+// duerfen mehrere frei oeffentliche X-Mirrors einspringen. Telegram bleibt die letzte
 // Fallback-Stufe. Keine Auth-/Paywall-Umgehung und kein aggressives Retry.
 const PUBLIC_LEAK_X_DIRECT_MIN_INTERVAL_MS = Math.max(10, Math.min(180, Number(process.env.PUBLIC_LEAK_X_DIRECT_MIN_INTERVAL_MIN || 30))) * 60_000;
 const PUBLIC_LEAK_X_BACKOFF_BASE_MS = Math.max(15, Math.min(360, Number(process.env.PUBLIC_LEAK_X_BACKOFF_BASE_MIN || 60))) * 60_000;
 const PUBLIC_LEAK_X_BACKOFF_MAX_MS = Math.max(60, Math.min(720, Number(process.env.PUBLIC_LEAK_X_BACKOFF_MAX_MIN || 360))) * 60_000;
 const PUBLIC_LEAK_X_MIRROR_INTERVAL_MS = Math.max(5, Math.min(60, Number(process.env.PUBLIC_LEAK_X_MIRROR_INTERVAL_MIN || 10))) * 60_000;
 const PUBLIC_LEAK_X_MIRROR_BASES = String(
-  process.env.PUBLIC_LEAK_X_MIRROR_BASES || "https://site.twstalker.com,https://mobile.twstalker.com"
+  process.env.PUBLIC_LEAK_X_MIRROR_BASES || "https://www.sotwe.com,https://twstalker.com,https://w.twstalker.com,https://site.twstalker.com,https://mobile.twstalker.com,https://x-sou.com/en/u"
 )
   .split(/[;,\n]+/)
   .map(value => String(value || "").trim().replace(/\/+$/, ""))
-  .filter(value => /^https:\/\/[A-Za-z0-9.-]+$/i.test(value));
+  .filter(value => {
+    try {
+      const parsed = new URL(value);
+      return parsed.protocol === "https:" && Boolean(parsed.hostname);
+    } catch {
+      return false;
+    }
+  });
 
 const PUBLIC_LEAK_KNOWN_SOURCES = [
   { name: "Fut Sheriff", pattern: /\bfut\s*sheriff\b/i },
@@ -896,8 +903,9 @@ function parsePublicXMirror(html, handle, mirrorUrl, now = Date.now()) {
   const cleanHandle = String(handle || "").trim().replace(/^@/, "");
   if (!raw || !cleanHandle) return [];
 
-  // Status-Links vor dem HTML->Text-Schritt markieren. TwStalker aendert sein
-  // Layout gelegentlich, die Tweet-ID im /status/<id>-Link bleibt aber stabil.
+  // v10.60: Multi-mirror parser. Einige oeffentliche Mirrors liefern echte
+  // /status/<id>-Links, andere nur sichtbaren Profiltext. Status-IDs bleiben
+  // bevorzugt; ohne ID wird ein stabiler Content-Hash fuer Dedupe verwendet.
   const marked = raw.replace(
     /(<a\b[^>]*href=["'][^"']*\/status\/(\d{10,25})[^"']*["'][^>]*>)/gi,
     (full, openTag, id) => `${openTag} __XSTATUS_${id}__ `
@@ -905,54 +913,71 @@ function parsePublicXMirror(html, handle, mirrorUrl, now = Date.now()) {
   const text = publicHtmlToText(marked);
   if (!text) return [];
 
-  const authorNeedle = cleanHandle.toLowerCase() === "futsheriff"
-    ? /Fut\s+Sheriff\s+@FutSheriff\b/ig
-    : new RegExp(`(?:^|\\s)[^@]{0,60}@${cleanHandle}\\b`, "ig");
+  const escapedHandle = cleanHandle.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const authorPatterns = cleanHandle.toLowerCase() === "futsheriff"
+    ? [
+        /Fut\s*Sheriff\s*@FutSheriff\b/ig,
+        /FutSheriff\s*@FutSheriff\b/ig,
+        /Fut\s*Sheriff@FutSheriff\b/ig
+      ]
+    : [new RegExp(`(?:^|\\s)[^@\\n]{0,60}@${escapedHandle}\\b`, "ig")];
+
   const starts = [];
-  let authorMatch;
-  while ((authorMatch = authorNeedle.exec(text))) starts.push(authorMatch.index);
-  if (!starts.length) return [];
+  for (const pattern of authorPatterns) {
+    let authorMatch;
+    while ((authorMatch = pattern.exec(text))) starts.push(authorMatch.index);
+  }
+  const uniqueStarts = [...new Set(starts)].sort((a, b) => a - b);
+  if (!uniqueStarts.length) return [];
 
   const posts = [];
   const seen = new Set();
-  for (let i = 0; i < starts.length; i++) {
-    const start = starts[i];
-    const end = i + 1 < starts.length ? starts[i + 1] : text.length;
-    let segment = text.slice(start, end);
-    if (/\bretweeted\b/i.test(segment.slice(0, 120))) continue;
 
-    const statusMatch = segment.match(/__XSTATUS_(\d{10,25})__/i);
-    if (!statusMatch) continue;
-    const postId = statusMatch[1];
-    if (seen.has(postId)) continue;
-    seen.add(postId);
+  for (let i = 0; i < uniqueStarts.length; i++) {
+    const start = uniqueStarts[i];
+    const end = i + 1 < uniqueStarts.length ? uniqueStarts[i + 1] : text.length;
+    let segment = text.slice(start, end);
+    const firstChunk = segment.slice(0, 160);
+    if (/\bretweeted\b/i.test(firstChunk)) continue;
 
     segment = segment
-      .replace(/^Fut\s+Sheriff\s+@FutSheriff\b/i, "")
-      .replace(new RegExp(`^\\s*[^@]{0,60}@${cleanHandle}\\b`, "i"), "")
+      .replace(/^\s*Fut\s*Sheriff\s*@?FutSheriff\b/i, "")
+      .replace(/^\s*FutSheriff\s*@FutSheriff\b/i, "")
+      .replace(new RegExp(`^\\s*[^@\\n]{0,60}@${escapedHandle}\\b`, "i"), "")
+      .replace(/^\s*(?:Pinned Tweet|Tweets|Posts)\s*/i, "")
       .trim();
 
-    let sourceEventAt = null;
-    const relativeMatch = segment.match(/^(?:about\s+)?(?:a|an|one|\d+)\s+(?:minute|minutes|hour|hours|day|days)\s+ago\b/i);
-    const yesterdayMatch = segment.match(/^yesterday\b/i);
-    const absoluteMatch = segment.match(/^\d{1,2}\/\d{1,2}\/\d{4},?\s+\d{1,2}:\d{2}\b/);
-    const timeText = relativeMatch?.[0] || yesterdayMatch?.[0] || absoluteMatch?.[0] || "";
-    if (timeText) {
-      sourceEventAt = parsePublicMirrorTime(timeText, now);
-      segment = segment.slice(timeText.length).trim();
+    const statusMatch = segment.match(/__XSTATUS_(\d{10,25})__/i);
+    const relativeMatch = segment.match(/(?:^|\s)(?:about\s+)?(?:a|an|one|\d+)\s+(?:minute|minutes|hour|hours|day|days)\s+ago\b/i);
+    const yesterdayMatch = segment.match(/(?:^|\s)yesterday\b/i);
+    const absoluteMatch = segment.match(/(?:^|\s)(?:\d{1,2}\/\d{1,2}\/\d{4},?\s+\d{1,2}:\d{2}|\d{4}-\d{2}-\d{2}[ T]\d{1,2}:\d{2}(?::\d{2})?)/i);
+    const timeMatch = relativeMatch || yesterdayMatch || absoluteMatch;
+    const timeText = timeMatch ? String(timeMatch[0] || "").trim() : "";
+    const sourceEventAt = timeText ? parsePublicMirrorTime(timeText, now) : null;
+
+    if (timeMatch && Number.isFinite(timeMatch.index)) {
+      segment = segment.slice(timeMatch.index + timeMatch[0].length).trim();
     }
 
-    // Alles ab dem markierten Status-Link ist Navigation/Meta. Vorherige
-    // Engagement-Zahlen am Kartenende ebenfalls entfernen.
-    const markerIndex = segment.indexOf(`__XSTATUS_${postId}__`);
+    const markerIndex = statusMatch ? segment.indexOf(`__XSTATUS_${statusMatch[1]}__`) : -1;
     if (markerIndex >= 0) segment = segment.slice(0, markerIndex).trim();
+
+    // Mirror-spezifische Karten-/Navigationsreste entfernen. Der eigentliche
+    // Tweet-Text steht bei den unterstuetzten Seiten vor diesen Metadaten.
     segment = segment
-      .replace(/\s+(?:\d+(?:\.\d+)?[KMB]?\s*){3,8}$/i, "")
-      .replace(/\s+View\s+Details\s*$/i, "")
+      .replace(/\s+View\s+Details[\s\S]*$/i, "")
+      .replace(/\s+See\s+More[\s\S]*$/i, "")
+      .replace(/\s+Image:\s*[\s\S]*$/i, "")
+      .replace(/\s+(?:\d+(?:\.\d+)?[KMB]?\s*){3,10}$/i, "")
       .trim();
 
     const postText = compactWhitespace(segment);
     if (!postText || postText.length < 4) continue;
+    if (/^(?:Joined\s+|Followers?\b|Following\b|Likes\b|Trading Group\b)/i.test(postText)) continue;
+
+    const postId = statusMatch?.[1] || `mirror_${crypto.createHash("sha1").update(`${cleanHandle.toLowerCase()}|${postText.toLowerCase()}`).digest("hex").slice(0, 20)}`;
+    if (seen.has(postId)) continue;
+    seen.add(postId);
 
     posts.push({
       platform: "x",
@@ -960,7 +985,9 @@ function parsePublicXMirror(html, handle, mirrorUrl, now = Date.now()) {
       postId,
       text: postText,
       sourceEventAt,
-      publicUrl: `https://x.com/${encodeURIComponent(cleanHandle)}/status/${encodeURIComponent(postId)}`,
+      publicUrl: statusMatch
+        ? `https://x.com/${encodeURIComponent(cleanHandle)}/status/${encodeURIComponent(statusMatch[1])}`
+        : mirrorUrl,
       directSource: cleanHandle.toLowerCase() === "futsheriff" ? "Fut Sheriff" : cleanHandle,
       transport: "public-x-mirror",
       mirrorUrl
@@ -974,12 +1001,23 @@ function parsePublicXMirror(html, handle, mirrorUrl, now = Date.now()) {
 
 async function fetchPublicXMirror(handle) {
   const errors = [];
+  const now = Date.now();
   for (const base of PUBLIC_LEAK_X_MIRROR_BASES) {
     const url = `${base}/${encodeURIComponent(handle)}`;
     try {
       const html = await fetchText(url);
-      const posts = parsePublicXMirror(html, handle, url);
+      const posts = parsePublicXMirror(html, handle, url, now);
       if (!posts.length) throw new Error(`${url} -> keine parsebaren Posts`);
+
+      // Ein Mirror mit nur alten gecachten Posts darf einen frischeren Mirror
+      // nicht blockieren. Fuer automatische Leaks brauchen wir einen Zeitstempel.
+      const recentPosts = posts.filter(post =>
+        Number.isFinite(Number(post.sourceEventAt)) &&
+        now - Number(post.sourceEventAt) <= PUBLIC_LEAK_MAX_AGE_MS &&
+        Number(post.sourceEventAt) <= now + 5 * 60_000
+      );
+      if (!recentPosts.length) throw new Error(`${url} -> keine frischen Posts im ${Math.round(PUBLIC_LEAK_MAX_AGE_MS / 3_600_000)}h-Fenster`);
+
       return { ok: true, provider: new URL(base).hostname, url, posts };
     } catch (error) {
       errors.push(String(error));
@@ -1101,7 +1139,7 @@ async function pollPublicLeakSources(force = false) {
   publicLeakInflight = (async () => {
     const cycle = {
       fetchedPosts: 0, relevantPosts: 0, acceptedEvents: 0, duplicateEvents: 0,
-      skippedOld: 0, skippedOtherGameYear: 0, sourceStatus: {}
+      skippedOld: 0, skippedUnknownTime: 0, skippedOtherGameYear: 0, sourceStatus: {}
     };
     publicLeakPollState.lastPollAt = new Date(now).toISOString();
 
@@ -1110,7 +1148,11 @@ async function pollPublicLeakSources(force = false) {
       let sourceRelevant = 0;
       let sourceAccepted = 0;
       for (const post of posts) {
-        const eventAt = Number.isFinite(Number(post.sourceEventAt)) ? Number(post.sourceEventAt) : now;
+        if (!Number.isFinite(Number(post.sourceEventAt))) {
+          cycle.skippedUnknownTime += 1;
+          continue;
+        }
+        const eventAt = Number(post.sourceEventAt);
         if (now - eventAt > PUBLIC_LEAK_MAX_AGE_MS || eventAt > now + 5 * 60_000) {
           cycle.skippedOld += 1;
           continue;
@@ -1135,7 +1177,7 @@ async function pollPublicLeakSources(force = false) {
     }
 
     // Original-X bleibt bevorzugt, wird aber nicht mehr alle 5 Minuten gegen
-    // ein 429 gefahren. Bei Rate-Limit: exponentieller Backoff + Public-Mirror.
+    // ein 429 gefahren. Bei Rate-Limit: exponentieller Backoff + Multi-Public-Mirror.
     for (const handle of PUBLIC_LEAK_X_HANDLES) {
       const directUrl = `https://syndication.twitter.com/srv/timeline-profile/screen-name/${encodeURIComponent(handle)}`;
       const statusKey = `x:${handle}`;
@@ -1257,7 +1299,7 @@ async function pollPublicLeakSources(force = false) {
           cycle.sourceStatus[statusKey] = {
             ok: false,
             direct: true,
-            provider: "X syndication + public mirror fallback",
+            provider: "X syndication + multi-public-mirror fallback",
             profile: `https://x.com/${handle}`,
             url: directUrl,
             directSkipped,
@@ -7390,6 +7432,59 @@ function ratingWindowStats(cards, changeField) {
   };
 }
 
+function marketHorizonEvidence(source, epsilon = STRICT_BUY_DUPLICATE_HORIZON_EPS) {
+  // 5m ist der primaere Trading-Horizont. Wenn 1m/5m/15m denselben
+  // Preisimpuls spiegeln, bleibt deshalb der 5m-Impuls erhalten und wird
+  // nicht versehentlich nur dem 1m-Fenster zugerechnet.
+  const order = ["5m", "15m", "1h", "1m"];
+  const raw = order
+    .map(key => ({ key, value: Number(source?.[key]) }))
+    .filter(item => Number.isFinite(item.value));
+
+  const effective = { "1m": 0, "5m": 0, "15m": 0, "1h": 0 };
+  const groups = [];
+  const independentKeys = [];
+  const duplicateKeys = [];
+
+  for (const item of raw) {
+    if (Math.abs(item.value) < 0.1) continue;
+    const sign = item.value > 0 ? 1 : -1;
+    const duplicateGroup = groups.find(group =>
+      group.sign === sign && group.values.some(value => Math.abs(value - item.value) <= epsilon)
+    );
+
+    if (duplicateGroup) {
+      duplicateGroup.keys.push(item.key);
+      duplicateGroup.values.push(item.value);
+      duplicateKeys.push(item.key);
+      continue;
+    }
+
+    groups.push({ sign, keys: [item.key], values: [item.value] });
+    independentKeys.push(item.key);
+    effective[item.key] = item.value;
+  }
+
+  const short = raw.filter(item => ["1m", "5m", "15m"].includes(item.key) && Math.abs(item.value) >= 0.1);
+  const duplicateShort = short.length >= 2 && short.every(item => Math.sign(item.value) === Math.sign(short[0].value)) &&
+    (Math.max(...short.map(item => item.value)) - Math.min(...short.map(item => item.value)) <= epsilon);
+
+  const hasIndependentLong = independentKeys.includes("15m") || independentKeys.includes("1h");
+  const strongActionConfirmed = groups.length >= 2 && hasIndependentLong;
+
+  return {
+    epsilon,
+    raw: Object.fromEntries(raw.map(item => [item.key, item.value])),
+    effective,
+    independentKeys,
+    duplicateKeys,
+    directionalIndependentConfirmations: groups.length,
+    duplicateShort,
+    hasIndependentLong,
+    strongActionConfirmed
+  };
+}
+
 function buildRatingStats(rows) {
   const byRating = new Map();
 
@@ -7411,6 +7506,13 @@ function buildRatingStats(rows) {
     const w15m = ratingWindowStats(cards, "change15m");
     const w1h = ratingWindowStats(cards, "change1h");
     const w24h = ratingWindowStats(cards, "change24h");
+    const horizonEvidence = marketHorizonEvidence({
+      "1m": w1m.medianMove,
+      "5m": w5m.medianMove,
+      "15m": w15m.medianMove,
+      "1h": w1h.medianMove
+    });
+    const strongActionHorizonConfirmed = horizonEvidence.strongActionConfirmed;
 
     const nearLowCards = cards.filter(card =>
       Number.isFinite(card.distanceFrom24hLow) &&
@@ -7491,6 +7593,7 @@ function buildRatingStats(rows) {
     } else if (
       nearHighPct >= 40 &&
       w15m.medianMove >= 3 &&
+      strongActionHorizonConfirmed &&
       (
         w1m.medianMove <= 0 ||
         w5m.medianMove <= 0.5 ||
@@ -7512,7 +7615,8 @@ function buildRatingStats(rows) {
       w5m.risingPct >= 50 &&
       w5m.fallingPct < 40 &&
       w15m.medianMove >= 0.8 &&
-      w15m.medianMove <= 10
+      w15m.medianMove <= 10 &&
+      strongActionHorizonConfirmed
     ) {
       marketSignal = "KAUFZONE";
       marketAdvice = "JETZT KAUFEN";
@@ -7529,7 +7633,7 @@ function buildRatingStats(rows) {
     ) {
       marketSignal = "STARK STEIGEND";
 
-      if (w15m.medianMove >= 10 && nearHighPct >= 40) {
+      if (w15m.medianMove >= 10 && nearHighPct >= 40 && strongActionHorizonConfirmed) {
         marketSignal = "VERKAUFSZONE";
         marketAdvice = "JETZT VERKAUFEN";
         confidence = Math.min(
@@ -7539,7 +7643,7 @@ function buildRatingStats(rows) {
         reason =
           `${w5m.risingPct.toFixed(0)}% der ${rating}er steigen und ${nearHighPct.toFixed(0)}% liegen nahe dem 24h-Hoch; ` +
           `15m-Median bereits +${w15m.medianMove.toFixed(2)}%. Rating-Segment ist stark ausgedehnt: Gewinnmitnahme bevorzugt.`;
-      } else if (w15m.medianMove >= 10) {
+      } else if (w15m.medianMove >= 10 && strongActionHorizonConfirmed) {
         marketAdvice = "NICHT HINTERHERKAUFEN";
         confidence = Math.min(
           95,
@@ -7551,12 +7655,12 @@ function buildRatingStats(rows) {
       } else {
         marketAdvice = "BEOBACHTEN";
         confidence = Math.min(
-          95,
+          horizonEvidence.duplicateShort ? 74 : 95,
           Math.round(76 + Math.min(12, w5m.medianMove * 2))
         );
-        reason =
-          `${w5m.risingPct.toFixed(0)}% der ${rating}er steigen; ` +
-          `5m-Median +${w5m.medianMove.toFixed(2)}%. Breite Aufwärtsbewegung bestätigt.`;
+        reason = horizonEvidence.duplicateShort
+          ? `${w5m.risingPct.toFixed(0)}% der ${rating}er steigen; 1m/5m/15m zeigen nahezu denselben Impuls und zählen nur als 1 unabhängige Bestätigung. Erst echte 15m/1h-Fortsetzung abwarten.`
+          : `${w5m.risingPct.toFixed(0)}% der ${rating}er steigen; 5m-Median +${w5m.medianMove.toFixed(2)}%. Breite Aufwärtsbewegung bestätigt.`;
       }
     } else if (
       w5m.risingPct >= 60 ||
@@ -7622,6 +7726,9 @@ function buildRatingStats(rows) {
       marketAdvice,
       confidence,
       reason,
+      independentHorizonConfirmations: horizonEvidence.directionalIndependentConfirmations,
+      duplicateHorizonMove: horizonEvidence.duplicateShort,
+      horizonEvidence,
       marketTier: isLowWatchRating(rating) ? "LOW_WATCH" : "MAIN",
       unusualMovePct: Math.max(
         Math.abs(Number(w5m.medianMove || 0)),
@@ -7664,6 +7771,10 @@ function ratingMarketPhase(stat, globalContext = {}) {
   const measured = Number(stat?.measuredCards || 0);
   const c5 = Number(stat?.change5m || 0);
   const c15 = Number(stat?.change15m || 0);
+  const c1h = Number(stat?.change1h || 0);
+  const horizonEvidence = stat?.horizonEvidence || marketHorizonEvidence({
+    "1m": stat?.change1m, "5m": c5, "15m": c15, "1h": c1h
+  });
   const rising = Number(stat?.risingPct5m || 0);
   const falling = Number(stat?.fallingPct5m || 0);
   const nearLow = Number(stat?.near24hLowPct || 0);
@@ -7674,8 +7785,12 @@ function ratingMarketPhase(stat, globalContext = {}) {
   if (measured < 5) return "DATA_BUILDING";
   if (globalContext?.packSupplyActive && falling >= 60 && c5 <= -1) return "SUPPLY_SHOCK";
   if (falling >= 70 && c5 <= -1.5) return "SELL_OFF";
-  if (nearHigh >= 40 && cooling >= 40 && c15 >= 2) return "DISTRIBUTION";
-  if (rising >= 65 && c5 >= 1 && c15 >= 0.5) return "EARLY_DEMAND_EXPANSION";
+  if (nearHigh >= 40 && cooling >= 40 && c15 >= 2 && horizonEvidence.strongActionConfirmed) return "DISTRIBUTION";
+  if (
+    rising >= 65 && c5 >= 1 &&
+    ((horizonEvidence.independentKeys.includes("15m") && c15 >= 0.5) ||
+     (horizonEvidence.independentKeys.includes("1h") && c1h >= 0.5))
+  ) return "EARLY_DEMAND_EXPANSION";
   if (rising >= 55 && c5 >= 0.4 && c15 < 0) return "RECOVERY";
   if (nearLow >= 45 && recovery >= 30 && c5 >= -0.5) return "ACCUMULATION";
   if (rising >= 55 && c5 > 0) return "DEMAND_BUILDING";
@@ -7692,15 +7807,23 @@ function buildRatingMarketLogic(ratingStats, rating, globalContext = {}) {
   const c5 = Number(stat.change5m || 0);
   const c15 = Number(stat.change15m || 0);
   const c1h = Number(stat.change1h || 0);
+  const horizonEvidence = stat?.horizonEvidence || marketHorizonEvidence({
+    "1m": stat?.change1m, "5m": c5, "15m": c15, "1h": c1h
+  });
+  const effectiveC5 = Number(horizonEvidence.effective?.["5m"] || 0);
+  const effectiveC15 = Number(horizonEvidence.effective?.["15m"] || 0);
+  const effectiveC1h = Number(horizonEvidence.effective?.["1h"] || 0);
   const rising = Number(stat.risingPct5m || 0);
   const falling = Number(stat.fallingPct5m || 0);
   const breadth = rising - falling;
   const phase = ratingMarketPhase(stat, globalContext);
 
   let score = 50;
-  score += clampBrainScore(c5 * 4, -20, 20);
-  score += clampBrainScore(c15 * 1.5, -15, 15);
-  score += clampBrainScore(c1h * 0.45, -8, 8);
+  // v10.60: derselbe Preisimpuls darf nicht ueber 5m/15m/1h mehrfach
+  // in den Market Score eingehen. Nur unabhaengige Horizon-Gruppen zaehlen.
+  score += clampBrainScore(effectiveC5 * 4, -20, 20);
+  score += clampBrainScore(effectiveC15 * 1.5, -15, 15);
+  score += clampBrainScore(effectiveC1h * 0.45, -8, 8);
   score += clampBrainScore(breadth * 0.18, -15, 15);
   score += clampBrainScore(Number(stat.recoveryPct || 0) * 0.08, 0, 8);
   score -= clampBrainScore(Number(stat.coolingPct || 0) * 0.06, 0, 7);
@@ -7748,8 +7871,10 @@ function buildRatingMarketLogic(ratingStats, rating, globalContext = {}) {
     reasons.push(`${falling.toFixed(0)}% der gemessenen ${rating}er fallen in 5m. Angebotsdruck dominiert aktuell das Rating-Segment.`);
   }
 
-  if (c5 >= 0.5 && c15 >= 0.5) {
-    reasons.push(`Der ${rating}er-Median bestätigt Aufwärtsmomentum über 5m (${c5 >= 0 ? "+" : ""}${c5.toFixed(2)}%) und 15m (${c15 >= 0 ? "+" : ""}${c15.toFixed(2)}%).`);
+  if (c5 >= 0.5 && c15 >= 0.5 && horizonEvidence.independentKeys.includes("15m")) {
+    reasons.push(`Der ${rating}er-Median bestätigt Aufwärtsmomentum über zwei unabhängige Horizonte: 5m (${c5 >= 0 ? "+" : ""}${c5.toFixed(2)}%) und 15m (${c15 >= 0 ? "+" : ""}${c15.toFixed(2)}%).`);
+  } else if (horizonEvidence.duplicateShort && Math.max(Math.abs(c5), Math.abs(c15)) >= 0.5) {
+    risks.push(`1m/5m/15m zeigen nahezu denselben Preisimpuls. Diese Horizonte zählen nur als 1 Bestätigung, bis neue zeitlich unabhängige Historie entsteht.`);
   }
 
   if (higher && c15 > 0.5 && Number(higher.change15m || 0) <= c15 - 1.5) {
@@ -7779,12 +7904,18 @@ function buildRatingMarketLogic(ratingStats, rating, globalContext = {}) {
   }
 
   score = Math.round(clampBrainScore(score, 5, 95));
+  if (horizonEvidence.duplicateShort && horizonEvidence.directionalIndependentConfirmations <= 1) {
+    score = Math.min(score, 78);
+  }
   const localConfidence = Number(stat.confidence || 50);
   const globalConfidence = Number(globalContext?.confidence || 0);
   const measuredBonus = Math.min(10, Number(stat.measuredCards || 0));
-  const marketConfidence = Math.round(clampBrainScore(
+  let marketConfidence = Math.round(clampBrainScore(
     localConfidence * 0.68 + (globalConfidence || localConfidence) * 0.22 + measuredBonus
   , 20, 95));
+  if (horizonEvidence.duplicateShort && horizonEvidence.directionalIndependentConfirmations <= 1) {
+    marketConfidence = Math.min(marketConfidence, 74);
+  }
 
   const continuationProbability = Math.round(clampBrainScore(
     50 + (score - 50) * 0.72 + (marketConfidence - 50) * 0.18,
@@ -7797,6 +7928,9 @@ function buildRatingMarketLogic(ratingStats, rating, globalContext = {}) {
     score,
     confidence: marketConfidence,
     continuationProbability,
+    horizonEvidence,
+    independentHorizonConfirmations: horizonEvidence.directionalIndependentConfirmations,
+    duplicateHorizonMove: horizonEvidence.duplicateShort,
     rotationFromLower,
     lowerLeadPct,
     lowerRatioCompressionPct,
@@ -7837,20 +7971,28 @@ function buildPlayerMarketBrain(row, ratingStat, globalContext = {}) {
   const ratingReference = Number(ratingStat?.ratingReferencePrice || ratingStat?.medianPrice || current);
   const low = Number(row?.low24h);
   const high = Number(row?.high24h);
+  const playerHorizonEvidence = marketHorizonEvidence({
+    "1m": row?.change1m, "5m": row?.change5m, "15m": row?.change15m, "1h": row?.change1h
+  });
+  const ratingHorizonEvidence = ratingStat?.horizonEvidence || marketHorizonEvidence({
+    "1m": ratingStat?.change1m, "5m": ratingStat?.change5m, "15m": ratingStat?.change15m, "1h": ratingStat?.change1h
+  });
+  const pEff = playerHorizonEvidence.effective || {};
+  const rEff = ratingHorizonEvidence.effective || {};
 
   const momentum = Math.round(clampBrainScore(
     50 +
-    Number(row?.change1m || 0) * 3.0 +
-    Number(row?.change5m || 0) * 2.5 +
-    Number(row?.change15m || 0) * 1.15 +
-    Number(row?.change1h || 0) * 0.45
+    Number(pEff["1m"] || 0) * 3.0 +
+    Number(pEff["5m"] || 0) * 2.5 +
+    Number(pEff["15m"] || 0) * 1.15 +
+    Number(pEff["1h"] || 0) * 0.45
   ));
 
   const relativeStrength = Math.round(clampBrainScore(
     50 +
-    (Number(row?.change5m || 0) - Number(ratingStat?.change5m || 0)) * 4.0 +
-    (Number(row?.change15m || 0) - Number(ratingStat?.change15m || 0)) * 2.25 +
-    (Number(row?.change1h || 0) - Number(ratingStat?.change1h || 0)) * 0.75
+    (Number(pEff["5m"] || 0) - Number(rEff["5m"] || 0)) * 4.0 +
+    (Number(pEff["15m"] || 0) - Number(rEff["15m"] || 0)) * 2.25 +
+    (Number(pEff["1h"] || 0) - Number(rEff["1h"] || 0)) * 0.75
   ));
 
   const ratingMarketScore = Math.round(clampBrainScore(marketLogic?.score ?? 50));
@@ -8019,6 +8161,7 @@ function buildPlayerMarketBrain(row, ratingStat, globalContext = {}) {
     idealEntryLow,
     idealEntryHigh,
     marketPhase: marketLogic?.phase || "DATA_BUILDING",
+    playerHorizonEvidence,
     marketReasons: marketLogic?.reasons || [],
     marketRisks: marketLogic?.risks || [],
     rotationFromLower: Boolean(marketLogic?.rotationFromLower),
@@ -11645,14 +11788,14 @@ app.get("/api/public-leaks/status", async (req, res) => {
 
     return res.json({
       ok: true,
-      version: "10.59-sheriff-429-resilience",
+      version: "10.60-ai-horizon-dedupe-sheriff-multisource",
       mode: "public-only",
       automaticPrivateReading: false,
       directSources: PUBLIC_LEAK_X_HANDLES.map(handle => ({
         source: handle.toLowerCase() === "futsheriff" ? "Fut Sheriff" : handle,
         platform: "X",
         handle: `@${handle}`,
-        transport: "X syndication + public mirror fallback"
+        transport: "X syndication + multi-public-mirror fallback"
       })),
       fallbackTelegramSources: [...PUBLIC_LEAK_TELEGRAM_CHANNELS],
       xTransport: {
@@ -11672,7 +11815,7 @@ app.get("/api/public-leaks/status", async (req, res) => {
         leakCanBuyAlone: false,
         unconfirmedLeakCanBlockImmediateBuy: true
       },
-      note: "Der Brain bevorzugt Fut Sheriff direkt ueber die oeffentliche X-Profil-Syndication. Bei HTTP 429 wird X exponentiell gebremst und ein frei oeffentlicher X-Mirror versucht; Telegram bleibt zusaetzlicher Fallback. Danach misst der Brain 15m/1h/6h/24h Marktreaktionen. Ein Leak allein erzeugt niemals einen Kauf."
+      note: "Der Brain bevorzugt Fut Sheriff direkt ueber die oeffentliche X-Profil-Syndication. Bei HTTP 429 wird X exponentiell gebremst und mehrere frei oeffentliche X-Mirrors werden der Reihe nach versucht; Telegram bleibt zusaetzlicher Fallback. Danach misst der Brain 15m/1h/6h/24h Marktreaktionen. Ein Leak allein erzeugt niemals einen Kauf."
     });
   } catch (error) {
     return res.status(500).json({ ok: false, error: String(error) });
@@ -13697,7 +13840,7 @@ httpServer = app.listen(
   port,
   () => {
     console.log(
-      `FC Trading Intelligence v10.47 Rating Only Hard Gate (FC${GAME_YEAR}) running on ${port}`
+      `FC Trading Intelligence v10.60 AI Horizon Dedupe + Sheriff Multi-Source (FC${GAME_YEAR}) running on ${port}`
     );
 
     startMonitoring();
