@@ -346,6 +346,21 @@ const PUBLIC_LEAK_X_HANDLES = String(
   .map(value => String(value || "").trim().replace(/^@/, ""))
   .filter(value => /^[A-Za-z0-9_]{1,15}$/.test(value));
 
+// v10.59: X-429-Resilience. Der offizielle Syndication-Pfad wird respektvoll
+// langsamer abgefragt und bei 429 exponentiell gebremst. Waehrend des Backoffs
+// darf ein frei oeffentlicher X-Mirror einspringen. Telegram bleibt die letzte
+// Fallback-Stufe. Keine Auth-/Paywall-Umgehung und kein aggressives Retry.
+const PUBLIC_LEAK_X_DIRECT_MIN_INTERVAL_MS = Math.max(10, Math.min(180, Number(process.env.PUBLIC_LEAK_X_DIRECT_MIN_INTERVAL_MIN || 30))) * 60_000;
+const PUBLIC_LEAK_X_BACKOFF_BASE_MS = Math.max(15, Math.min(360, Number(process.env.PUBLIC_LEAK_X_BACKOFF_BASE_MIN || 60))) * 60_000;
+const PUBLIC_LEAK_X_BACKOFF_MAX_MS = Math.max(60, Math.min(720, Number(process.env.PUBLIC_LEAK_X_BACKOFF_MAX_MIN || 360))) * 60_000;
+const PUBLIC_LEAK_X_MIRROR_INTERVAL_MS = Math.max(5, Math.min(60, Number(process.env.PUBLIC_LEAK_X_MIRROR_INTERVAL_MIN || 10))) * 60_000;
+const PUBLIC_LEAK_X_MIRROR_BASES = String(
+  process.env.PUBLIC_LEAK_X_MIRROR_BASES || "https://site.twstalker.com,https://mobile.twstalker.com"
+)
+  .split(/[;,\n]+/)
+  .map(value => String(value || "").trim().replace(/\/+$/, ""))
+  .filter(value => /^https:\/\/[A-Za-z0-9.-]+$/i.test(value));
+
 const PUBLIC_LEAK_KNOWN_SOURCES = [
   { name: "Fut Sheriff", pattern: /\bfut\s*sheriff\b/i },
   { name: "FUT Police Leaks", pattern: /\bfut\s*police\s*leaks?\b/i },
@@ -608,10 +623,14 @@ const memoryTraderSignals = [];
 const memoryIntensiveWatchlist = new Map();
 
 let publicLeakInflight = null;
+const publicLeakXTransportState = new Map();
 let publicLeakPollState = {
   enabled: PUBLIC_LEAK_POLL_ENABLED,
   channels: [...PUBLIC_LEAK_TELEGRAM_CHANNELS],
   directXHandles: [...PUBLIC_LEAK_X_HANDLES],
+  xMirrorBases: [...PUBLIC_LEAK_X_MIRROR_BASES],
+  xDirectMinIntervalMinutes: Math.round(PUBLIC_LEAK_X_DIRECT_MIN_INTERVAL_MS / 60_000),
+  xMirrorIntervalMinutes: Math.round(PUBLIC_LEAK_X_MIRROR_INTERVAL_MS / 60_000),
   pollIntervalMinutes: Math.round(PUBLIC_LEAK_POLL_INTERVAL_MS / 60_000),
   maxAgeHours: Number((PUBLIC_LEAK_MAX_AGE_MS / 3_600_000).toFixed(1)),
   lastPollAt: null,
@@ -833,6 +852,142 @@ function parsePublicXSyndication(html, handle) {
     .slice(-PUBLIC_LEAK_MAX_POSTS_PER_SOURCE);
 }
 
+function publicLeakXTransportFor(handle) {
+  const key = String(handle || "").toLowerCase();
+  if (!publicLeakXTransportState.has(key)) {
+    publicLeakXTransportState.set(key, {
+      directLastAttemptAt: 0,
+      directLastSuccessAt: 0,
+      directNextRetryAt: 0,
+      directFailureCount: 0,
+      mirrorLastAttemptAt: 0,
+      mirrorLastSuccessAt: 0,
+      mirrorProvider: null,
+      mirrorFailureCount: 0
+    });
+  }
+  return publicLeakXTransportState.get(key);
+}
+
+function publicLeakXBackoffMs(failureCount) {
+  const exponent = Math.max(0, Math.min(6, Number(failureCount || 1) - 1));
+  return Math.min(PUBLIC_LEAK_X_BACKOFF_MAX_MS, PUBLIC_LEAK_X_BACKOFF_BASE_MS * (2 ** exponent));
+}
+
+function parsePublicMirrorTime(value, now = Date.now()) {
+  const raw = compactWhitespace(value || "");
+  if (!raw) return null;
+
+  const absolute = Date.parse(raw);
+  if (Number.isFinite(absolute)) return absolute;
+
+  if (/^yesterday\b/i.test(raw)) return now - 24 * 60 * 60_000;
+  const relative = raw.match(/^(?:about\s+)?(a|an|one|\d+)\s+(minute|minutes|hour|hours|day|days)\s+ago\b/i);
+  if (!relative) return null;
+  const amount = /^(?:a|an|one)$/i.test(relative[1]) ? 1 : Number(relative[1]);
+  if (!Number.isFinite(amount) || amount < 0) return null;
+  const unit = relative[2].toLowerCase();
+  const unitMs = unit.startsWith("minute") ? 60_000 : unit.startsWith("hour") ? 60 * 60_000 : 24 * 60 * 60_000;
+  return now - amount * unitMs;
+}
+
+function parsePublicXMirror(html, handle, mirrorUrl, now = Date.now()) {
+  const raw = String(html || "");
+  const cleanHandle = String(handle || "").trim().replace(/^@/, "");
+  if (!raw || !cleanHandle) return [];
+
+  // Status-Links vor dem HTML->Text-Schritt markieren. TwStalker aendert sein
+  // Layout gelegentlich, die Tweet-ID im /status/<id>-Link bleibt aber stabil.
+  const marked = raw.replace(
+    /(<a\b[^>]*href=["'][^"']*\/status\/(\d{10,25})[^"']*["'][^>]*>)/gi,
+    (full, openTag, id) => `${openTag} __XSTATUS_${id}__ `
+  );
+  const text = publicHtmlToText(marked);
+  if (!text) return [];
+
+  const authorNeedle = cleanHandle.toLowerCase() === "futsheriff"
+    ? /Fut\s+Sheriff\s+@FutSheriff\b/ig
+    : new RegExp(`(?:^|\\s)[^@]{0,60}@${cleanHandle}\\b`, "ig");
+  const starts = [];
+  let authorMatch;
+  while ((authorMatch = authorNeedle.exec(text))) starts.push(authorMatch.index);
+  if (!starts.length) return [];
+
+  const posts = [];
+  const seen = new Set();
+  for (let i = 0; i < starts.length; i++) {
+    const start = starts[i];
+    const end = i + 1 < starts.length ? starts[i + 1] : text.length;
+    let segment = text.slice(start, end);
+    if (/\bretweeted\b/i.test(segment.slice(0, 120))) continue;
+
+    const statusMatch = segment.match(/__XSTATUS_(\d{10,25})__/i);
+    if (!statusMatch) continue;
+    const postId = statusMatch[1];
+    if (seen.has(postId)) continue;
+    seen.add(postId);
+
+    segment = segment
+      .replace(/^Fut\s+Sheriff\s+@FutSheriff\b/i, "")
+      .replace(new RegExp(`^\\s*[^@]{0,60}@${cleanHandle}\\b`, "i"), "")
+      .trim();
+
+    let sourceEventAt = null;
+    const relativeMatch = segment.match(/^(?:about\s+)?(?:a|an|one|\d+)\s+(?:minute|minutes|hour|hours|day|days)\s+ago\b/i);
+    const yesterdayMatch = segment.match(/^yesterday\b/i);
+    const absoluteMatch = segment.match(/^\d{1,2}\/\d{1,2}\/\d{4},?\s+\d{1,2}:\d{2}\b/);
+    const timeText = relativeMatch?.[0] || yesterdayMatch?.[0] || absoluteMatch?.[0] || "";
+    if (timeText) {
+      sourceEventAt = parsePublicMirrorTime(timeText, now);
+      segment = segment.slice(timeText.length).trim();
+    }
+
+    // Alles ab dem markierten Status-Link ist Navigation/Meta. Vorherige
+    // Engagement-Zahlen am Kartenende ebenfalls entfernen.
+    const markerIndex = segment.indexOf(`__XSTATUS_${postId}__`);
+    if (markerIndex >= 0) segment = segment.slice(0, markerIndex).trim();
+    segment = segment
+      .replace(/\s+(?:\d+(?:\.\d+)?[KMB]?\s*){3,8}$/i, "")
+      .replace(/\s+View\s+Details\s*$/i, "")
+      .trim();
+
+    const postText = compactWhitespace(segment);
+    if (!postText || postText.length < 4) continue;
+
+    posts.push({
+      platform: "x",
+      handle: cleanHandle,
+      postId,
+      text: postText,
+      sourceEventAt,
+      publicUrl: `https://x.com/${encodeURIComponent(cleanHandle)}/status/${encodeURIComponent(postId)}`,
+      directSource: cleanHandle.toLowerCase() === "futsheriff" ? "Fut Sheriff" : cleanHandle,
+      transport: "public-x-mirror",
+      mirrorUrl
+    });
+  }
+
+  return posts
+    .sort((a, b) => Number(a.sourceEventAt || 0) - Number(b.sourceEventAt || 0))
+    .slice(-PUBLIC_LEAK_MAX_POSTS_PER_SOURCE);
+}
+
+async function fetchPublicXMirror(handle) {
+  const errors = [];
+  for (const base of PUBLIC_LEAK_X_MIRROR_BASES) {
+    const url = `${base}/${encodeURIComponent(handle)}`;
+    try {
+      const html = await fetchText(url);
+      const posts = parsePublicXMirror(html, handle, url);
+      if (!posts.length) throw new Error(`${url} -> keine parsebaren Posts`);
+      return { ok: true, provider: new URL(base).hostname, url, posts };
+    } catch (error) {
+      errors.push(String(error));
+    }
+  }
+  throw new Error(errors.join(" | ") || `Kein X-Mirror fuer ${handle} erreichbar`);
+}
+
 function publicLeakMatchesGameYear(text) {
   const matches = [...String(text || "").matchAll(/\b(?:EA\s*SPORTS\s*)?FC\s*(2[67])\b/gi)]
     .map(item => item[1]);
@@ -950,60 +1105,170 @@ async function pollPublicLeakSources(force = false) {
     };
     publicLeakPollState.lastPollAt = new Date(now).toISOString();
 
-    // Direkte Originalquelle zuerst. Falls X/Syndication temporaer 429/5xx liefert,
-    // laufen die Telegram-Fallbacks danach unveraendert weiter.
-    for (const handle of PUBLIC_LEAK_X_HANDLES) {
-      const url = `https://syndication.twitter.com/srv/timeline-profile/screen-name/${encodeURIComponent(handle)}`;
-      const statusKey = `x:${handle}`;
-      try {
-        const html = await fetchText(url);
-        const posts = parsePublicXSyndication(html, handle);
-        cycle.fetchedPosts += posts.length;
-        let sourceRelevant = 0;
-        let sourceAccepted = 0;
-
-        for (const post of posts) {
-          const eventAt = Number.isFinite(Number(post.sourceEventAt)) ? Number(post.sourceEventAt) : now;
-          if (now - eventAt > PUBLIC_LEAK_MAX_AGE_MS || eventAt > now + 5 * 60_000) {
-            cycle.skippedOld += 1;
-            continue;
-          }
-          const signal = publicLeakSignalFromPost(post);
-          if (!signal) continue;
-          if (signal.skipReason === "OTHER_GAME_YEAR") {
-            cycle.skippedOtherGameYear += 1;
-            continue;
-          }
-          sourceRelevant += 1;
-          cycle.relevantPosts += 1;
-          const inserted = await saveIncomingTraderSignal(signal);
-          if (inserted) {
-            cycle.acceptedEvents += 1;
-            sourceAccepted += 1;
-          } else {
-            cycle.duplicateEvents += 1;
-          }
+    async function consumePublicXPosts(handle, posts) {
+      cycle.fetchedPosts += posts.length;
+      let sourceRelevant = 0;
+      let sourceAccepted = 0;
+      for (const post of posts) {
+        const eventAt = Number.isFinite(Number(post.sourceEventAt)) ? Number(post.sourceEventAt) : now;
+        if (now - eventAt > PUBLIC_LEAK_MAX_AGE_MS || eventAt > now + 5 * 60_000) {
+          cycle.skippedOld += 1;
+          continue;
         }
+        const signal = publicLeakSignalFromPost(post);
+        if (!signal) continue;
+        if (signal.skipReason === "OTHER_GAME_YEAR") {
+          cycle.skippedOtherGameYear += 1;
+          continue;
+        }
+        sourceRelevant += 1;
+        cycle.relevantPosts += 1;
+        const inserted = await saveIncomingTraderSignal(signal);
+        if (inserted) {
+          cycle.acceptedEvents += 1;
+          sourceAccepted += 1;
+        } else {
+          cycle.duplicateEvents += 1;
+        }
+      }
+      return { sourceRelevant, sourceAccepted };
+    }
 
-        cycle.sourceStatus[statusKey] = {
-          ok: true,
-          direct: true,
-          provider: "X public syndication",
-          profile: `https://x.com/${handle}`,
-          url,
-          fetched: posts.length,
-          relevant: sourceRelevant,
-          accepted: sourceAccepted
-        };
-      } catch (error) {
-        cycle.sourceStatus[statusKey] = {
-          ok: false,
-          direct: true,
-          provider: "X public syndication",
-          profile: `https://x.com/${handle}`,
-          url,
-          error: String(error)
-        };
+    // Original-X bleibt bevorzugt, wird aber nicht mehr alle 5 Minuten gegen
+    // ein 429 gefahren. Bei Rate-Limit: exponentieller Backoff + Public-Mirror.
+    for (const handle of PUBLIC_LEAK_X_HANDLES) {
+      const directUrl = `https://syndication.twitter.com/srv/timeline-profile/screen-name/${encodeURIComponent(handle)}`;
+      const statusKey = `x:${handle}`;
+      const transport = publicLeakXTransportFor(handle);
+      let directWorked = false;
+      let directError = null;
+      let directSkipped = false;
+
+      const directReady = force || (
+        now >= Number(transport.directNextRetryAt || 0) &&
+        now - Number(transport.directLastAttemptAt || 0) >= PUBLIC_LEAK_X_DIRECT_MIN_INTERVAL_MS
+      );
+
+      if (directReady) {
+        transport.directLastAttemptAt = now;
+        try {
+          const html = await fetchText(directUrl);
+          const posts = parsePublicXSyndication(html, handle);
+          const consumed = await consumePublicXPosts(handle, posts);
+          transport.directLastSuccessAt = now;
+          transport.directFailureCount = 0;
+          transport.directNextRetryAt = now + PUBLIC_LEAK_X_DIRECT_MIN_INTERVAL_MS;
+          directWorked = true;
+          cycle.sourceStatus[statusKey] = {
+            ok: true,
+            direct: true,
+            provider: "X public syndication",
+            profile: `https://x.com/${handle}`,
+            url: directUrl,
+            fetched: posts.length,
+            relevant: consumed.sourceRelevant,
+            accepted: consumed.sourceAccepted,
+            nextDirectAttemptAt: new Date(transport.directNextRetryAt).toISOString()
+          };
+        } catch (error) {
+          directError = error;
+          transport.directFailureCount += 1;
+          const status = Number(error?.status || 0);
+          const waitMs = status === 429
+            ? publicLeakXBackoffMs(transport.directFailureCount)
+            : Math.max(PUBLIC_LEAK_X_DIRECT_MIN_INTERVAL_MS, Math.min(PUBLIC_LEAK_X_BACKOFF_BASE_MS, publicLeakXBackoffMs(transport.directFailureCount)));
+          transport.directNextRetryAt = now + waitMs;
+        }
+      } else {
+        directSkipped = true;
+      }
+
+      // Mirror darf auch zwischen zwei Direct-X-Versuchen laufen, damit neue
+      // Sheriff-Posts trotz 30-60+ Minuten X-Backoff zeitnah erkannt werden.
+      const mirrorReady = PUBLIC_LEAK_X_MIRROR_BASES.length > 0 && (
+        force || now - Number(transport.mirrorLastAttemptAt || 0) >= PUBLIC_LEAK_X_MIRROR_INTERVAL_MS
+      );
+      let mirrorWorked = false;
+      let mirrorError = null;
+      let mirrorResult = null;
+
+      if (mirrorReady) {
+        transport.mirrorLastAttemptAt = now;
+        try {
+          mirrorResult = await fetchPublicXMirror(handle);
+          const consumed = await consumePublicXPosts(handle, mirrorResult.posts);
+          transport.mirrorLastSuccessAt = now;
+          transport.mirrorProvider = mirrorResult.provider;
+          transport.mirrorFailureCount = 0;
+          mirrorWorked = true;
+
+          if (!directWorked) {
+            cycle.sourceStatus[statusKey] = {
+              ok: true,
+              direct: true,
+              provider: `Public X mirror (${mirrorResult.provider})`,
+              profile: `https://x.com/${handle}`,
+              url: mirrorResult.url,
+              fetched: mirrorResult.posts.length,
+              relevant: consumed.sourceRelevant,
+              accepted: consumed.sourceAccepted,
+              directTransportOk: false,
+              directError: directError ? String(directError) : (directSkipped ? "Direct-X wartet auf naechstes erlaubtes Retry-Fenster" : null),
+              nextDirectAttemptAt: transport.directNextRetryAt ? new Date(transport.directNextRetryAt).toISOString() : null
+            };
+          } else {
+            cycle.sourceStatus[`${statusKey}:mirror`] = {
+              ok: true,
+              provider: `Public X mirror (${mirrorResult.provider})`,
+              url: mirrorResult.url,
+              fetched: mirrorResult.posts.length,
+              relevant: consumed.sourceRelevant,
+              accepted: consumed.sourceAccepted,
+              role: "redundant-fallback"
+            };
+          }
+        } catch (error) {
+          mirrorError = error;
+          transport.mirrorFailureCount += 1;
+        }
+      }
+
+      if (!directWorked && !mirrorWorked) {
+        const recentMirrorHealthy = Number(transport.mirrorLastSuccessAt || 0) > 0 &&
+          now - Number(transport.mirrorLastSuccessAt) <= Math.max(20 * 60_000, PUBLIC_LEAK_X_MIRROR_INTERVAL_MS * 3);
+        const recentDirectHealthy = Number(transport.directLastSuccessAt || 0) > 0 &&
+          now - Number(transport.directLastSuccessAt) <= PUBLIC_LEAK_X_DIRECT_MIN_INTERVAL_MS + 10 * 60_000;
+
+        if ((recentMirrorHealthy || recentDirectHealthy) && !mirrorError && !directError) {
+          cycle.sourceStatus[statusKey] = {
+            ok: true,
+            direct: true,
+            provider: recentMirrorHealthy
+              ? `Public X mirror (${transport.mirrorProvider || "cached"})`
+              : "X public syndication",
+            profile: `https://x.com/${handle}`,
+            pollSkipped: true,
+            reason: "Transport ist gesund; naechstes erlaubtes Poll-Fenster noch nicht erreicht.",
+            nextDirectAttemptAt: transport.directNextRetryAt ? new Date(transport.directNextRetryAt).toISOString() : null,
+            lastDirectSuccessAt: transport.directLastSuccessAt ? new Date(transport.directLastSuccessAt).toISOString() : null,
+            lastMirrorSuccessAt: transport.mirrorLastSuccessAt ? new Date(transport.mirrorLastSuccessAt).toISOString() : null
+          };
+        } else {
+          cycle.sourceStatus[statusKey] = {
+            ok: false,
+            direct: true,
+            provider: "X syndication + public mirror fallback",
+            profile: `https://x.com/${handle}`,
+            url: directUrl,
+            directSkipped,
+            directError: directError ? String(directError) : null,
+            mirrorError: mirrorError ? String(mirrorError) : null,
+            directFailureCount: transport.directFailureCount,
+            nextDirectAttemptAt: transport.directNextRetryAt ? new Date(transport.directNextRetryAt).toISOString() : null,
+            lastDirectSuccessAt: transport.directLastSuccessAt ? new Date(transport.directLastSuccessAt).toISOString() : null,
+            lastMirrorSuccessAt: transport.mirrorLastSuccessAt ? new Date(transport.mirrorLastSuccessAt).toISOString() : null
+          };
+        }
       }
     }
 
@@ -1055,7 +1320,10 @@ async function pollPublicLeakSources(force = false) {
       ...publicLeakPollState,
       ...cycle,
       lastSuccessAt: anyOk ? new Date().toISOString() : publicLeakPollState.lastSuccessAt,
-      lastError: anyOk ? null : Object.values(cycle.sourceStatus).map(item => item.error).filter(Boolean).join(" | ") || "Keine Public-Leak-Quelle erreichbar"
+      lastError: anyOk ? null : Object.values(cycle.sourceStatus)
+        .flatMap(item => [item.error, item.directError, item.mirrorError])
+        .filter(Boolean)
+        .join(" | ") || "Keine Public-Leak-Quelle erreichbar"
     };
     return publicLeakPollState;
   })();
@@ -11377,16 +11645,23 @@ app.get("/api/public-leaks/status", async (req, res) => {
 
     return res.json({
       ok: true,
-      version: "10.58-direct-sheriff-leak-source",
+      version: "10.59-sheriff-429-resilience",
       mode: "public-only",
       automaticPrivateReading: false,
       directSources: PUBLIC_LEAK_X_HANDLES.map(handle => ({
         source: handle.toLowerCase() === "futsheriff" ? "Fut Sheriff" : handle,
         platform: "X",
         handle: `@${handle}`,
-        transport: "X public syndication"
+        transport: "X syndication + public mirror fallback"
       })),
       fallbackTelegramSources: [...PUBLIC_LEAK_TELEGRAM_CHANNELS],
+      xTransport: {
+        mirrorBases: [...PUBLIC_LEAK_X_MIRROR_BASES],
+        directMinIntervalMinutes: Math.round(PUBLIC_LEAK_X_DIRECT_MIN_INTERVAL_MS / 60_000),
+        mirrorIntervalMinutes: Math.round(PUBLIC_LEAK_X_MIRROR_INTERVAL_MS / 60_000),
+        backoffBaseMinutes: Math.round(PUBLIC_LEAK_X_BACKOFF_BASE_MS / 60_000),
+        backoffMaxMinutes: Math.round(PUBLIC_LEAK_X_BACKOFF_MAX_MS / 60_000)
+      },
       poll: publicLeakPollState,
       sourceProfiles: Object.values(profiles),
       recent,
@@ -11397,7 +11672,7 @@ app.get("/api/public-leaks/status", async (req, res) => {
         leakCanBuyAlone: false,
         unconfirmedLeakCanBlockImmediateBuy: true
       },
-      note: "Der Brain liest Fut Sheriff direkt ueber die frei oeffentliche X-Profil-Syndication und nutzt die bestehenden oeffentlichen Telegram-Previews als Fallback/Ergaenzung. Danach misst er 15m/1h/6h/24h Marktreaktionen und lernt den echten Impact. Ein Leak allein erzeugt niemals einen Kauf."
+      note: "Der Brain bevorzugt Fut Sheriff direkt ueber die oeffentliche X-Profil-Syndication. Bei HTTP 429 wird X exponentiell gebremst und ein frei oeffentlicher X-Mirror versucht; Telegram bleibt zusaetzlicher Fallback. Danach misst der Brain 15m/1h/6h/24h Marktreaktionen. Ein Leak allein erzeugt niemals einen Kauf."
     });
   } catch (error) {
     return res.status(500).json({ ok: false, error: String(error) });
