@@ -1,0 +1,70 @@
+FC ÜV Brain v2.7.0 — Budget Tier Allocator
+
+Goal
+- Keep the user's established rule: exactly 100 actual portfolio slots when the market can safely support them.
+- Stop treating higher budget as a simple minimum-rating problem.
+- Separate the broad quality candidate pool from the final 100-slot capital allocation.
+- Treat low-rated SPECIAL versions differently from low-rated NORMAL cards.
+
+What changed
+1. Budget -> price-tier shape -> quality cards
+   - 500k, 1m, 3m and 12m observed FutStarz list shapes are encoded only as SOFT price-distribution priors.
+   - They are never a live price source and never imported as player picks.
+   - All price tiers are normalized back to the user's real total budget, so the allocator does not blindly copy an external list's spend.
+
+2. Candidate pool and allocation are now explicit separate concepts
+   - Candidate pool: broad safe universe inside a budget-aware price window.
+   - Allocation: optimizer chooses exactly 100 actual slots under the total budget.
+   - Existing max two exact copies and max three slots per footballer remain unchanged.
+
+3. Card version class is explicit
+   - SPECIAL/NORMAL is taken from the item record/card type, with EA item id remaining the card identity.
+   - A low-rated SPECIAL is not treated as cheap normal-gold filler merely because of its rating.
+   - Normal-card hard floors, Bronze block, Non-Rare gates and Endgame 82/83 caps remain authoritative.
+
+4. New Budget Tier score
+   - Price-tier fit to the requested budget.
+   - FUT.GG-backed demand/sellability/usage/momentum.
+   - PostgreSQL stability/activity/trend.
+   - Conservative net-profit quality after 5% EA tax.
+   - Data confidence and risk/capital-lock penalties.
+   - Oversized single positions get a soft concentration penalty unless demand is exceptionally strong.
+
+5. Special-card mix adapts upward with budget
+   - The special target remains soft, never a quota.
+   - Higher budgets can naturally become much more Special-heavy when the live candidate universe supports it.
+   - Safety and budget feasibility always override the target.
+
+Reference profiles
+- 500k shape: broader cheap/core/special range.
+- 1m shape: tighter core around the observed low-cost Special tier.
+- 3m shape: wider mixed price ladder, including lower-rated Special versions when demand supports them.
+- 12m shape: broad premium ladder with concentration control.
+
+Important non-goals
+- No FutStarz credentials, API, automation or bot integration.
+- No Futpepi/FutStarz proprietary code or paid player picks.
+- No invented sales/day or general sale probability.
+- No blind copying of FutStarz displayed prices.
+- FUT.GG remains the live market anchor; PostgreSQL remains the history/stability layer.
+
+Safety preserved
+- Bronze hard block.
+- Normal cards below 82 blocked.
+- Low-rated Non-Rare gates unchanged.
+- Sub-82 Specials require strong verified demand under the existing pipeline.
+- Crash/source-risk/lifecycle/reported-outcome guards unchanged.
+- Max two exact copies only as feasibility fallback.
+- Live Recheck remains mandatory before buying.
+
+Diagnostics added
+- Budget Tier score per card.
+- Budget Tier profile and band.
+- SPECIAL/NORMAL version class.
+- Budget Tier tags and price-ratio fit.
+- Portfolio average Budget Tier score.
+
+Verification
+- 129/129 automated tests passed.
+- 31/31 JS/MJS syntax checks passed.
+- Synthetic allocator checks passed for 100k, 300k, 500k, 1m, 3m and 12m with exactly 100 slots and total buy <= budget.

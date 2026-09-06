@@ -1,10 +1,14 @@
 {
   "name": "fc-trading-intelligence",
-  "version": "10.5.0",
+  "version": "10.61.0",
   "private": true,
   "type": "module",
   "scripts": {
-    "start": "node server.js"
+    "start": "node server.js",
+    "test": "node --test test/*.test.mjs uv/test/*.test.js"
+  },
+  "engines": {
+    "node": ">=20"
   },
   "dependencies": {
     "express": "^4.21.2",

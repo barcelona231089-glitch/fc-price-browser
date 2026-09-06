@@ -1,0 +1,33 @@
+FC ÜV Brain v2.5.0 — Public Trader Endgame Logic
+
+Goal
+- Improve the actual 100-card recommendations at the end of FC26.
+- Stop using normal 82/83 cards as cheap filler when higher-rated or liquid special cards are available.
+- Borrow only publicly documented ÜV methodology, not proprietary code or hidden/premium player picks.
+
+Public methodology translated into the ranker
+1. Demand/popularity first: live FUT.GG Most Used, Momentum, sale-likelihood and activity remain stronger than static priors.
+2. Specials are preferred when they are liquid. FUTTIES gets an extra boost only when backed by demand, usage, momentum or sale-likelihood.
+3. Higher-rated normal cards receive an endgame preference; normal 82/83 cards receive an endgame ranking penalty.
+4. Popular league/nation is only a small tie-breaker, never a replacement for live demand evidence.
+5. Total budget, hard 100 slots, EA tax, source-risk, crash guards, Bronze block, sub-82 normal block and Non-Rare gates remain authoritative.
+
+Endgame portfolio caps (100 slots)
+- Budget/slot >= 2,500 coins (e.g. 300k/100 and higher): max 4 normal 82s; max 12 normal 82+83 combined.
+- Budget/slot 1,500-2,499: max 8 normal 82s; max 20 normal 82+83 combined.
+- Budget/slot 900-1,499: max 16 normal 82s; max 35 normal 82+83 combined.
+- Lower budgets: relaxed caps to preserve feasibility.
+- Specials do not count against these low-normal-card caps.
+
+Rebalance
+- Old saved lists are not allowed to keep unlimited 82/83 KEEP/REPRICE slots in ENDGAME.
+- Excess low normal cards are released progressively and replaced through the same safe candidate pipeline.
+
+Diagnostics/UI
+- Exposes FUTTIES count, normal 82 count, normal 83 count, normal 84+ count, average Trader-Endgame score and active low-rating caps.
+- Each card detail can show Trader-Endgame score and the strongest public-method tags.
+
+Safety/accuracy
+- No Futpepi source code was copied.
+- No paid/private Futpepi list or hidden player picks were imported.
+- Public trader methodology is a ranking prior only. Live FUT.GG evidence and the existing safety pipeline remain the decision base.

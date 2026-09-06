@@ -1,0 +1,7 @@
+FC Trader Brain / ÜV v2.8.1 — Rating-first Plan Lock
+
+- No automatic named player offers in #trading-alerts.
+- Rating alerts remain automatic when their market gate triggers.
+- Player names are shown only after the user presses "Spieler anzeigen".
+- A player-specific alert is allowed only after the user manually places that player on intensive watch / tracked state.
+- Existing Budget Tier Allocator, 100-slot logic, async Live Recheck, HA and PostgreSQL behavior are unchanged.

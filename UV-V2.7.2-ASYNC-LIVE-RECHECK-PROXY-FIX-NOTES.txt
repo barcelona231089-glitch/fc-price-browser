@@ -1,0 +1,18 @@
+FC ÜV Brain v2.7.2 — Async Live Recheck Proxy Fix
+
+Problem observed on Wispbyte:
+- A generated 100-card list worked, but "Liste live prüfen" ended with browser-level "Failed to fetch".
+- The v2.4.3/v2.7.1 UI kept one POST request open for the entire 100-card rescore and aborted after 90 seconds.
+- Hosting/reverse-proxy/network interruptions can terminate that long request even while Node is still processing.
+
+Fix:
+- POST /api/uv/recheck/:listId now starts a server-side recheck job and returns HTTP 202 immediately.
+- GET /api/uv/recheck-job/:jobId is a short polling endpoint.
+- UI polls every 2 seconds for up to 3 minutes instead of holding one long HTTP request.
+- Up to 5 transient browser/network polling failures are tolerated and retried.
+- Duplicate start requests for the same list reuse the already-running job.
+- Successful result is still persisted with the existing batched PostgreSQL saveListRecheck path.
+- HA remains fail-closed: if the node loses leadership before persistence, the result is not marked fresh.
+- Live FUT.GG remains strict. No stale snapshot is accepted by live recheck.
+
+No trading automation was added. This remains analysis/list guidance only.

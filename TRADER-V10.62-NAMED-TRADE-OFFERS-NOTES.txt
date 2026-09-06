@@ -1,0 +1,41 @@
+FC Trader Brain alert layer v10.62 / ÜV package v2.8.0 — Named Trader Offers
+
+Observed production problem:
+- Discord gateway and #trading-alerts were healthy, but the user mainly received source-health/system messages.
+- /api/discord/status showed zero external trader signals, and the automatic player alert path intentionally suppressed every untracked named card because v10.46 used a strict rating-only public feed.
+- Therefore a valid internal JETZT KAUFEN card could exist without ever becoming a concrete named Discord offer.
+
+Change:
+- Keep the broad rating-market alerts.
+- Re-enable named automatic BUY offers only when all safety gates pass.
+- Required: JETZT KAUFEN, configured minimum AI confidence (default 90), no alert-sanity block, no material FUTBIN outlier when trusted, low-watch rules respected, and a real positive after-tax margin from existing Brain targets.
+- Offer price is never invented upward to make a trade look profitable. The sell target comes from the Brain's existing conservative target first, then existing combined target/fair-value fallback.
+- Current FUT.GG price is live-rechecked immediately before volatile directional Discord alerts as before.
+- If live price materially changed, BUY is downgraded to DATEN PRÜFEN instead of sending a stale trade call.
+
+Discord BUY offer format:
+- Player / version
+- KAUFEN MAX
+- START
+- SOFORTKAUF
+- Netto-Profit after 5% EA tax
+- Netto-ROI
+- Live market price
+- AI confidence, card type, 1m/5m/15m trend, 24h range, Combined Brain, market logic and reason
+
+Spam / quality controls:
+- Default max 3 named trade offers per 60-second cycle.
+- Existing global max 5 Discord alerts per cycle remains authoritative.
+- Existing per-card 30-minute cooldown remains active.
+- Adaptive minimum net profit: at least 250 coins, rising with card price; configurable floor via DISCORD_MIN_TRADE_OFFER_NET_PROFIT.
+- Default minimum net ROI 1.5%, configurable via DISCORD_MIN_TRADE_OFFER_ROI_PCT.
+- Status counters are exposed at /api/discord/status under traderOffers.
+
+Safety boundary:
+- This is decision support only. No auto-buy, auto-sell, Web App automation or account action was added.
+- A user still manually buys only at or below KAUFEN MAX.
+
+Compatibility:
+- Trader Brain core remains v10.61 Direction Consensus + Sheriff Multi-Source.
+- ÜV generation/allocation logic remains v2.7.2 behavior; package/UI identity is bumped to v2.8.0 so deployment can be verified easily.
+- v2.7.2 async live-recheck job transport is preserved unchanged.

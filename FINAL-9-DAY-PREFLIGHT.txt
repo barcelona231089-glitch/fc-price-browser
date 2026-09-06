@@ -1,0 +1,24 @@
+FC27 FINAL PREFLIGHT
+
+DEPLOY NOW
+1. Upload this v2.9.0 build to Wispbyte main.
+2. Keep GAME_YEAR=26 until the FC27 FUT.GG dataset is actually available.
+3. Confirm /api/readiness -> READY and uvBrain.version -> 2.9.0.
+4. Confirm /api/discord-rating-mode/status -> namedTradeOffers false.
+5. Generate one 100-card test list and run one Live Recheck. Check /api/readiness afterwards and Wispbyte CPU graph.
+
+REAL HA TEST
+6. With main = LEADER and backup = STANDBY_READY, stop main normally.
+7. Backup must become LEADER and writeActive true. Confirm Discord + PostgreSQL + Trader loop.
+8. Start main again. Main must remain STANDBY while backup holds a valid lease. It must not steal leadership.
+9. Stop backup normally. Main should then take leadership.
+
+24H SOAK
+10. Leave the chosen leader running 24 hours.
+11. Require: no host CPU stop, no persistent NOT_READY, Discord lastError null, PostgreSQL healthy, trader loop current, UV history not stuck, live recheck works.
+
+FC27 CUTOVER
+12. Only when FUT.GG /27/ data is live: set GAME_YEAR=27 and restart both instances.
+13. Confirm /api/readiness gameYear=27 and marketProfile.mode=FC27_PROFILE.
+14. Confirm FUT.GG coverage is healthy before trusting alerts or ÜV generation.
+15. Do one small/manual validation first. Do not enable any autobuy/automated transfer action.

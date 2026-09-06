@@ -1,0 +1,42 @@
+FC Trader Brain + ÜV Brain v2.9.0 FINAL RC
+Build focus: stability before FC27.
+
+1) CPU-SAFE LIVE RECHECK
+- Exactly one heavy live-recheck job runs at a time; additional jobs wait in a bounded queue.
+- 100-card rescoring runs in batches (default 5 cards) with short pauses (default 180 ms).
+- Live recheck waits for the normal Trader market cycle to become idle before starting.
+- While a live recheck is active, the normal 60-second Trader market loop skips its next cycle instead of overlapping heavy work.
+- UV history monitor defers while a live recheck is active.
+- Live recheck always refreshes FUT.GG price data from the strict-live shared snapshot.
+- Demand HTML pages are NOT reparsed during manual recheck. Cached FUT.GG demand evidence is reused when available; otherwise the saved list's previous demand fields are carried forward while live price/history are refreshed.
+- HA lease is rechecked between scoring batches and again before persistence. Lease loss fails closed and no result is saved as fresh.
+- UI now shows QUEUED/RUNNING progress and 0..100 card progress.
+
+Environment overrides (optional):
+LIVE_RECHECK_BATCH_SIZE=5
+LIVE_RECHECK_BATCH_PAUSE_MS=180
+LIVE_RECHECK_MAX_QUEUE=3
+LIVE_RECHECK_JOB_TTL_MS=600000
+
+2) HA FINAL HARDENING / TESTS
+- Existing PostgreSQL lease design remains non-preemptive.
+- Added automated regression test: graceful leader release -> standby can take over immediately.
+- Added automated regression test: returning higher-priority main cannot steal a still-valid standby lease.
+- /api/ha/status now reports graceful lease release, non-preemptive return and expected crash failover window.
+- Real two-host failover still requires an actual deployment test. A unit/integration test cannot turn Wispbyte/backup hosts off by itself.
+
+3) FC27 SWITCH READINESS
+- GAME_YEAR=27 selects FUT.GG /27/ URLs and FUTBIN search_players_fc27.
+- FC27 September 2026 is classified as EARLY season, so FC26 endgame logic is not carried over blindly.
+- Trader main-alert market defaults to ratings 82-99 for FC27; ratings 75-81 remain monitored as low-watch and only alert on unusually strong moves.
+- Added dedicated GAME_YEAR=27 regression tests.
+
+4) DISCORD PLAN LOCK
+- Rating-first plan remains locked.
+- No automatic named player offers.
+- Player names are shown only after the user opens the rating player list, or for explicitly tracked/intensive-watch players.
+
+5) VERIFICATION
+- 141/141 automated tests PASS.
+- 33/33 JS/MJS syntax checks PASS.
+- Actual 24-hour soak test cannot be completed instantly/offline. After deploy, leave the production leader running for 24 hours and confirm /api/readiness stays READY, Discord keeps sending, CPU stays below host limit, and live recheck completes without a host stop.

@@ -11,6 +11,8 @@ import {
   checkGeminiHealth,
   evaluateTrackedDecision
 } from "./traderBrain.js";
+import { uvRouter, initUvBrain, shutdownUvBrain, getUvRuntimeStatus, setUvBrainActive } from "./uv/uvApp.js";
+import { createHaCoordinator } from "./haCoordinator.js";
 
 const { Pool } = pg;
 
@@ -565,6 +567,14 @@ const DISCORD_MAX_ALERTS_PER_CYCLE = Math.max(1, Math.min(10, Number(process.env
 const DISCORD_MIN_BUY_CONFIDENCE = Math.max(70, Math.min(95, Number(process.env.DISCORD_MIN_BUY_CONFIDENCE || 90)));
 const DISCORD_MIN_SELL_CONFIDENCE = Math.max(70, Math.min(95, Number(process.env.DISCORD_MIN_SELL_CONFIDENCE || 84)));
 const DISCORD_MIN_RATING_CONFIDENCE = Math.max(60, Math.min(95, Number(process.env.DISCORD_MIN_RATING_CONFIDENCE || 75)));
+// v10.62 / UV v2.8.1 PLAN-LOCK: keine automatischen namentlichen Spieler-Angebote.
+// Der oeffentliche Feed bleibt Rating-first. Spieler-Namen erscheinen erst, wenn der
+// Nutzer im Rating-Alarm bewusst "Spieler anzeigen" oeffnet oder einen Spieler
+// manuell in die intensive Ueberwachung aufnimmt.
+const DISCORD_NAMED_TRADE_OFFERS = false;
+const DISCORD_MAX_TRADE_OFFERS_PER_CYCLE = Math.max(1, Math.min(5, Number(process.env.DISCORD_MAX_TRADE_OFFERS_PER_CYCLE || 3)));
+const DISCORD_MIN_TRADE_OFFER_ROI_PCT = Math.max(0.5, Math.min(15, Number(process.env.DISCORD_MIN_TRADE_OFFER_ROI_PCT || 1.5)));
+const DISCORD_MIN_TRADE_OFFER_NET_PROFIT = Math.max(100, Math.min(20_000, Number(process.env.DISCORD_MIN_TRADE_OFFER_NET_PROFIT || 250)));
 // v10.44 Rating-first: normale Base-Karten werden im Discord nach Rating gebündelt; Namen nur per ausklappbarer Liste.
 // Einzelne Base-Spielernamen erscheinen nicht als eigener Alarm. Nur bis zu drei
 // klar teurere Ausnahmen werden kompakt innerhalb des Rating-Alarms genannt.
@@ -583,6 +593,11 @@ const INTENSIVE_WATCH_MAX_ALERTS_PER_CYCLE = Math.max(1, Math.min(5, Number(proc
 let lastDiscordSendAt = null;
 let lastDiscordError = null;
 let discordAlertsSent = 0;
+let discordTraderOffersSent = 0;
+let lastDiscordTraderOfferAt = null;
+let lastDiscordTraderOfferError = null;
+let lastDiscordTraderOfferCandidateCount = 0;
+let lastDiscordTraderOfferRejectedCount = 0;
 let lastDiscordCycleBudget = {
   limit: DISCORD_MAX_ALERTS_PER_CYCLE,
   used: 0,
@@ -687,6 +702,139 @@ const pool = dbEnabled
       max: 4
     })
   : null;
+
+// HA v1: PostgreSQL-backed active/passive failover. With DATABASE_URL present,
+// HA is enabled by default. No secret is required. Optional instance labels help
+// operators distinguish Primary/Standby, but correctness does not depend on them.
+const HA_ENABLED = dbEnabled && String(process.env.FC_HA_ENABLED || "true").toLowerCase() !== "false";
+const HA_INSTANCE_ID = String(
+  process.env.FC_INSTANCE_ID ||
+  process.env.SERVER_UUID ||
+  process.env.P_SERVER_UUID ||
+  process.env.HOSTNAME ||
+  `fc-${port}`
+).trim().slice(0, 180);
+const HA_PRIORITY = Math.max(1, Math.min(1000, Number(process.env.FC_HA_PRIORITY || 100)));
+const HA_LEASE_SECONDS = Math.max(30, Math.min(300, Number(process.env.FC_HA_LEASE_SECONDS || 75)));
+const HA_HEARTBEAT_SECONDS = Math.max(5, Math.min(60, Number(process.env.FC_HA_HEARTBEAT_SECONDS || 20)));
+let haCoordinator = null;
+let activeServicesTransitionBusy = false;
+
+function haIsLeader() {
+  return HA_ENABLED ? haCoordinator?.isLeader?.() === true : true;
+}
+
+function haStatusSnapshot() {
+  if (!HA_ENABLED) {
+    return {
+      enabled: false,
+      state: "SINGLE",
+      instanceId: HA_INSTANCE_ID,
+      writeActive: true,
+      note: dbEnabled ? "HA per FC_HA_ENABLED deaktiviert." : "Ohne PostgreSQL kein Multi-Instance-Lease; Single-Instance-Modus."
+    };
+  }
+  return haCoordinator?.status?.() || {
+    enabled: true,
+    state: "STARTING",
+    instanceId: HA_INSTANCE_ID,
+    writeActive: false,
+    leaseSeconds: HA_LEASE_SECONDS,
+    heartbeatSeconds: HA_HEARTBEAT_SECONDS,
+    lastError: null
+  };
+}
+
+function haMutationGuard(req, res, next) {
+  if (!HA_ENABLED || haIsLeader()) return next();
+  if (["POST", "PUT", "PATCH", "DELETE"].includes(String(req.method || "").toUpperCase())) {
+    return res.status(503).json({
+      ok: false,
+      code: "HA_STANDBY_READ_ONLY",
+      error: "Diese Instanz ist HA-STANDBY. Schreibaktionen sind nur auf dem aktiven Leader erlaubt.",
+      ha: haStatusSnapshot()
+    });
+  }
+  return next();
+}
+
+// Mount all APIs/UI behind the standby write guard. GET remains readable.
+app.use(haMutationGuard);
+app.use(uvRouter);
+
+
+const UV_SHARED_SAFE_SNAPSHOT_MAX_AGE_MS = 5 * 60_000;
+
+function getSharedMarketForUv(platform = "console", options = {}) {
+  // Trader Brain tracks the console/PS5 FUT.GG bulk feed. Reuse that already-
+  // built snapshot for ÜV so the 512 MB host does not build a second full
+  // universe/cache in memory. PC keeps the ÜV module's own lightweight cache.
+  //
+  // v2.3.5 snapshot-sync fix: during FUT.GG recovery quarantine the last fully
+  // processed Trader snapshot may still be recent and safe enough to GENERATE
+  // a candidate list. We expose that snapshot only when the caller explicitly
+  // allows it, only while the source is RECOVERING, and only for max 5 minutes.
+  // Recheck/rebalance/history keep the strict live requirement.
+  if (platform === "pc") return null;
+  if (!Array.isArray(latestTradingRows) || latestTradingRows.length < 100) return null;
+
+  const source = sourceHealthSnapshot();
+  const processing = processingHealthSnapshot();
+  const snapshotAt = processing?.lastSuccessAt || null;
+  const snapshotAtMs = snapshotAt ? new Date(snapshotAt).getTime() : 0;
+  const snapshotAgeMs = snapshotAtMs ? Math.max(0, Date.now() - snapshotAtMs) : Infinity;
+  const liveAllowed = source?.tradingAllowed === true;
+  const recentSafeAllowed = options?.allowRecentSafeSnapshot === true &&
+    source?.status === "RECOVERING" &&
+    processing?.healthy === true &&
+    snapshotAgeMs <= UV_SHARED_SAFE_SNAPSHOT_MAX_AGE_MS;
+
+  if (!liveAllowed && !recentSafeAllowed) return null;
+
+  const cards = latestTradingRows
+    .filter(row => Number.isFinite(row?.eaId) && Number.isFinite(row?.price) && row.price > 0)
+    .map(row => ({
+      eaId: row.eaId,
+      id: row.id ?? null,
+      itemId: row.itemId ?? null,
+      overall: row.overall,
+      name: row.name,
+      cardName: row.cardName ?? row.rarityName ?? null,
+      rarityName: row.rarityName ?? row.cardType ?? null,
+      rarityGroupName: row.rarityGroupName ?? null,
+      cardType: row.cardType,
+      position: row.position ?? null,
+      club: row.club ?? null,
+      nation: row.nation ?? null,
+      league: row.league ?? null,
+      url: row.url ?? null,
+      slug: row.slug ?? null,
+      image: row.image ?? null,
+      price: row.price,
+      priceStatusCode: row.priceStatusCode ?? null,
+      priceSource: "FUT.GG / shared Trader Brain snapshot",
+      traderSnapshot: {
+        change1m: row.change1m ?? null,
+        change5m: row.change5m ?? null,
+        change15m: row.change15m ?? null,
+        change1h: row.change1h ?? null,
+        change24h: row.change24h ?? null,
+        low24h: row.low24h ?? null,
+        high24h: row.high24h ?? null
+      }
+    }));
+
+  return {
+    cards,
+    sourceUrl: "shared://trader-brain/futgg-console-snapshot",
+    updatedAt: snapshotAt || lastMonitorAt || new Date().toISOString(),
+    sharedSnapshot: true,
+    sharedSnapshotMode: liveAllowed ? "LIVE" : "RECENT_SAFE",
+    live: liveAllowed,
+    requiresLiveRecheck: !liveAllowed,
+    snapshotAgeSeconds: Number.isFinite(snapshotAgeMs) ? Math.round(snapshotAgeMs / 1000) : null
+  };
+}
 
 async function fetchJson(url) {
   const controller = new AbortController();
@@ -4957,6 +5105,7 @@ async function resolveDiscordAlertChannel() {
 }
 
 async function sendDiscordPayload(payload) {
+  if (HA_ENABLED && !haIsLeader()) throw new Error("HA_STANDBY: Discord send blocked on passive instance");
   if (!DISCORD_CONFIGURED) return { ok: false, skipped: "not_configured" };
 
   const ready = await initDiscordBot();
@@ -5220,6 +5369,81 @@ function markDiscordLivePriceRecheck(row, freshPrice) {
   return true;
 }
 
+function tradeOfferAdaptiveMinProfit(maxBuy) {
+  const price = Number(maxBuy);
+  const adaptive = !Number.isFinite(price) || price <= 0
+    ? DISCORD_MIN_TRADE_OFFER_NET_PROFIT
+    : price < 10_000
+      ? 250
+      : price < 50_000
+        ? 500
+        : price < 150_000
+          ? 900
+          : 1_500;
+  return Math.max(DISCORD_MIN_TRADE_OFFER_NET_PROFIT, adaptive);
+}
+
+function buildNamedTradeOffer(row) {
+  const current = Number(discordAlertPrice(row));
+  if (!Number.isFinite(current) || current <= 0) return null;
+
+  const entryCandidates = [
+    Number(row?.aiEntryZone?.max),
+    Number(row?.aiIdealEntryHigh),
+    current * 1.01
+  ].filter(value => Number.isFinite(value) && value > 0);
+  const rawMaxBuy = entryCandidates.length ? Math.min(...entryCandidates) : current;
+  const maxBuy = roundBrainPrice(rawMaxBuy) || Math.round(rawMaxBuy);
+  if (!Number.isFinite(maxBuy) || maxBuy <= 0) return null;
+
+  // Wenn die aktuelle Live-Liste bereits deutlich ueber der berechneten Kaufgrenze liegt,
+  // ist es kein sofort handelbares Angebot mehr. Dann lieber keinen Push senden.
+  if (current > maxBuy * 1.015) return null;
+
+  const explicitConservativeTarget = Number(row?.aiTargetExitZone?.conservative);
+  const combinedTargetLow = Number(row?.aiTargetLow);
+  const fairValueTarget = Number(row?.aiFairValue);
+  const rawSellTarget = [explicitConservativeTarget, combinedTargetLow, fairValueTarget]
+    .find(value => Number.isFinite(value) && value > maxBuy);
+  if (!Number.isFinite(rawSellTarget)) return null;
+
+  // Nur bereits vom Brain berechnete Exit-Ziele verwenden. Wir erfinden keinen hoeheren
+  // Zielpreis, nur um einen Alarm profitabel aussehen zu lassen.
+  const sellPrice = roundBrainPrice(rawSellTarget) || Math.round(rawSellTarget);
+  if (!Number.isFinite(sellPrice) || sellPrice <= maxBuy) return null;
+
+  const startPrice = roundBrainPrice(Math.max(maxBuy, sellPrice * 0.98)) || Math.round(sellPrice * 0.98);
+  const afterTax = Math.floor(sellPrice * 0.95);
+  const netProfit = afterTax - maxBuy;
+  const roiPct = Number(((netProfit / maxBuy) * 100).toFixed(2));
+  const minProfit = tradeOfferAdaptiveMinProfit(maxBuy);
+  const breakEven = roundBrainPrice(Math.ceil(maxBuy / 0.95)) || Math.ceil(maxBuy / 0.95);
+
+  if (netProfit < minProfit || roiPct < DISCORD_MIN_TRADE_OFFER_ROI_PCT) return null;
+
+  return {
+    current,
+    maxBuy,
+    startPrice,
+    sellPrice,
+    breakEven,
+    afterTax,
+    netProfit,
+    roiPct,
+    minProfit
+  };
+}
+
+function automaticNamedTradeOfferEligible(row) {
+  if (!DISCORD_NAMED_TRADE_OFFERS) return false;
+  if (!row || row.tracked || row.intensiveWatch) return false;
+  if (String(row.aiAction || '') !== 'JETZT KAUFEN') return false;
+  if (Number(row.aiConfidence || 0) < DISCORD_MIN_BUY_CONFIDENCE) return false;
+  if (row?.aiAlertSanity?.blocked) return false;
+  if (Number(row?.aiRiskScore || 0) >= 60) return false;
+  return Boolean(buildNamedTradeOffer(row));
+}
+
 function cardDiscordAlertCandidate(row) {
   if (row?.aiAlertSanity?.blocked) {
     const magnitude = Math.max(Math.abs(alertSanityNumber(row.change1m)), Math.abs(alertSanityNumber(row.change5m)), Math.abs(alertSanityNumber(row.change15m)));
@@ -5230,7 +5454,7 @@ function cardDiscordAlertCandidate(row) {
   }
 
   // Nur ein als belastbar eingestufter FUTBIN-Cross-Check darf Kaufalarme blockieren.
-  // Bei marktweit unplausiblen Zweitquellen-Daten ignorieren wir den Einzel-Ausreißer.
+  // Bei marktweit unplausiblen Zweitquellen-Daten ignorieren wir den Einzel-Ausreisser.
   if (
     row?.aiAction === "JETZT KAUFEN" &&
     row?.futbinCrossCheck === "OUTLIER" &&
@@ -5240,13 +5464,17 @@ function cardDiscordAlertCandidate(row) {
   }
 
   // FC27 Low-Watch: 75-81 werden weiter analysiert, erzeugen aber nur bei
-  // ungewöhnlich starken Bewegungen überhaupt individuelle Alerts.
+  // ungewoehnlich starken Bewegungen ueberhaupt individuelle Alerts.
   if (isLowWatchRating(row?.overall) && !lowRatingCardUnusualMove(row)) {
     return null;
   }
 
   if (row.aiAction === "JETZT KAUFEN" && row.aiConfidence >= DISCORD_MIN_BUY_CONFIDENCE) {
-    return { type: "buy", priority: 100 + row.aiConfidence };
+    const offer = buildNamedTradeOffer(row);
+    if (!offer) return null;
+    const qualityBoost = Math.min(18, Math.max(0, Number(row.aiCombinedScore || 0) - 70) * 0.6);
+    const roiBoost = Math.min(20, offer.roiPct * 2);
+    return { type: "buy", priority: 140 + row.aiConfidence + qualityBoost + roiBoost, offer };
   }
 
   if (row.aiAction === "JETZT VERKAUFEN" && row.aiConfidence >= DISCORD_MIN_SELL_CONFIDENCE) {
@@ -5270,13 +5498,27 @@ function cardDiscordAlertCandidate(row) {
   return null;
 }
 
-function buildCardDiscordPayload(row, type) {
+function buildCardDiscordPayload(row, type, offer = null) {
   const emoji = type === "buy" ? "🟢" : type === "sell" ? "💰" : type === "data" ? "⚠️" : "🚨";
-  const titleAction = type === "crash" ? "NOCH WARTEN" : type === "data" ? "DATEN PRÜFEN" : row.aiAction;
+  const titleAction = type === "buy" ? "TRADER-ANGEBOT" : type === "crash" ? "NOCH WARTEN" : type === "data" ? "DATEN PRÜFEN" : row.aiAction;
   const title = `${emoji} ${titleAction}: ${row.name || `EA ${row.eaId}`} (${row.overall})`;
+  const tradeOffer = type === "buy" ? (offer || buildNamedTradeOffer(row)) : null;
 
-  const fields = [
-    { name: "Preis", value: `${discordNumber(discordAlertPrice(row))} Coins`, inline: true },
+  const fields = [];
+  if (tradeOffer) {
+    fields.push(
+      { name: "KAUFEN MAX", value: `${discordNumber(tradeOffer.maxBuy)} Coins`, inline: true },
+      { name: "START", value: `${discordNumber(tradeOffer.startPrice)} Coins`, inline: true },
+      { name: "SOFORTKAUF", value: `${discordNumber(tradeOffer.sellPrice)} Coins`, inline: true },
+      { name: "Netto-Profit", value: `+${discordNumber(tradeOffer.netProfit)} Coins nach 5% EA-Steuer`, inline: true },
+      { name: "Netto-ROI", value: `${tradeOffer.roiPct.toFixed(2)}%`, inline: true },
+      { name: "Live-Marktpreis", value: `${discordNumber(tradeOffer.current)} Coins`, inline: true }
+    );
+  } else {
+    fields.push({ name: "Preis", value: `${discordNumber(discordAlertPrice(row))} Coins`, inline: true });
+  }
+
+  fields.push(
     { name: "KI-Sicherheit", value: `${row.aiConfidence}%`, inline: true },
     { name: "Kartentyp", value: String(row.cardType || "-"), inline: true },
     { name: "1m / 5m / 15m", value: `${discordPct(row.change1m)} / ${discordPct(row.change5m)} / ${discordPct(row.change15m)}`, inline: false },
@@ -5286,7 +5528,7 @@ function buildCardDiscordPayload(row, type) {
     { name: "Market Logic", value: `${String(row.aiMarketPhase || "DATA_BUILDING").replaceAll("_", " ")} • These ${row.aiThesisConfirmed ?? 0}/${row.aiThesisTotal ?? 0} • Fortsetzung ${row.aiContinuationProbability ?? "-"}%`, inline: false },
     { name: "Leak Intel", value: row.aiLeakIntel?.active ? `${row.aiLeakIntel.sourceCount || 0} Quelle(n) • ${(row.aiLeakIntel.topics || []).join(", ") || "GENERAL"} • Impact ${row.aiLeakIntel.impactScore ?? 0}/100 • Marktreaktion ${row.aiLeakIntel.marketReaction ? "JA" : "NEIN"}` : "Kein relevanter oeffentlicher Leak aktiv", inline: false },
     { name: "Gesamtmarkt", value: `${String(row.globalMarketMood || "neutral").replaceAll("_", " ")} • ${row.packSupplyActive ? "Angebotsdruck erkannt" : "kein Angebotsdruck"}`, inline: false }
-  ];
+  );
 
   if (type === "sell" && row.tracked) {
     fields.push({
@@ -5318,14 +5560,14 @@ function buildCardDiscordPayload(row, type) {
       url: row.url || undefined,
       description:
         type === "buy"
-          ? "Trader Brain sieht eine bestätigte Kauf-Trendwende."
+          ? "Manuelles Trader-Angebot aus Live-FUT.GG + Preis-Historie + Combined Brain. Nur bis KAUFEN MAX kaufen; kein Auto-Buy."
           : type === "sell"
           ? "Eigener Bestand erreicht eine relevante Gewinn-/Ausstiegszone."
           : type === "data"
           ? "Kurzfristige Marktdaten oder der Live-Preis widersprechen sich. Kein Richtungs-Call, bis der nächste saubere Marktcheck bestätigt."
           : "Starker Abverkauf erkannt. Nicht blind in den Fall kaufen.",
       fields,
-      footer: { text: "FC Trader Brain • automatische 60-Sekunden-Analyse" },
+      footer: { text: "FC Trader Brain • 60-Sekunden-Analyse • manuelle Entscheidung" },
       timestamp: new Date().toISOString()
     }],
     components: intensiveWatchAddComponents(row)
@@ -5411,11 +5653,10 @@ function isBaseRatingCard(row) {
 
 function suppressNormalPlayerDiscord(row) {
   if (!DISCORD_RATING_FIRST_BASE_ALERTS) return false;
-  // v10.46: Der normale öffentliche Feed ist strikt Rating-first.
-  // Das gilt jetzt für ALLE Kartentypen, nicht nur Base Rare/Common.
-  // Namentliche Einzelkarten sind nur persönliche Ausnahmen:
-  // eigene gespeicherte Käufe oder bewusst per Button intensiv überwachte Karten.
-  return !row?.tracked && !row?.intensiveWatch;
+  if (row?.tracked || row?.intensiveWatch) return false;
+  // v10.62 / UV v2.8.1 PLAN-LOCK: ungetrackte Einzelspieler bleiben immer aus dem
+  // oeffentlichen Feed. Der Weg bleibt Rating-Alarm -> "Spieler anzeigen".
+  return true;
 }
 
 function ratingUnusualMoveValue(stat) {
@@ -6400,16 +6641,26 @@ async function processDiscordAlerts(rows, ratingStats, alertBudget = null) {
 
   try {
     const candidates = [];
+    let namedOfferCandidates = 0;
+    let namedOfferRejected = 0;
 
     for (const row of rows) {
       if (row.intensiveWatch) continue;
-      // v10.46 Strict Rating Feed: normale automatische Einzelspieler-Alarme aller
-      // Kartentypen werden unterdrückt. Nur eigene Positionen und bewusst intensiv
-      // überwachte Karten bleiben namentliche persönliche Ausnahmen.
-      if (suppressNormalPlayerDiscord(row)) continue;
+      const lookedLikeBuy = String(row?.aiAction || '') === 'JETZT KAUFEN' && Number(row?.aiConfidence || 0) >= DISCORD_MIN_BUY_CONFIDENCE;
+      if (suppressNormalPlayerDiscord(row)) {
+        if (lookedLikeBuy && !row?.tracked) namedOfferRejected += 1;
+        continue;
+      }
       const candidate = cardDiscordAlertCandidate(row);
-      if (candidate) candidates.push({ kind: "card", row, ...candidate });
+      if (candidate) {
+        candidates.push({ kind: "card", row, ...candidate });
+        if (candidate.type === 'buy' && !row?.tracked) namedOfferCandidates += 1;
+      } else if (lookedLikeBuy && !row?.tracked) {
+        namedOfferRejected += 1;
+      }
     }
+    lastDiscordTraderOfferCandidateCount = namedOfferCandidates;
+    lastDiscordTraderOfferRejectedCount = namedOfferRejected;
 
     // Volatile Directional-Alerts werden direkt vor Discord einmal gegen einen
     // frischen FUT.GG-Bulk-Snapshot gegengeprüft. Wenn der Preis seit der Analyse
@@ -6439,6 +6690,7 @@ async function processDiscordAlerts(rows, ratingStats, alertBudget = null) {
     }
 
     candidates.sort((a, b) => b.priority - a.priority);
+    let namedOffersSentThisCycle = 0;
 
     for (const item of candidates) {
       if (!discordCycleHasRoom(alertBudget)) {
@@ -6447,6 +6699,10 @@ async function processDiscordAlerts(rows, ratingStats, alertBudget = null) {
       }
 
       if (item.kind === "card") {
+        const isNamedTradeOffer = item.type === 'buy' && !item.row?.tracked;
+        if (isNamedTradeOffer && namedOffersSentThisCycle >= DISCORD_MAX_TRADE_OFFERS_PER_CYCLE) {
+          continue;
+        }
         const row = item.row;
         const alertKey = `card:${row.eaId}`;
         const alertPrice = discordAlertPrice(row);
@@ -6454,8 +6710,14 @@ async function processDiscordAlerts(rows, ratingStats, alertBudget = null) {
         const state = await getDiscordAlertState(alertKey);
         if (!discordAlertShouldSend(state, item.type === "data" ? "DATEN PRÜFEN" : row.aiAction, alertPrice, row.aiConfidence, fingerprint)) continue;
 
-        await sendDiscordPayload(buildCardDiscordPayload(row, item.type));
+        await sendDiscordPayload(buildCardDiscordPayload(row, item.type, item.offer || null));
         discordCycleConsume(alertBudget);
+        if (isNamedTradeOffer) {
+          namedOffersSentThisCycle += 1;
+          discordTraderOffersSent += 1;
+          lastDiscordTraderOfferAt = new Date().toISOString();
+          lastDiscordTraderOfferError = null;
+        }
         await saveDiscordAlertState({
           alertKey,
           alertType: item.type,
@@ -6488,6 +6750,7 @@ async function processDiscordAlerts(rows, ratingStats, alertBudget = null) {
     }
   } catch (error) {
     lastDiscordError = String(error);
+    lastDiscordTraderOfferError = String(error);
     console.error("Discord alerts error:", error);
   }
 }
@@ -6528,7 +6791,12 @@ async function sendDiscordStartupMessage() {
 }
 
 async function monitorOnce() {
+  if (HA_ENABLED && !haIsLeader()) return;
   if (monitoringBusy) return;
+  // v2.9.0 CPU-SAFE: a manual 100-card live recheck gets a short exclusive
+  // CPU window. Skipping one normal 60s cycle avoids the Wispbyte recheck +
+  // full-market overlap that previously pushed the host over its CPU limit.
+  if (getUvRuntimeStatus()?.liveRecheckCpuSafe?.activeJobId) return;
 
   monitoringBusy = true;
   const cycleAlertBudget = createDiscordCycleBudget();
@@ -6551,6 +6819,7 @@ async function monitorOnce() {
 
       currentRows = currentPricedCards(cards, bulk);
       updateSourceHealthSuccess(cards, bulk, currentRows);
+      if (HA_ENABLED && !haIsLeader()) return;
     } catch (error) {
       const sourceHealth = updateSourceHealthFailure(error);
       try {
@@ -6586,6 +6855,7 @@ async function monitorOnce() {
     }
 
     try {
+      if (HA_ENABLED && !haIsLeader()) return;
       recordMemory(currentRows, at);
 
       if (dbEnabled) {
@@ -6616,6 +6886,7 @@ async function monitorOnce() {
         applyAlertSanityGuard(row);
         recordStrictBuyGuardOutcome(row);
       }
+      if (HA_ENABLED && !haIsLeader()) return;
       await processIntensiveWatchAlerts(latestTradingRows, cycleAlertBudget);
       await processTraderConfluenceAlerts(latestTradingRows, latestRatingStats, built.brainWork, cycleAlertBudget);
       await processBrainStateChangeAlerts(latestTradingRows, cycleAlertBudget);
@@ -11333,6 +11604,7 @@ app.get("/", (req, res) => {
     service: "FC Trading Intelligence",
     version: "10.56-public-leak-learning-brain",
     gameYear: GAME_YEAR,
+    ha: haStatusSnapshot(),
     marketProfile: marketProfile(),
     refreshSeconds: 60,
     storage:
@@ -11370,7 +11642,33 @@ app.get("/", (req, res) => {
       futbinStatus: "GET /api/futbin/status",
       safeStaleMode: "GET /api/trading",
       readiness: "GET /api/readiness",
-      health: "GET /health"
+      health: "GET /health",
+      uvApp: "GET /uv",
+      uvStatus: "GET /api/uv/status",
+      uvGenerate: "POST /api/uv/generate",
+      uvHistory: "GET /api/uv/history",
+      uvFeedback: "POST /api/uv/feedback",
+      uvTargetLearning: "GET /api/uv/target-learning/status"
+    }
+  });
+});
+
+app.get("/api/ha/status", (req, res) => {
+  const ha = haStatusSnapshot();
+  res.json({
+    ok: ha.lastError ? false : true,
+    haVersion: "1.0.0",
+    gameYear: GAME_YEAR,
+    ha,
+    safety: {
+      sharedDatabase: dbEnabled,
+      activeWriterOnly: true,
+      discordLeaderOnly: true,
+      uvBackgroundLeaderOnly: true,
+      mutationStandbyReadOnly: true,
+      gracefulFailoverImmediateLeaseRelease: true,
+      returningPrimaryDoesNotPreemptValidLeader: true,
+      expectedCrashFailoverMaxSeconds: Number(ha.leaseSeconds || HA_LEASE_SECONDS) + Number(ha.heartbeatSeconds || HA_HEARTBEAT_SECONDS)
     }
   });
 });
@@ -11384,6 +11682,46 @@ function runtimeReadinessSnapshot() {
   const brainMaxAgeMs = Math.max(PRICE_REFRESH_MS * 5, 5 * 60_000);
   const monitorAgeMs = monitorAtMs ? Math.max(0, now - monitorAtMs) : null;
   const brainAgeMs = brainAtMs ? Math.max(0, now - brainAtMs) : null;
+  const ha = haStatusSnapshot();
+
+  if (HA_ENABLED && !haIsLeader()) {
+    const standbyChecks = {
+      runtimeState: {
+        ok: shuttingDown !== true,
+        shuttingDown,
+        shutdownStartedAt,
+        shutdownReason
+      },
+      persistentDatabase: {
+        ok: dbEnabled === true && !ha.lastError,
+        mode: dbEnabled ? "PostgreSQL" : "memory-only"
+      },
+      haCoordinator: {
+        ok: ha.enabled === true && ha.started === true && !ha.lastError,
+        ...ha
+      }
+    };
+    const failedStandby = Object.entries(standbyChecks).filter(([, value]) => value.ok !== true).map(([name]) => name);
+    return {
+      ready: failedStandby.length === 0,
+      status: failedStandby.length === 0 ? "STANDBY_READY" : "STANDBY_NOT_READY",
+      active: false,
+      failedChecks: failedStandby,
+      checks: standbyChecks,
+      optional: {
+        futbinConfigured: Boolean(FUTBIN_AUTHORIZED_FEED_URL || FUTBIN_PARSE_API_KEY),
+        futbinStatus: FUTBIN_AUTHORIZED_FEED_URL ? latestFutbinStatus.status : latestFutbinParseStatus.status,
+        futbinTrusted: latestFutbinCrossCheckHealth.trusted === true,
+        futbinPublicApi: latestFutbinParseStatus,
+        authorizedTraderFeedConfigured: TRADER_FEED_INGEST_CONFIGURED,
+        geminiQuota: getGeminiQuotaInfo(),
+        uvBrain: getUvRuntimeStatus(),
+        ha
+      },
+      uptimeSeconds: Math.round(process.uptime()),
+      checkedAt: new Date().toISOString()
+    };
+  }
 
   const checks = {
     runtimeState: {
@@ -11426,6 +11764,10 @@ function runtimeReadinessSnapshot() {
       channelId: discordResolvedChannelId,
       lastError: lastDiscordError
     },
+    haLeadership: {
+      ok: !HA_ENABLED || haIsLeader(),
+      ...ha
+    },
     traderBrainLoop: {
       ok: brainAtMs > 0 && brainAgeMs <= brainMaxAgeMs && !lastBrainError,
       lastAt: lastBrainRunAt,
@@ -11450,7 +11792,9 @@ function runtimeReadinessSnapshot() {
       futbinTrusted: latestFutbinCrossCheckHealth.trusted === true,
       futbinPublicApi: latestFutbinParseStatus,
       authorizedTraderFeedConfigured: TRADER_FEED_INGEST_CONFIGURED,
-      geminiQuota: getGeminiQuotaInfo()
+      geminiQuota: getGeminiQuotaInfo(),
+      uvBrain: getUvRuntimeStatus(),
+      ha
     },
     uptimeSeconds: Math.round(process.uptime()),
     checkedAt: new Date().toISOString()
@@ -11464,7 +11808,7 @@ app.get("/api/readiness", (req, res) => {
     version: "10.56-public-leak-learning-brain",
     gameYear: GAME_YEAR,
     readiness,
-    note: "Dieser Endpunkt ist absichtlich strenger als /health. /health zeigt, ob der Webdienst lebt; /api/readiness zeigt, ob Marktquelle, Monitoring, Datenbank, Discord und Trader Brain wirklich produktionsbereit sind."
+    note: "HA-aware: READY = aktiver Leader produktionsbereit; STANDBY_READY = passive Ersatzinstanz mit gesundem PostgreSQL-Lease, absichtlich ohne Marktloop/Discord-Schreibbetrieb."
   });
 });
 
@@ -11473,6 +11817,7 @@ app.get("/health", (req, res) => {
     ok: true,
     version: "10.56-public-leak-learning-brain",
     gameYear: GAME_YEAR,
+    ha: haStatusSnapshot(),
     marketProfile: marketProfile(),
     marketContext: latestMarketContext,
     sourceHealth: sourceHealthSnapshot(),
@@ -12107,11 +12452,12 @@ app.get("/api/trader-confluence/status", (req, res) => {
 app.get("/api/discord-rating-mode/status", (req, res) => {
   res.json({
     ok: true,
-    version: "10.56-public-leak-learning-brain",
+    version: "10.62-rating-first-plan-lock",
     ratingFirst: DISCORD_RATING_FIRST_BASE_ALERTS,
     strictRatingFeed: true,
-    normalPlayerAlerts: false,
-    suppressedCardTypes: ["Base Rare", "Base Common", "Special"],
+    normalPlayerAlerts: DISCORD_NAMED_TRADE_OFFERS,
+    namedTradeOffers: DISCORD_NAMED_TRADE_OFFERS,
+    suppressedCardTypes: DISCORD_NAMED_TRADE_OFFERS ? [] : ["Base Rare", "Base Common", "Special"],
     playerNameExceptions: ["tracked_purchase", "intensive_watch"],
     ratingPlayerList: {
       enabled: true,
@@ -12123,7 +12469,15 @@ app.get("/api/discord-rating-mode/status", (req, res) => {
     },
     specialCardsRemainIndividual: false,
     traderPlayerConfluencePublic: false,
-    note: "Öffentlicher Feed bleibt Rating-only. Canonical Base-Rare-Karten bleiben auch bei FUT.GG PR/ohne BIN sichtbar; Transfer-Duplikate ohne Preis bleiben verborgen. Last-known DB-Preis wird vor PR genutzt."
+    tradeOfferPolicy: {
+      minBuyConfidence: DISCORD_MIN_BUY_CONFIDENCE,
+      minNetRoiPct: DISCORD_MIN_TRADE_OFFER_ROI_PCT,
+      minNetProfitFloor: DISCORD_MIN_TRADE_OFFER_NET_PROFIT,
+      maxPerCycle: DISCORD_MAX_TRADE_OFFERS_PER_CYCLE,
+      livePriceRecheck: true,
+      automaticExecution: false
+    },
+    note: "Breite Rating-Marktalarme bleiben aktiv. Zusaetzlich duerfen streng gefilterte, profitable JETZT-KAUFEN-Karten wieder namentlich als manuelles Trader-Angebot erscheinen. Kein Auto-Buy/Auto-Sell."
   });
 });
 
@@ -12145,6 +12499,19 @@ app.get("/api/discord/status", (req, res) => {
     traderSignalsIgnored,
     lastTraderSignalAt,
     lastTraderSignalError,
+    traderOffers: {
+      enabled: DISCORD_NAMED_TRADE_OFFERS,
+      sent: discordTraderOffersSent,
+      lastAt: lastDiscordTraderOfferAt,
+      lastError: lastDiscordTraderOfferError,
+      candidatesLastCycle: lastDiscordTraderOfferCandidateCount,
+      rejectedLastCycle: lastDiscordTraderOfferRejectedCount,
+      minBuyConfidence: DISCORD_MIN_BUY_CONFIDENCE,
+      minNetRoiPct: DISCORD_MIN_TRADE_OFFER_ROI_PCT,
+      minNetProfitFloor: DISCORD_MIN_TRADE_OFFER_NET_PROFIT,
+      maxPerCycle: DISCORD_MAX_TRADE_OFFERS_PER_CYCLE,
+      automaticExecution: false
+    },
     authorizedTraderFeed: {
       configured: TRADER_FEED_INGEST_CONFIGURED,
       received: authorizedTraderFeedReceived,
@@ -13784,23 +14151,13 @@ setInterval(
 </html>`);
 });
 
-async function startMonitoring() {
+async function startMonitoring(reason = "active") {
   if (monitoringStarted) return;
+  if (HA_ENABLED && !haIsLeader()) return;
 
   monitoringStarted = true;
-
-  try {
-    await initDb();
-  } catch (error) {
-    console.error(
-      "DB init error:",
-      error
-    );
-
-    lastMonitorError =
-      "DB init: " +
-      String(error);
-  }
+  await setUvBrainActive(true).catch(error => console.error("ÜV active-mode error:", error));
+  console.log(`[HA] Active services starting (${reason}).`);
 
   if (DISCORD_CONFIGURED) {
     await initDiscordBot();
@@ -13829,6 +14186,91 @@ async function startMonitoring() {
   );
 }
 
+async function stopActiveServices(reason = "standby") {
+  if (activeServicesTransitionBusy) return;
+  activeServicesTransitionBusy = true;
+  try {
+    monitoringStarted = false;
+    if (monitorIntervalHandle) {
+      clearInterval(monitorIntervalHandle);
+      monitorIntervalHandle = null;
+    }
+    if (metadataIntervalHandle) {
+      clearInterval(metadataIntervalHandle);
+      metadataIntervalHandle = null;
+    }
+
+    await setUvBrainActive(false).catch(error => console.error("ÜV standby-mode error:", error));
+
+    try {
+      if (discordClient) discordClient.destroy();
+    } catch (error) {
+      console.error("Discord standby destroy error:", error);
+    }
+    discordClientReady = false;
+    discordClient = null;
+    discordLoginPromise = null;
+    discordResolvedChannelId = null;
+    discordResolvedChannelName = null;
+    traderSignalResolvedChannelId = null;
+    traderSignalResolvedChannelName = null;
+    if (HA_ENABLED) lastDiscordError = `HA standby: ${reason}`;
+    console.warn(`[HA] Active services stopped (${reason}).`);
+  } finally {
+    activeServicesTransitionBusy = false;
+  }
+}
+
+async function initializeRuntime() {
+  try {
+    await initDb();
+  } catch (error) {
+    console.error("DB init error:", error);
+    lastMonitorError = "DB init: " + String(error);
+  }
+
+  try {
+    const uvStatus = await initUvBrain({
+      sharedPool: pool,
+      marketProvider: getSharedMarketForUv,
+      runtimeProvider: () => ({ monitoringBusy }),
+      active: !HA_ENABLED
+    });
+    console.log(`[ÜV] FC ÜV Brain v${uvStatus.version} integriert. Shared console snapshot: ${uvStatus.sharedConsoleMarket ? "ja" : "nein"}. Mode: ${uvStatus.runtimeMode}.`);
+  } catch (error) {
+    console.error("ÜV Brain init error:", error);
+  }
+
+  if (!HA_ENABLED) {
+    await startMonitoring("single-instance");
+    return;
+  }
+
+  haCoordinator = createHaCoordinator({
+    pool,
+    enabled: true,
+    instanceId: HA_INSTANCE_ID,
+    priority: HA_PRIORITY,
+    leaseSeconds: HA_LEASE_SECONDS,
+    heartbeatSeconds: HA_HEARTBEAT_SECONDS,
+    metadataProvider: () => ({
+      gameYear: GAME_YEAR,
+      port: Number(port),
+      pid: process.pid,
+      service: "fc-trader-brain",
+      uvVersion: getUvRuntimeStatus()?.version || null
+    }),
+    onPromote: async reason => {
+      await startMonitoring(`HA promote: ${reason}`);
+    },
+    onDemote: async reason => {
+      await stopActiveServices(`HA demote: ${reason}`);
+    }
+  });
+  await haCoordinator.start();
+  console.log(`[HA] Instance ${HA_INSTANCE_ID} started as ${haStatusSnapshot().state}.`);
+}
+
 function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
@@ -13842,6 +14284,15 @@ async function gracefulShutdown(reason = "shutdown") {
   monitoringStarted = false;
 
   console.log(`Graceful shutdown gestartet: ${shutdownReason}`);
+
+  if (haCoordinator) {
+    try {
+      await haCoordinator.stop({ releaseLease: true });
+    } catch (error) {
+      console.error("HA shutdown error:", error);
+    }
+  }
+  await stopActiveServices(`shutdown: ${shutdownReason}`).catch(() => {});
 
   if (monitorIntervalHandle) {
     clearInterval(monitorIntervalHandle);
@@ -13862,6 +14313,12 @@ async function gracefulShutdown(reason = "shutdown") {
     if (discordClient) discordClient.destroy();
   } catch (error) {
     console.error("Discord shutdown error:", error);
+  }
+
+  try {
+    await shutdownUvBrain();
+  } catch (error) {
+    console.error("ÜV shutdown error:", error);
   }
 
   if (pool) {
@@ -13907,6 +14364,8 @@ httpServer = app.listen(
       `FC Trading Intelligence v10.61 AI Direction Consensus + Sheriff Multi-Source (FC${GAME_YEAR}) running on ${port}`
     );
 
-    startMonitoring();
+    initializeRuntime().catch(error => {
+      console.error("Runtime initialization error:", error);
+    });
   }
 );

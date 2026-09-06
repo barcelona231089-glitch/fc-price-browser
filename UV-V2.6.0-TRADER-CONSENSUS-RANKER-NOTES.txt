@@ -1,0 +1,39 @@
+FC ÜV Brain v2.6.0 — Trader Consensus Ranker
+
+Goal
+- Make the 100-card list look more like a serious current endgame trader portfolio and less like a budget-filler list.
+- Use the strongest public trading ideas without copying proprietary code, paid lists or hidden player picks.
+- Keep stability and existing safety behavior more important than adding fragile external dependencies.
+
+Public ideas translated into the ranker
+1. Futpepi-style workflow: requested total budget -> complete 100-slot list; budget fit is explicit, but cheap filler does not win by price alone.
+2. FUT.GG usage/momentum: real community/pro usage and momentum are the heaviest public demand evidence already available to the Brain.
+3. FUTZIP-style market thinking: prefer stable, active prices and punish falling/erratic cards. v2.6 implements this from our own PostgreSQL history, price activity, trend and stability instead of adding a brittle new scraper.
+4. FutStarz-style demand windows: promo/in-packs/momentum can raise a card only when demand/sellability supports it.
+5. Public popularity is a tie-breaker, never a substitute for live price/demand evidence.
+
+Trader Consensus score
+- Demand component: gameplay/popularity + sale-likelihood + turnover + FUT.GG usage.
+- Market component: PostgreSQL stability + price activity + trend + data confidence, with supply penalty.
+- Promo component: promo-market score + demand + sale-likelihood + momentum.
+- Budget fit, conservative profit quality and confidence remain explicit components.
+- Hard risk/capital-lock penalties remain active.
+
+Endgame rules at 300k / 100 slots
+- Max 2 normal 82-rated cards.
+- Max 8 normal 82+83-rated cards combined.
+- Normal 84+ is strongly preferred when safe and affordable.
+- FUTTIES/Specials get a boost only when demand-backed.
+- Exact duplicates remain unique-first with existing max-two fallback only when mathematically necessary.
+
+Safety
+- No new external service is required at runtime.
+- No private Futpepi/FutStarz/other paid player picks are imported.
+- No invented sales-per-day or sale probability.
+- Bronze, sub-82 normal cards, weak low-rated Non-Rares, crash/source-risk and existing lifecycle/safety guards remain authoritative.
+- Live recheck remains mandatory before buying.
+
+Diagnostics
+- Adds per-card Trader Consensus score and tags.
+- Adds average Trader Consensus score to portfolio summary.
+- Existing Trader-Endgame diagnostics remain for comparison.

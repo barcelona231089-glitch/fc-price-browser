@@ -1,0 +1,394 @@
+{
+  "build": "FC-Trader-v10.61-UV-v2.9.0-HA-v1-FINAL-RC-CPU-SAFE-FC27-WISPBYTE",
+  "traderBrainBase": "10.61 AI Direction Consensus + Sheriff Multi-Source; v10.62 rating-first plan lock",
+  "uvBrain": "2.9.0",
+  "deployment": "Active/passive HA overlay for Quaxly + second Node host",
+  "gameYear": "ENV:GAME_YEAR",
+  "database": {
+    "sharedPool": true,
+    "uvTablePrefix": "uv_"
+  },
+  "marketData": {
+    "primary": "FUT.GG",
+    "secondary": "FUTBIN via Parse API when configured",
+    "consoleSnapshotSharedWithTrader": true,
+    "inventedSalesPerDay": false,
+    "inventedGeneralSaleProbability": false,
+    "futbinGamesViaParseStructuredFields": true,
+    "futbinSalesHistoryViaParseStructuredFields": true,
+    "directFutbinScrape": false,
+    "realSoldPriceTargetSupport": true,
+    "salesFieldsFailClosedWhenUnavailable": true
+  },
+  "routes": {
+    "ui": "/uv",
+    "api": "/api/uv/*",
+    "liveRecheckPrimary": "POST /api/uv/recheck/:listId (202 queued CPU-safe async job start)",
+    "liveRecheckCompatibility": "GET /api/uv/recheck/:listId (async job start alias)",
+    "liveRecheckPoll": "GET /api/uv/recheck-job/:jobId"
+  },
+  "verification": {
+    "testsPassed": 141,
+    "testsFailed": 0,
+    "haTestsPassed": 8,
+    "nodeCheck": "PASS (33 JS/MJS files)",
+    "uvTradingLogic": "v2.9.0 preserves the v2.7 Budget Tier Allocator and v2.8.1 rating-first Discord plan. Stability hardening serializes/paces live rechecks, reuses cached demand evidence, prevents overlap with the normal market loop/history monitor, and fails closed on HA lease loss. Dedicated FC27 and HA-return regression tests were added.",
+    "serverModifiedForHa": true,
+    "zipIntegrity": "PASS",
+    "syntheticBudgetChecks": {
+      "100000": {
+        "slots": 100,
+        "totalBuy": 100000,
+        "base82": 1,
+        "base83OrLess": 6,
+        "specials": 31,
+        "tierProfile": "SMALL_BUDGET"
+      },
+      "300000": {
+        "slots": 100,
+        "totalBuy": 299900,
+        "base82": 2,
+        "base83OrLess": 7,
+        "specials": 45,
+        "tierProfile": "SMALL_BUDGET"
+      },
+      "500000": {
+        "slots": 100,
+        "totalBuy": 500000,
+        "base82": 0,
+        "base83OrLess": 3,
+        "specials": 49,
+        "tierProfile": "FUTSTARZ_500K_SHAPE"
+      },
+      "1000000": {
+        "slots": 100,
+        "totalBuy": 999550,
+        "base82": 1,
+        "base83OrLess": 3,
+        "specials": 56,
+        "tierProfile": "FUTSTARZ_1M_SHAPE"
+      },
+      "3000000": {
+        "slots": 100,
+        "totalBuy": 2997750,
+        "base82": 0,
+        "base83OrLess": 0,
+        "specials": 60,
+        "tierProfile": "FUTSTARZ_3M_SHAPE"
+      },
+      "12000000": {
+        "slots": 100,
+        "totalBuy": 11993500,
+        "base82": 0,
+        "base83OrLess": 0,
+        "specials": 66,
+        "tierProfile": "FUTSTARZ_12M_SHAPE"
+      }
+    }
+  },
+  "uiRevision": "v2.9.0 keeps Rating-first/manual player lists and adds CPU-safe live-recheck queue/progress.",
+  "traderMethodConsensus": {
+    "verifiedPublicMethodSources": [
+      "SwepixTV",
+      "MM___TV",
+      "Noah x Kai"
+    ],
+    "actualPlayerPicksImported": false,
+    "paidContentImported": false,
+    "maxPriorAdjustmentPoints": 3,
+    "semantics": "methodology proxy only; not a claim that any named trader currently recommends a card"
+  },
+  "safetyPolicy": {
+    "bronzeHardBlock": true,
+    "existingRatingMin": 82,
+    "lowRatedGoldNonRareHardBlock": true,
+    "lowRatedGoldNonRareMaxRating": 82,
+    "midRatedGoldNonRareDemandGate": "83-84",
+    "rareSpecialPreference": true,
+    "budgetRatingGuard": true,
+    "budgetRatingFloorByAverageSpend": {
+      "<800": "78",
+      "800-1499": "80",
+      "1500-2499": "81",
+      "2500-4999": "82",
+      "5000-9999": "83",
+      ">=10000": "84"
+    },
+    "ratingFloor300k100": "live-market preferred floor; demand-backed relaxation is allowed only as needed to reach the hard 100-slot portfolio within budget",
+    "ratingGuardAppliesToAllRarities": true,
+    "rebalanceReleasesBelowFloor": true,
+    "controlledRepeatFallback": true,
+    "controlledRepeatPolicy": "unique-first; then max 2 exact copies; never a third exact copy",
+    "maxSamePlayerPortfolioSlots": 3,
+    "specialCardPriority": true,
+    "specialCardSoftTarget300k100": "dynamic promo/live-market target; genuinely liquid in-packs promos raise the mix, supply-only promos do not",
+    "specialPriorityHardQuota": false,
+    "specialPrioritySemantics": "soft target only; price/risk/quality/budget feasibility always override",
+    "seasonPhaseRatingGuard": false,
+    "seasonPhaseFloors": {
+      "EARLY": "budget floor",
+      "MID": 82,
+      "MATURE": 83,
+      "LATE": 84,
+      "ENDGAME": 85
+    },
+    "currentFc26EndgameFloor": "not hard-coded; live demand/liquidity market floor decides",
+    "endgameSpecial84Exception": "strong verified demand only",
+    "maxExactCardCopies": 2,
+    "dynamicMarketPolicy": true,
+    "dynamicMarketPolicySemantics": "Promo + live liquidity define the preferred quality target. v2.3.6 keeps the strict sellability ladder first, then uses the budget/count slot-price anchor when needed. Normal/Base cards below 82 are never admitted. Sub-82 Specials require strong verified demand. Bronze, low-rated Non-Rare, severe risk/source divergence, price crashes and bad reported outcomes remain blocked. Unique-first, max 2 exact copies, max 3 slots per footballer.",
+    "adaptiveSpecialMix": true,
+    "budgetAwareDynamicRating": true,
+    "demandGatedRatingRelaxation": true,
+    "endgameBudgetRelaxationFloor300k100": 83,
+    "budgetFeasibilityFallback": "hard 100 slots with sellability ladder, followed by budget-per-slot adaptive sellability fallback when the strict pool is mathematically too expensive",
+    "balancedLiquidityFallback": true,
+    "qualityFirstDynamicCount": false,
+    "dynamicPortfolioSize": false,
+    "maxRequestedSlots": 100,
+    "calendarPhaseContextOnly": true,
+    "promoMarketAdaptive": true,
+    "promoException": "max 1 rating below live floor; in-packs special + strong demand/promo score only",
+    "promoRegimes": [
+      "PROMO_HOT",
+      "PROMO_ACTIVE",
+      "LIVE_MARKET",
+      "THIN_MARKET"
+    ],
+    "hard100Slots": true,
+    "sellabilityFirstRanking": true,
+    "sellabilityEvidencePriority": [
+      "FUT.GG Most Used / gameplay popularity",
+      "FUT.GG Momentum",
+      "FUTBIN Games when structured field available",
+      "FUTBIN real sold-history evidence when structured field available",
+      "FUTBIN popular rank when structured field available",
+      "price activity + healthy trend",
+      "own reported performance/outcomes",
+      "trade quality + sale-likelihood + repeatability"
+    ],
+    "budgetAdaptiveSellability": true,
+    "budgetAdaptiveSemantics": "budget/count sets the slot-price anchor; normal cards remain hard-floored at 82 even in fallback; sub-82 Specials require strong verified demand; multiple demand/activity/trend signals and all hard safety guards remain mandatory",
+    "normalCardMinimumRating": 82,
+    "specialBelow82Policy": "strong verified demand only",
+    "automaticNamedPlayerOffers": false,
+    "ratingFirstDiscordPlanLock": true,
+    "playerNamesOnlyOnManualRatingOpenOrIntensiveWatch": true
+  },
+  "futbinExtendedEvidence": {
+    "adapterReady": true,
+    "currentMarketplaceSpecExposesFields": false,
+    "activation": "automatic when structured fields appear in existing Parse search response",
+    "gamesField": "games",
+    "popularRankField": "popular_rank",
+    "salesHistoryField": "sales_history",
+    "soldSemantics": "sold_for or explicit sold status only; active/expired/unsold are never counted as sales",
+    "inventedSalesPerDay": false,
+    "generalSalesProbability": false
+  },
+  "ha": {
+    "version": "1.0.0",
+    "enabledByDefaultWhenPostgresConfigured": true,
+    "leaseTable": "fc_runtime_leader",
+    "leaseSecondsDefault": 75,
+    "heartbeatSecondsDefault": 20,
+    "leaderOnly": [
+      "market monitoring",
+      "Trader Brain automatic loop",
+      "Discord gateway/sends",
+      "UV history monitor",
+      "mutating API calls"
+    ],
+    "standbyMode": "read-only",
+    "standbyReadiness": "STANDBY_READY",
+    "failClosedOnLeaseLoss": true,
+    "autoPreemption": false,
+    "newSecretsRequired": false,
+    "gracefulFailoverImmediateLeaseRelease": true,
+    "returningPrimaryPreemptsValidLeader": false,
+    "realTwoHostFailoverTestRequiredAfterDeploy": true
+  },
+  "notes": [
+    "UV-V2.3.4-BUDGET-ADAPTIVE-SELLABILITY-NOTES.txt",
+    "UV-V2.3.5-SNAPSHOT-SYNC-RATING-FLOOR-NOTES.txt",
+    "UV-V2.3.6-SNAPSHOT-RECOVERY-DEFER-NOTES.txt",
+    "UV-V2.4.0-SAVED-LISTS-TOP100-NOTES.txt",
+    "UV-V2.4.1-TOP100-SAFETY-ISOLATION-NOTES.txt",
+    "UV-V2.4.3-LIVE-RECHECK-RESPONSIVENESS-NOTES.txt",
+    "UV-V2.5.0-PUBLIC-TRADER-ENDGAME-LOGIC-NOTES.txt",
+    "UV-V2.6.0-TRADER-CONSENSUS-RANKER-NOTES.txt",
+    "UV-V2.7.0-BUDGET-TIER-ALLOCATOR-NOTES.txt",
+    "UV-V2.7.1-ALLOCATOR-AWARE-SAFETY-RESERVE-FIX-NOTES.txt",
+    "UV-V2.7.2-ASYNC-LIVE-RECHECK-PROXY-FIX-NOTES.txt",
+    "TRADER-V10.62-NAMED-TRADE-OFFERS-NOTES.txt",
+    "v2.8.1 restores the agreed rating-first Discord plan: no automatic named player offers; player names are loaded only after the user opens the rating list or manually enables intensive watch.",
+    "UV-V2.9.0-FINAL-RC-CPU-SAFE-FC27-NOTES.txt",
+    "FINAL-9-DAY-PREFLIGHT.txt"
+  ],
+  "sharedSnapshotPolicy": {
+    "generationDuringRecovery": "RECENT_SAFE allowed only while FUT.GG status is RECOVERING",
+    "maxRecentSafeAgeSeconds": 300,
+    "requiresHealthyProcessingPipeline": true,
+    "liveRecheckUsesRecentSafe": false,
+    "rebalanceUsesRecentSafe": false,
+    "historyMonitorUsesRecentSafe": false,
+    "unhealthySourceFailsClosed": true,
+    "generatedFromRecentSafeRequiresLiveRecheck": true,
+    "historyMonitorRecoveryBehavior": "strict-live; UV_SHARED_MARKET_NOT_READY is treated as DEFERRED, not a hard/sticky monitor error; retry after 10 seconds; no stale snapshot is written as fresh history",
+    "historyMonitorRetrySeconds": 10,
+    "historyMonitorStatusPreservesLastSuccess": true
+  },
+  "budgetTop100Ranking": {
+    "enabled": true,
+    "semantics": "Ranks the eligible candidate universe for the requested total budget using sellability/demand, trade quality, PostgreSQL price stability/activity/trend, conservative net profit, data confidence, FUT.GG usage/momentum, budget fit, capital efficiency, Trader Consensus and the v2.7 Budget Tier score. Hard safety gates and total-budget feasibility remain authoritative.",
+    "doesNotImportFutpepiCode": true
+  },
+  "savedLists": {
+    "storage": "PostgreSQL",
+    "autoSaveOnGenerate": true,
+    "autoSaveOnRebalance": true,
+    "reopenInUi": true,
+    "persistedFields": [
+      "list id",
+      "created_at",
+      "platform",
+      "budget",
+      "100 slots",
+      "card payload",
+      "buy max",
+      "start price",
+      "BIN",
+      "EA tax",
+      "net profit",
+      "summary payload",
+      "last live recheck per slot",
+      "last live recheck summary"
+    ],
+    "oldListsCompatible": true,
+    "liveRecheckPersistence": "batched set-based PostgreSQL UPDATE (jsonb_to_recordset), executed inside a server-side async live-recheck job; browser polls short status requests instead of holding one long request"
+  },
+  "files": [
+    "UV-V2.4.3-LIVE-RECHECK-RESPONSIVENESS-NOTES.txt",
+    "UV-V2.5.0-PUBLIC-TRADER-ENDGAME-LOGIC-NOTES.txt",
+    "UV-V2.6.0-TRADER-CONSENSUS-RANKER-NOTES.txt",
+    "UV-V2.7.0-BUDGET-TIER-ALLOCATOR-NOTES.txt",
+    "UV-V2.7.1-ALLOCATOR-AWARE-SAFETY-RESERVE-FIX-NOTES.txt",
+    "UV-V2.7.2-ASYNC-LIVE-RECHECK-PROXY-FIX-NOTES.txt",
+    "TRADER-V10.62-NAMED-TRADE-OFFERS-NOTES.txt"
+  ],
+  "publicTraderEndgameLogic": {
+    "enabled": true,
+    "scope": "ENDGAME only; FC27 early cycle automatically returns to neutral prior",
+    "publicMethodInputs": [
+      "Futpepi public budget-list workflow",
+      "FutStarz public demand-spike/popular-card/tier-selection methodology",
+      "historical EA Forums public ÜV consensus on popular leagues/nations, high-rated cards and specials"
+    ],
+    "actualFutpepiPlayerPicksImported": false,
+    "proprietaryCodeImported": false,
+    "futtiesPriority": "demand-backed only",
+    "base82MaxAt300k100": 2,
+    "base83OrLessMaxAt300k100": 8,
+    "rebalanceOldLists": true,
+    "staticLeagueNationPrior": "small tie-break only; live FUT.GG demand dominates"
+  },
+  "traderConsensusRanker": {
+    "enabled": true,
+    "runtimeExternalDependencies": false,
+    "publicIdeaInputs": [
+      "Futpepi public budget-to-list workflow",
+      "FUT.GG Most Used and Momentum demand evidence",
+      "FUTZIP-style price stability/volatility concept implemented from own PostgreSQL history",
+      "FutStarz demand-window/promo methodology",
+      "public popularity as a tie-break only"
+    ],
+    "weights": {
+      "demandComponent": 0.34,
+      "marketStabilityComponent": 0.2,
+      "saleLikelihood": 0.1,
+      "budgetFit": 0.12,
+      "profitQuality": 0.08,
+      "confidence": 0.07,
+      "promoDemandComponent": 0.09
+    },
+    "actualPaidPlayerPicksImported": false,
+    "proprietaryCodeImported": false,
+    "base82MaxAt300k100": 2,
+    "base83OrLessMaxAt300k100": 8
+  },
+  "budgetTierAllocator": {
+    "enabled": true,
+    "hard100ActualSlots": true,
+    "candidatePoolSeparateFromAllocation": true,
+    "livePriceSource": "FUT.GG",
+    "historySource": "PostgreSQL",
+    "externalReferenceSemantics": "Observed FutStarz 500k/1m/3m/12m list shapes are soft portfolio-shape priors only; no player picks or displayed prices are imported.",
+    "profiles": [
+      "SMALL_BUDGET",
+      "FUTSTARZ_500K_SHAPE",
+      "FUTSTARZ_1M_SHAPE",
+      "FUTSTARZ_3M_SHAPE",
+      "FUTSTARZ_12M_SHAPE"
+    ],
+    "ratingRole": "secondary portfolio quality signal; existing hard safety floors/caps remain separate",
+    "versionIdentity": "SPECIAL/NORMAL from card item record/cardType; eaId remains card identity",
+    "positionConcentration": "soft penalty above budget-dependent position-size threshold unless demand is exceptionally strong",
+    "specialMix": "soft and market-adaptive; increases with budget when live candidate quality supports it",
+    "externalRuntimeDependency": false,
+    "proprietaryCodeImported": false,
+    "paidPlayerPicksImported": false
+  },
+  "liveRecheckTransport": {
+    "mode": "server-side async job + short polling",
+    "start": "POST /api/uv/recheck/:listId returns 202 + jobId",
+    "poll": "GET /api/uv/recheck-job/:jobId every 2 seconds",
+    "uiObservationTimeoutSeconds": 180,
+    "transientPollFetchRetries": 5,
+    "sameListDuplicateStarts": "reuse running job",
+    "jobRetentionSeconds": 600,
+    "strictLiveFutgg": true,
+    "recentSafeSnapshotAllowed": false,
+    "haFailClosedBeforePersist": true,
+    "reason": "avoid reverse-proxy/network termination of one long 100-card recheck request (browser Failed to fetch)"
+  },
+  "discordTraderOffers": {
+    "enabledByDefault": true,
+    "channel": "#trading-alerts",
+    "source": "own Trader Brain live market analysis",
+    "requiresAction": "JETZT KAUFEN",
+    "minBuyConfidenceDefault": 90,
+    "minNetRoiPctDefault": 1.5,
+    "minNetProfitFloorDefault": 250,
+    "adaptiveMinProfitByPrice": true,
+    "maxNamedOffersPerCycleDefault": 3,
+    "globalDiscordMaxPerCycleDefault": 5,
+    "perCardCooldownMinutesDefault": 30,
+    "liveFutggRecheckBeforeDirectionalSend": true,
+    "usesExistingBrainExitTargetsOnly": true,
+    "eaTaxPct": 5,
+    "automaticExecution": false,
+    "statusEndpoint": "GET /api/discord/status -> traderOffers"
+  },
+  "fc27Readiness": {
+    "gameYearEnvSwitch": "GAME_YEAR=27",
+    "futggYearParameterized": true,
+    "futbinEndpointFor27": "search_players_fc27",
+    "september2026SeasonPhase": "EARLY",
+    "mainRatingMarketDefault": "82-99",
+    "lowWatchRatings": "75-81",
+    "requiresHealthyFutgg27CoverageBeforeUse": true
+  },
+  "liveRecheckCpuSafe": {
+    "enabled": true,
+    "globalConcurrentJobs": 1,
+    "queueMaxDefault": 3,
+    "batchSizeDefault": 5,
+    "batchPauseMsDefault": 180,
+    "waitsForTraderMarketCycleIdle": true,
+    "traderMarketLoopSkipsWhileRecheckActive": true,
+    "historyMonitorDefersWhileRecheckActive": true,
+    "livePriceSource": "strict-live FUT.GG/shared Trader snapshot",
+    "demandRefreshDuringManualRecheck": "cached evidence only; previous list evidence fallback",
+    "haLeaseCheckedBetweenBatches": true
+  }
+}

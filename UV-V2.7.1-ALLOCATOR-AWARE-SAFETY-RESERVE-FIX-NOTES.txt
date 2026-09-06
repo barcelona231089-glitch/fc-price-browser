@@ -1,0 +1,22 @@
+FC ÜV Brain v2.7.1 — Allocator-Aware Safety Reserve Fix
+
+Problem observed on the real 300k market:
+- Safety reserve reported 100/100 structural slots with 52 unique cards.
+- The actual endgame-aware allocator could still build only 66/100 because normal 82/83 cards are intentionally capped.
+- The reserve stopped too early at the first structurally-feasible stage and therefore never widened to additional safe 84+/Special candidates.
+
+Fix:
+- Hard-100 fallback, budget-adaptive fallback and safety reserve now evaluate feasibility through the same real allocator used for the final list.
+- A fallback stage may stop only when the allocator itself can form the requested 100 slots inside budget.
+- Structural slot count is still retained for diagnostics.
+- Error diagnostics now show both structural slots and slots after the endgame mix.
+- No relaxation of the Bronze block, sub-82 normal block, Non-Rare safety gates, 2-copy exact-card cap, or the 300k endgame 82/83 mix caps.
+- FUT.GG remains the live price source.
+
+Regression test:
+- Reproduces the exact 52-unique/100-structural -> 66/100 endgame-mix failure shape.
+- Confirms the reserve continues into the next safe stage and reaches 100/100 without weakening the 82/83 caps.
+
+Validation:
+- 130/130 automated tests passed.
+- 31/31 JavaScript syntax checks passed.
