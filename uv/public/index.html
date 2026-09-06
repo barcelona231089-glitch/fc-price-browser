@@ -1,0 +1,98 @@
+<!doctype html>
+<html lang="de">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>FC ÜV Brain</title>
+  <link rel="stylesheet" href="/uv/styles.css" />
+</head>
+<body>
+  <main class="shell">
+    <header class="topbar">
+      <div class="brand"><strong>FC <span>ÜV</span></strong><small>Brain</small></div>
+      <div class="status" id="statusBadge">System wird geprüft…</div>
+    </header>
+
+    <section class="generator panel compactGenerator">
+      <div class="field grow">
+        <label for="budget">Budget</label>
+        <div class="coinInput"><span>🪙</span><input id="budget" type="number" min="30000" step="1000" value="300000" /></div>
+      </div>
+      <div class="field platformField">
+        <label for="platform">Plattform</label>
+        <select id="platform"><option value="console">Konsole</option><option value="pc">PC</option></select>
+      </div>
+      <button id="generateBtn">ÜV-Liste generieren</button>
+      <div class="generatorNote">Top 100 fürs Budget • automatisch gespeichert • FUT.GG + FUTBIN • Demand/Trend vor Rating</div>
+    </section>
+
+    <section id="loading" class="panel loading hidden">
+      <div class="spinner"></div>
+      <div><strong>ÜV Brain baut deine Liste…</strong><p>FUT.GG Livepreise, Nachfrage, FUTBIN-Abgleich, Preissicherheit, Budget-Tier, Karten-Version, Trade-Quality, Wiederholbarkeit, Langfrist-Profit und 100-Slot-Kapitalverteilung laufen.</p></div>
+    </section>
+
+    <section id="summary" class="summary hidden"></section>
+    <section id="notice" class="notice hidden"></section>
+
+    <section class="tablePanel panel">
+      <div class="tableHead">
+        <div>
+          <h2>ÜV-Liste</h2>
+          <p id="tableSub">Noch keine Liste generiert.</p>
+        </div>
+        <div class="tableActions">
+          <div class="savedListControl">
+            <select id="savedListSelect" aria-label="Gespeicherte ÜV-Liste auswählen"><option value="">Gespeicherte Listen…</option></select>
+            <button id="loadSavedBtn" class="secondary" type="button" disabled>Öffnen</button>
+          </div>
+          <button id="recheckBtn" class="secondary primaryAction" disabled>Liste live prüfen</button>
+          <button id="rebalanceBtn" class="secondary" disabled>Liste neu ausbalancieren</button>
+        </div>
+      </div>
+
+      <div class="tableTools">
+        <div class="statusFilters" id="statusFilters" role="group" aria-label="Liste nach Live-Status filtern">
+          <button class="statusFilter active" data-status="ALL" type="button">Alle <span data-count="ALL">0</span></button>
+          <button class="statusFilter keep" data-status="KEEP" type="button">KEEP <span data-count="KEEP">0</span></button>
+          <button class="statusFilter reprice" data-status="REPRICE" type="button">REPRICE <span data-count="REPRICE">0</span></button>
+          <button class="statusFilter wait" data-status="WAIT" type="button">WAIT <span data-count="WAIT">0</span></button>
+          <button class="statusFilter drop" data-status="DROP" type="button">DROP <span data-count="DROP">0</span></button>
+          <button class="statusFilter missing" data-status="MISSING" type="button">MISSING <span data-count="MISSING">0</span></button>
+        </div>
+        <input id="filter" placeholder="Spieler suchen…" aria-label="Spieler suchen" disabled />
+      </div>
+
+      <div class="tableWrap">
+        <table>
+          <colgroup>
+            <col class="colPlayer" />
+            <col class="colStatus" />
+            <col class="colBuy" />
+            <col class="colStart" />
+            <col class="colSell" />
+            <col class="colProfit" />
+            <col class="colMarket" />
+            <col class="colQuality" />
+            <col class="colDetails" />
+          </colgroup>
+          <thead>
+            <tr>
+              <th>Spieler / Version</th>
+              <th>Status</th>
+              <th>Kaufen max</th>
+              <th>Start</th>
+              <th>Sofortkauf</th>
+              <th>Netto-Profit</th>
+              <th>Marktpreis</th>
+              <th>Qualität / Risiko</th>
+              <th><span class="srOnly">Details</span></th>
+            </tr>
+          </thead>
+          <tbody id="rows"><tr><td colspan="9" class="empty">Gib oben dein Budget ein und generiere deine erste Liste.</td></tr></tbody>
+        </table>
+      </div>
+    </section>
+  </main>
+<script src="/uv/app.js" type="module"></script>
+</body>
+</html>
