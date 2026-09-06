@@ -1,0 +1,39 @@
+FC ÜV Brain v2.1 – PROMO + LIVE MARKET POLICY
+
+Ziel
+- Keine starre Kalender-/Endgame-Rating-Regel mehr in der produktiven ÜV-Generierung.
+- Aktuelle Promo, Live-Nachfrage, Liquidität und Budget bestimmen die Auswahl.
+
+Produktive Policy
+- Kalenderphase bleibt nur Diagnose/Info.
+- Rating-Floor wird aus dem aktuellen liquiden Markt abgeleitet:
+  * FUT.GG Most Used / Usage
+  * FUT.GG Momentum
+  * FUT.GG In Packs
+  * Sale-Likelihood / Trade-Qualität / Repeatability
+  * FUTBIN Games/Sales nur wenn echte strukturierte Felder vorliegen
+  * eigene Outcomes, sobald vorhanden
+- Markt-Q25 und Markt-Median bilden den Rating-Anker.
+- Budget bleibt hart. Wenn die Qualitätsmenge nicht für 100 Slots reicht, werden weniger Slots erzeugt statt Low-Rating-Füller einzubauen.
+
+Promo-Erkennung
+- Special + FUT.GG In Packs ist ein Promo-Signal, aber kein automatischer Kaufgrund.
+- Momentum/Usage/Demand müssen Supply stützen.
+- Supply-only Promo-Karten werden nicht hochgestuft.
+- Promo-Heat und Markt-Regime: PROMO_HOT / PROMO_ACTIVE / LIVE_MARKET / THIN_MARKET.
+- Aktive Promo-Versionen werden aus den aktuell gematchten In-Packs-Specials zusammengefasst.
+
+Rating-Schutz
+- Eine Karte weit unter dem aktuellen Live-Markt-Floor wird blockiert.
+- Promo-Ausnahme maximal 1 Rating unter Live-Floor.
+- Ausnahme nur für In-Packs-Special mit starkem Demand bzw. sehr hohem Promo-Market-Score.
+- Beispiel: Live-Floor 85 => eine 77 kann nicht über Promo/Momentum durchrutschen.
+
+Unverändert
+- Bronze Hard Block.
+- Non-Rare <=82 Hard Block.
+- Non-Rare 83-84 nur mit Demand.
+- Maximal 2 identische Karten.
+- FUT.GG primär, FUTBIN nur via Parse.
+- Keine erfundenen Games/Sales.
+- DB/ENV/Discord/server.js unverändert.

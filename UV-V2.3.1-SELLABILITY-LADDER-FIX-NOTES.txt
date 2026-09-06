@@ -1,0 +1,17 @@
+UV Brain v2.3.1 — SELLABILITY LADDER FIX
+
+What was wrong in v2.3.0
+- The feasibility estimator tested relaxed cards with BALANCED demand thresholds.
+- The final candidate gate received mode DEMAND_SELLABILITY_100, did not recognize it as BALANCED, and silently applied STRICT thresholds.
+- Result: the policy could believe 100 slots were possible while the final pool only covered e.g. 49/100 positions.
+- The real-data rating ladder also stopped too early at budgetFloor-1.
+
+Fix
+- DEMAND_SELLABILITY_100 now uses the same BALANCED thresholds as the estimator.
+- Rating relaxation can walk down to max(78, budgetFloor-4) for Base Rare/Special candidates.
+- If BALANCED evidence is still insufficient, a FEASIBILITY tier may admit only cards with meaningful live liquidity/demand composites.
+- Bronze remains hard blocked.
+- Gold Non-Rare <=82 remains hard blocked; 83-84 still requires verified demand.
+- Hard source divergence, crash-risk, weak trade-quality and other safety rejects remain blocked.
+- Exact-card repeat cap stays 2; player cap stays 3.
+- FUTBIN remains optional. Without FUTBIN, FUT.GG usage/momentum + live score/trend/performance can carry the evidence stack.

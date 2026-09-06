@@ -1,0 +1,36 @@
+FC Trader v10.61 + UV v2.2 + HA v1 — FlowHardware FULL Standby
+
+Purpose
+- Fresh/empty Node.js host deployment.
+- Quaxly may remain current leader.
+- FlowHardware joins the same PostgreSQL HA lease and should start as STANDBY while Quaxly is healthy.
+
+Required files are included
+- server.js
+- traderBrain.js
+- haCoordinator.js
+- uv/
+- package.json
+
+Before first start
+1. Configure the same required runtime environment values used by the current Quaxly app. Do not paste secrets into public chats.
+2. DATABASE_URL must point to the same shared PostgreSQL database.
+3. Recommended HA labels:
+   FC_HA_ENABLED=true
+   FC_INSTANCE_ID=flowhardware-standby
+   FC_HA_PRIORITY=90
+   FC_HA_LEASE_SECONDS=75
+   FC_HA_HEARTBEAT_SECONDS=20
+4. The app must listen on the host allocation. Set PORT to the port assigned by FlowHardware if the panel does not provide PORT automatically.
+5. Install dependencies from package.json, then start with: node server.js
+
+Expected healthy behavior while Quaxly is running
+- /api/ha/status -> state STANDBY
+- /api/readiness -> STANDBY_READY
+- writeActive false
+- no Discord writer / no active market writer on the standby
+
+Failover test later
+- Stop Quaxly intentionally.
+- After the 75s lease expires, FlowHardware should become LEADER.
+- Verify /api/ha/status before performing any writes.

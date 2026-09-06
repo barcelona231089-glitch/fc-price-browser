@@ -1,0 +1,55 @@
+FC ÜV Brain v1.1 - FUTBIN Games + Real Sales Evidence Bridge
+
+Ziel
+- FUTBIN Games/PGP als echtes Popularitäts-/Nutzungssignal nutzen.
+- FUTBIN Player Sales History nur aus echten strukturierten Sold-Daten verwenden.
+- Tatsächlich beobachtete Sold-Preise dürfen die Zielpreiswahl konservativ stützen.
+- Keine direkte FUTBIN-Seite scrapen. Datenpfad bleibt FUTBIN -> Parse API -> ÜV Brain.
+
+Wichtig: aktueller Parse-Marketplace-Stand
+Der derzeit veröffentlichte FUTBIN-Parse-Wrapper liefert search_players_fc26, get_player_details,
+get_market_trends usw., dokumentiert Games/PGP und Player Sales History aber noch nicht als Felder/Endpoints.
+Darum ist v1.1 capability-aware:
+- Parse liefert Games -> Games-Signal wird automatisch aktiv.
+- Parse liefert Sales-History -> Sales-Evidence und echte Sold-Preisbereiche werden automatisch aktiv.
+- Parse liefert nichts davon -> Felder bleiben unavailable/null und beeinflussen die Empfehlung nicht.
+- Active/expired/unsold Listings werden niemals als echte Verkäufe gezählt.
+- Verkäufe/Tag werden nicht aus einer begrenzten Sales-Stichprobe hochgerechnet.
+
+Empfohlener Parse-Agent-Change-Request
+Diesen Change am bestehenden `search_players_fc26` Endpoint hinzufügen, damit keine zusätzlichen
+Player-Detail-Calls pro Kandidat nötig werden:
+
+"Extend search_players_fc26 without removing or renaming any existing fields. For every exact FC26
+card/version result, add only publicly observable FUTBIN data when available:
+1) games: integer total Games/PGP count for this exact card/version;
+2) popular_rank: integer rank when FUTBIN exposes a games/popularity ranking, otherwise null;
+3) sales_history: a recent bounded array of public Player Sales History rows for this exact card and
+platform. Each row must distinguish status and contain listed_for, sold_for, and date/timestamp when
+FUTBIN exposes them. sold_for must be null for active, expired, cancelled, or unsold listings. Never
+infer a sold price from an active listing price. Return []/null when unavailable; never estimate or
+fabricate values. Preserve price_ps, price_pc, rating, version, id, images and all current response
+fields."
+
+Was v1.1 daraus berechnet
+- futbinGamesCount: echter Games-Zähler.
+- futbinGamesScore: logarithmisch skalierter Nutzungsscore, damit Superstars nicht alles überrollen.
+- FUT.GG Demand bleibt Hauptsignal; FUTBIN Games ergänzt es nur moderat.
+- futbinSoldSampleCount: nur Zeilen mit echtem sold_for bzw. eindeutigem sold-Status.
+- futbinSoldPriceMedian / P25 / P75 / Min / Max / Mode: echte beobachtete Sold-Preisverteilung.
+- futbinSalesEvidenceScore: Stichprobengröße + ÜV-Premium + Preis-Konsistenz.
+- futbinSaleTargetSupportScore: prüft, ob unser vorgeschlagener Sofortkauf in einem tatsächlich
+  beobachteten Sold-Preisbereich liegt. Zu hohe Ziele über dem beobachteten Maximum werden bestraft.
+- Keine allgemeine Sales Probability wird erzeugt.
+
+UI
+- Status zeigt Games ✓ und Sales ✓ erst, nachdem solche strukturierten Felder wirklich beobachtet wurden.
+- Zusammenfassung zeigt Trefferzahlen und Scores.
+- Kartendetails zeigen Games, Popular-Rank, Sold-Sample, Sold-Median, P25-P75 und Realpreis-Support.
+
+Sicherheit
+- Bronze Hard Block bleibt unverändert aktiv.
+- FUT.GG bleibt Primary Market Source.
+- FUTBIN bleibt Secondary/Crosscheck.
+- Kein neuer Secret erforderlich.
+- Bestehende PostgreSQL/Discord/ENV-Konfiguration wird nicht verändert.

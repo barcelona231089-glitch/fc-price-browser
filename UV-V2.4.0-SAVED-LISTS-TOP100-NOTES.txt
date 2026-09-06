@@ -1,0 +1,34 @@
+UV Brain v2.4.1 — SAVED LISTS + BUDGET TOP-100
+
+Ziel
+- Den öffentlich sichtbaren Workflow „Budget -> 100 geeignete Spieler -> aktuelle Einkauf-/Verkaufspreise -> Liste später wieder öffnen“ in eigener Logik nachbilden.
+- Kein Futpepi-Quellcode oder proprietärer Algorithmus wurde übernommen.
+
+Neu: gespeicherte Listen
+- Generierte Listen werden weiterhin automatisch in PostgreSQL gespeichert.
+- Die UI zeigt jetzt „Gespeicherte Listen…“ und kann eine alte Liste direkt wieder öffnen.
+- Gespeichert/rekonstruiert werden Listen-ID, Zeit, Plattform, Gesamtbudget, Slots, Kartenpayload, KAUFEN MAX, Start, Sofortkauf, Steuer und Netto-Profit.
+- Der letzte Live-Recheck wird pro Slot zusätzlich als JSONB persistiert. Beim Wiederöffnen erscheinen KEEP / REPRICE / WAIT / DROP / MISSING samt frischen Recheck-Preisen wieder.
+- Additive ALTER TABLE ... ADD COLUMN IF NOT EXISTS Migrationen: bestehende PostgreSQL-Daten werden nicht gelöscht.
+
+Neu: Budget Top-100 Ranking
+- Nach allen bestehenden Safety-/Rating-/Demand-Gates erhält jeder Kandidat einen budgetTop100Score.
+- Score-Evidenz: Sellability/Demand, Trade Quality, Preisstabilität, konservativer Netto-Profit, Datenqualität, Popularität, Budget-Fit und Kapital-Effizienz.
+- Risiko und Kapitalbindungsrisiko reduzieren den Score.
+- Der Optimizer gewichtet den Top-100-Score stärker, ohne die Budget-Reserve-Logik zu umgehen.
+- Exakt 100 Slots und Gesamtbudget bleiben harte Bedingungen.
+
+Unverändert
+- Normale/Base-Karten unter Rating 82 bleiben hart gesperrt.
+- Sub-82 Specials brauchen starke verifizierte Nachfrage.
+- Bronze bleibt blockiert.
+- Maximal 2 exakte Kopien bleiben als Feasibility-Fallback bestehen.
+- Live-Recheck, Rebalance und History bleiben strict live.
+- v2.3.6 Snapshot-Recovery-DEFER bleibt erhalten.
+- HA, Discord und Trader-Brain-Core server.js wurden nicht verändert.
+
+Verifikation
+- node --test: 118/118 bestanden.
+- node --check: alle 31 JS/MJS-Dateien bestanden.
+- Synthetische Budgettests 100k / 300k / 500k / 1M: jeweils 100/100 Slots und Budget nicht überschritten.
+- server.js SHA-256 identisch zu v2.3.6.

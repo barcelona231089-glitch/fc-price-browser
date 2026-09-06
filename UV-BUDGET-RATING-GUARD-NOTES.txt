@@ -1,0 +1,28 @@
+FC ÜV Brain v1.3 - Budget Rating Guard
+
+Ziel
+- Niedrige Ratings nicht mehr als billige Budget-Füller in höher kapitalisierten 100er-Listen verwenden.
+- Der Guard gilt unabhängig von Rare/Non-Rare/Special.
+
+Rating-Untergrenze nach durchschnittlichem Budget pro Karten-Slot
+- < 800 Coins: Rating >= 78
+- 800-1.499: Rating >= 80
+- 1.500-2.499: Rating >= 81
+- 2.500-4.999: Rating >= 82
+- 5.000-9.999: Rating >= 83
+- >= 10.000: Rating >= 84
+
+Beispiel
+- 300.000 Coins / 100 Karten = 3.000 Coins ideal pro Slot -> Mindest-Rating 82.
+- Rating 79/80/81 ist in dieser Liste ein Hard Reject, auch als Rare oder Special.
+
+Rebalance
+- Bereits gespeicherte KEEP/REPRICE-Positionen unter der aktuellen Rating-Untergrenze werden nicht behalten.
+- Sie werden freigegeben und durch regelkonforme Kandidaten ersetzt.
+- Hard Rejects dürfen nicht durch den Fallback zurückkommen.
+
+Bestehende Regeln bleiben aktiv
+- Bronze hard block.
+- Non-Rare <=82 hard block.
+- Non-Rare 83-84 nur mit verifizierter Nachfrage.
+- FUT.GG Hauptquelle; FUTBIN nur über Parse-Strukturfelder.

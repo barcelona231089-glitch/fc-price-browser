@@ -1,0 +1,26 @@
+FC TRADING INTELLIGENCE v10.61 + FC ÜV BRAIN v2.2 + HA v1
+COMPACT HEADER / FOCUS MODE
+
+Wenn HA v1 noch NICHT auf Quaxly installiert ist:
+1. ZIP lokal entpacken.
+2. server.js hochladen und überschreiben.
+3. haCoordinator.js hochladen.
+4. kompletten Ordner uv/ hochladen und überschreiben.
+5. ENV, PostgreSQL, Discord, package.json und package-lock.json NICHT ändern.
+6. Server einmal neu starten.
+
+Wenn HA v1 bereits installiert ist und nur v2.2 UI aktualisiert wird:
+1. Nur den Ordner uv/ hochladen und überschreiben.
+2. Server einmal neu starten.
+
+Prüfen:
+- Console: [ÜV] FC ÜV Brain v2.2.0 integriert.
+- /api/ha/status => LEADER auf dem Primary.
+- /api/readiness => READY auf dem Primary.
+- /api/uv/status => version 2.2.0.
+- /uv => kompakter Header; technische Kennzahlen unter "Mehr Analyse".
+
+Trading-Logik:
+- Unverändert gegenüber v2.1 Promo + Live Market Adaptive.
+- Keine neuen Secrets.
+- Keine Änderungen an DB/Discord/FUT.GG/FUTBIN-Logik.

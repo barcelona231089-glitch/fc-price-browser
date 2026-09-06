@@ -1,0 +1,20 @@
+FC ÜV Brain v2.4.1 — Top-100 Safety Isolation
+
+Problem fixed
+- v2.4.0 blended budgetTop100Score into selectionScore before the candidate safety pipeline.
+- On the live 300k market this could shrink the safe pool and trigger the 100-Slot-Guard even though v2.3.6 had enough budget-feasible safe candidates.
+
+Fix
+- selectionScore is again the original v2.3.6 safety/quality score.
+- budgetTop100Score remains a separate ranking signal.
+- The final optimizer already reads budgetTop100Score when choosing among safety-approved candidates, so Top-100 behavior remains without changing admission thresholds.
+- Live recheck and rebalance also keep the safety selection score isolated.
+
+Unchanged
+- saved PostgreSQL lists and reopen flow
+- persisted live KEEP/REPRICE/WAIT/DROP state
+- normal cards below 82 blocked
+- bronze hard block
+- max 2 exact copies / max 3 slots per player
+- snapshot recovery/defer behavior from v2.3.6
+- HA, Discord and Trader Brain server code

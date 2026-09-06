@@ -1,0 +1,24 @@
+FC ÜV Brain v1.4 - Quality-preserving budget fallback
+
+Problem
+- Bei 300.000 Coins / 100 Slots bleibt Mindest-Rating 82 aktiv.
+- Im Live-Markt können 100 unterschiedliche geeignete 82+ Karten zusammen mehr als 300.000 Coins kosten.
+- v1.3 brach dann korrekt, aber unpraktisch mit "Budget zu klein" ab.
+
+v1.4 Verhalten
+- Rating-Floor 82 bei 300k/100 bleibt unverändert.
+- 79/80/81 bleiben Hard Rejects, unabhängig von Rare/Non-Rare/Special.
+- Der Optimizer versucht IMMER zuerst 100 unterschiedliche Karten.
+- Nur wenn das mathematisch nicht in das Budget passt, wird ein kontrollierter Repeat-Fallback aktiviert.
+- Zuerst maximal 2 Exemplare derselben exakten Karte.
+- Nur wenn selbst das nicht reicht, maximal 3 Exemplare derselben exakten Karte.
+- Der bestehende Spieler-Diversitätsguard begrenzt denselben Spielernamen weiterhin auf maximal 3 Portfolio-Slots.
+- Es werden nur Kandidaten wiederholt, die die bestehenden Candidate-/Risk-/Rating-Gates bereits bestanden haben.
+- Die UI zeigt Anzahl unterschiedlicher Karten und Wiederholungs-Slots transparent an.
+
+Nicht verändert
+- Bronze Hard Block
+- Non-Rare Demand Gate
+- FUT.GG Hauptquelle
+- FUTBIN nur über Parse-Strukturfelder
+- PostgreSQL, Discord, ENV, server.js

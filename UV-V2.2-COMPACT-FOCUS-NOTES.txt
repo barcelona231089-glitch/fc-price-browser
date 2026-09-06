@@ -1,0 +1,13 @@
+FC ÜV Brain v2.2 – Compact Header / Focus Mode
+
+UI-only revision on top of v2.1 Promo + Live Market Adaptive + HA v1.
+
+Changes:
+- Large hero/landing-page block removed.
+- Compact FC ÜV Brain topbar.
+- System status shortened to FUT.GG / DB / Promo-Markt / Dynamik / version; full status remains in tooltip.
+- Budget, platform and generate action condensed into one toolbar.
+- Primary summary reduced to five KPIs: Budget, Einkauf, Slots, Specials, Profit 1x.
+- Deep diagnostics moved behind collapsed "Mehr Analyse" disclosure.
+- Table moves substantially higher on desktop and mobile.
+- Trading logic, price logic, PostgreSQL, Discord and HA behavior unchanged.

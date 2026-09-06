@@ -1,0 +1,22 @@
+FC ÜV Brain v1.5 - Special Card Priority
+
+Ziel
+- Bei einem 300.000-Coin-Budget fuer 100 Karten soll die Liste nicht fast nur aus normalen Gold-Rares bestehen.
+- Spezialkarten werden als eigener Portfolio-Baustein bevorzugt, sofern sie dieselben Sicherheits- und Qualitaetsregeln bestehen.
+
+Regeln
+- 300k / 100 Karten: weiches Special-Ziel ca. 30/100.
+- Das Ziel ist NICHT hart. Ein teures oder schwaches Special wird nicht nur wegen seiner Version genommen.
+- Rating-Untergrenze 82 bei 300k bleibt fuer ALLE Kartentypen bestehen.
+- Bronze bleibt hart gesperrt.
+- Non-Rare-Gates bleiben unveraendert.
+- Budget, Risiko, Reserve-Feasibility, Live-Preis und Trade-Qualitaet schlagen die Special-Prioritaet.
+- Wenn gute Specials fehlen, darf die Liste unter dem Ziel bleiben.
+- Kontrollierte Wiederholungen bleiben nur der Feasibility-Fallback, wenn 100 hochwertige Slots sonst nicht ins Budget passen.
+
+Transparenz
+- Die UI zeigt Special Cards sowie Special-Ziel (weich).
+
+v1.6 Hinweis
+- Das alte v1.5 Rating >=82 ist historischer Stand.
+- v1.6 setzt darüber den Season-Phase-Rating-Guard; im FC26-Endgame gilt 85+, mit 84er-Special-Ausnahme nur bei starkem belegtem Demand.

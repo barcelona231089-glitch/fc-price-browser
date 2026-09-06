@@ -1,0 +1,18 @@
+FC ÜV Brain v1.9 - Budget Feasibility Fallback
+
+Problem in v1.8
+- Wenn STRICT Demand-Evidence selbst an der 83+ Endgame-Untergrenze noch nicht als budget-feasible erkannt wurde, blieb chosenFloor intern auf dem bevorzugten 85/86+-Ziel.
+- Dadurch konnte die UI trotz 300k Budget weiterhin Mindestbudgets um 700k+ melden.
+
+Fix in v1.9
+- Wenn STRICT keine finanzierbare 100er-Liste findet, wird die sichere Endgame-Fallback-Untergrenze 83+ tatsächlich aktiviert.
+- Danach wird einmal BALANCED-LIQUIDITY geprüft.
+- BALANCED nutzt keine erfundenen Games/Sales. Es verlangt starke vorhandene FUT.GG-basierte Nachfrage-, Sale-Likelihood-, Trade-Quality-, Repeatability- und Datenconfidence-Signale.
+- Je weiter eine Karte unter dem bevorzugten Rating liegt, desto stärker muss die Liquiditaets-Evidence sein.
+- Base Common 83-84 bleibt weiterhin an den separaten Verified-Demand-Gate gebunden.
+- 79/80/81 bleiben im aktuellen FC26-Endgame ausgeschlossen.
+- Bronze bleibt hart gesperrt.
+- Maximal 2 exakte Kopien bleiben unveraendert.
+
+Ziel
+- 300k ist eine harte Portfolio-Vorgabe, ohne wieder auf blindes Low-Rating-Fuellmaterial zurueckzufallen.

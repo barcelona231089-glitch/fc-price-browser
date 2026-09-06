@@ -1,0 +1,23 @@
+FC ÜV Brain v2.4.3 — Live Recheck Responsiveness Fix
+
+Problem observed on Wispbyte:
+- Clicking “Liste live prüfen” could look like nothing happened.
+- Since v2.4 saved-list support, the live recheck persisted 100 per-slot results before responding.
+- Persistence used one SQL UPDATE per slot, causing 100+ sequential PostgreSQL round trips on a remote DB.
+- The recheck route was also still GET even though it now changes persisted state.
+
+Fix:
+- saveListRecheck now persists all slot payloads with one set-based PostgreSQL UPDATE via jsonb_to_recordset, plus one list-header UPDATE.
+- Frontend live recheck now uses POST with cache:no-store.
+- GET remains as a compatibility alias.
+- UI immediately shows “Live-Prüfung läuft…” so the click is visible before the server response.
+- 90-second client timeout produces an explicit diagnostic instead of appearing frozen forever.
+- Refreshing the saved-list selector no longer blocks completion of an already successful live recheck.
+
+Unchanged:
+- v2.4.2 safety reserve / Top-100 selection
+- normal-card minimum rating 82
+- snapshot v2.3.6 behavior
+- live price safety semantics
+- rebalance logic
+- HA / Discord / Trader Brain server core

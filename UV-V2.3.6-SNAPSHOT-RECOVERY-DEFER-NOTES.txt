@@ -1,0 +1,29 @@
+UV Brain v2.3.6 — SNAPSHOT RECOVERY DEFER FIX
+
+Ziel
+- Den verbliebenen irreführenden Background-History-Fehler "Shared Trader Brain market snapshot is not ready yet" während kurzer FUT.GG-RECOVERING-Fenster beseitigen.
+- Keine neue Markt-/Trading-Funktion hinzufügen. Stabilität vor Features.
+
+Fix
+- Der Background-History-Monitor bleibt STRICT LIVE. Er schreibt weiterhin keinen RECENT_SAFE Snapshot als frische Preis-Historie.
+- UV_SHARED_MARKET_NOT_READY während einer kurzen Recovery wird nun als DEFERRED behandelt, nicht als harter/sticky lastError.
+- Nach einem Deferred-Lauf erfolgt ein schneller Retry nach 10 Sekunden statt erst auf das nächste normale 60-Sekunden-Intervall zu warten.
+- Der letzte vollständig erfolgreiche History-Lauf bleibt im Status erhalten.
+- Zusätzliche Diagnosefelder: consideredCards, deferredAt, deferredReason.
+- Das bestehende Feld cards behält seine bisherige Bedeutung: tatsächlich neu in die History eingefügte Datensätze, nicht die Gesamtgröße des Trader-Snapshots.
+
+Unverändert
+- 100-Karten-Generierung darf während FUT.GG RECOVERING weiterhin nur den höchstens 5 Minuten alten RECENT_SAFE Snapshot verwenden, wenn die Processing-Pipeline gesund ist.
+- Live-Recheck bleibt strict live.
+- Rebalance bleibt strict live.
+- History-Daten bleiben strict live.
+- Bei echter UNHEALTHY-Lage bleibt fail-closed bestehen.
+- Normale/Base-Karten unter Rating 82 bleiben hart gesperrt.
+- Spezialkarten unter 82 brauchen weiterhin starke verifizierte Nachfrage.
+- HA, PostgreSQL, Discord und Trader-Brain-Core wurden nicht verändert.
+
+Verifikation
+- node --test: 114/114 bestanden.
+- HA-Tests enthalten und bestanden.
+- node --check wird über alle JS/MJS-Dateien ausgeführt.
+- server.js bleibt gegenüber v2.3.5 unverändert.

@@ -1,0 +1,27 @@
+UV Brain v2.3.4 — HARD-100 BUDGET-ADAPTIVE SELLABILITY
+
+Observed live failure fixed
+- v2.3.3 could find 100 structurally valid sellability slots, but the cheapest admissible 100 cost about 919,300 Coins for a 300,000-Coin budget.
+- Root cause: the fallback still used absolute endgame-quality/selection thresholds before it considered the user's budget per slot.
+- At 300,000 / 100, the portfolio needs an average buy ceiling of about 3,000 Coins per slot. Expensive 90+ cards cannot dominate that portfolio even if they have excellent demand.
+
+v2.3.4 behavior
+- Strict candidate and sellability ladders remain first choice.
+- If 100 safe slots are still mathematically too expensive, a second budget-adaptive ladder activates.
+- Target slot price is derived from budget / requested slots.
+- Cheap Rare/Special cards may bypass the late-cycle rating/selection proxy only when several independent sellability signals agree.
+- Evidence includes FUT.GG usage/popularity/momentum, FUTBIN Games/Popular Rank/real sold-history when configured, sale-likelihood, price activity, trend, repeatability, confidence and reported outcomes.
+- The fallback is staged: BUDGET_CORE, BUDGET_BALANCED, BUDGET_CHEAP_DEMAND, BUDGET_FEASIBILITY, BUDGET_LAST_SAFE.
+- Bronze remains hard blocked.
+- Gold Non-Rare <=82 remains hard blocked.
+- Gold Non-Rare 83-84 still requires verified demand evidence.
+- Severe risk, source divergence, strong negative trend and rejected reported outcomes remain blocked.
+- Unique-first behavior remains.
+- Max 2 copies of the same exact card.
+- Max 3 portfolio slots for the same footballer.
+- No shortened list is returned. If even the budget-adaptive safety ladder cannot produce 100 safe slots, the app still fails honestly instead of forcing dead filler.
+
+Verification
+- 112/112 automated tests passed.
+- 6/6 HA tests passed.
+- Node syntax check passed for 31 JS/MJS files.

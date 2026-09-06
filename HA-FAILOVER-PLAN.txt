@@ -1,0 +1,95 @@
+FC Trader Brain + ÜV Brain — HA / Failover v1.0
+================================================
+
+Ziel
+----
+Quaxly bleibt der normale aktive Server. Eine zweite Instanz kann denselben Build
+und dieselbe PostgreSQL-Datenbank verwenden, bleibt aber passiv. Nur der Besitzer
+des PostgreSQL-Lease darf Marktloops, Discord, ÜV-History/Learning und Schreib-APIs
+ausführen.
+
+Sicherheitsprinzip
+------------------
+- PostgreSQL-Tabelle: fc_runtime_leader
+- Lease: standardmäßig 75 Sekunden
+- Heartbeat: standardmäßig alle 20 Sekunden
+- Standby übernimmt erst nach Ablauf des aktiven Lease.
+- Kein Auto-Preemption/Flapping: Wenn Standby übernommen hat, bleibt er Leader,
+  bis er ausfällt oder sauber beendet wird.
+- Bei PostgreSQL-/Lease-Verlust arbeitet der bisherige Leader nur bis zum lokal
+  bekannten Lease-Ende weiter und geht danach fail-closed auf STANDBY.
+- Standby loggt sich nicht in Discord ein und startet keine Markt-/Learning-Loops.
+- POST/PUT/PATCH/DELETE sind auf Standby read-only gesperrt.
+- ÜV Generate/Recheck/Rebalance/Feedback sind auf Standby gesperrt.
+
+Keine neuen Secrets erforderlich
+--------------------------------
+HA nutzt die bereits vorhandene DATABASE_URL. Es wird kein neuer Schlüssel verlangt.
+Optionale, NICHT geheime Labels können später gesetzt werden:
+- FC_INSTANCE_ID=quaxly-primary bzw. standby-1
+- FC_HA_PRIORITY=100 bzw. 50 (aktuell Diagnose/Operator-Hinweis; kein Preemption)
+- FC_HA_LEASE_SECONDS=75
+- FC_HA_HEARTBEAT_SECONDS=20
+- FC_HA_ENABLED=true
+Ohne diese Variablen startet HA bei vorhandener DATABASE_URL automatisch und nutzt
+Server-UUID/HOSTNAME als Instance-ID.
+
+Status-Endpunkte
+----------------
+GET /api/ha/status
+  state=LEADER  -> aktive Instanz
+  state=STANDBY -> passive Ersatzinstanz
+
+GET /api/readiness
+  READY          -> aktiver Leader vollständig produktionsbereit
+  STANDBY_READY  -> gesunder Standby, absichtlich ohne Marktloop/Discord
+
+Primary-Deployment auf Quaxly
+-----------------------------
+1. server.js ersetzen.
+2. haCoordinator.js in den Projekt-Hauptordner hochladen.
+3. uv/ komplett durch den Build-Ordner ersetzen.
+4. Bestehende package.json/package-lock.json/ENV/DB/Discord-Konfiguration NICHT ändern.
+5. Restart.
+6. /api/ha/status prüfen: state sollte LEADER sein.
+7. /api/readiness prüfen: nach dem ersten Marktzyklus READY.
+
+Standby-Deployment
+------------------
+1. Zweite Node.js-Instanz bei einem anderen Host anlegen.
+2. Dieselben Projektdateien verwenden (inkl. traderBrain.js, package files und diesem Build).
+3. Vorhandene ENV-Konfiguration sicher auf den Standby übertragen. Secrets niemals im Chat posten.
+4. Standby starten.
+5. /api/ha/status prüfen: state muss STANDBY sein, leaderId zeigt die aktive Instanz.
+6. /api/readiness darf STANDBY_READY liefern.
+
+Failover-Test
+-------------
+1. Beide Instanzen laufen: Primary=LEADER, Ersatz=STANDBY.
+2. Primary absichtlich STOPPEN (nicht DB löschen, keine ENV ändern).
+3. Nach ca. 75-95 Sekunden /api/ha/status am Standby prüfen.
+4. Standby muss LEADER werden.
+5. Danach /api/readiness prüfen; nach Markt-Warmup muss READY erscheinen.
+6. Discord darf nur von der neuen Leader-Instanz senden.
+
+Failback
+--------
+Wenn Quaxly zurückkommt, bleibt Quaxly zunächst STANDBY, solange der Ersatzserver
+Leader ist. Das ist absichtlich so und verhindert Ping-Pong. Für geplanten Failback:
+1. Quaxly starten und STANDBY_READY bestätigen.
+2. Aktuellen Ersatz-Leader sauber stoppen.
+3. Quaxly übernimmt den freigegebenen Lease innerhalb des nächsten HA-Ticks.
+
+Ausfall der gemeinsamen PostgreSQL-DB
+-------------------------------------
+Beide Server gehen nach Ablauf des Lease fail-closed. Das verhindert Split-Brain.
+Ohne zentrale DB gibt es bewusst keinen automatischen aktiven Trading-/Discord-Betrieb.
+
+Unverändert
+-----------
+- Trader-Brain-Handelslogik bleibt v10.61.
+- ÜV-Auswahllogik bleibt v2.1 Promo + Live Market Adaptive.
+- FUT.GG bleibt Primärquelle.
+- FUTBIN bleibt Parse-API-Zweitquelle.
+- Keine direkten FUTBIN-Scrapes.
+- Keine erfundenen Games/Sales-Daten.

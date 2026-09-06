@@ -1,0 +1,24 @@
+FC ÜV Brain v2.4.2 — 82+ Budget Safety Reserve
+
+Observed live issue
+- v2.4.1 correctly isolated the Top-100 score from the safety selection score, but a real 300k generation still stopped at 93/100 affordable positions.
+- The remaining bottleneck was the sellability fallback itself: average but still hard-safe 82+ Base Rares could be filtered out before the budget Top-100 optimizer compared them.
+
+Fix
+- Adds a final Budget Safety Reserve after the existing strict and budget-adaptive sellability ladders.
+- Hard safety remains mandatory: no Bronze, no normal card below 82, low-rated Non-Rare rules remain, severe price crash/source divergence remains blocked, and reported REJECT outcomes remain blocked.
+- Average-but-safe 82+ Rares can enter the final candidate universe, where budgetTop100Score ranks them instead of using a pre-ranking demand cutoff as a hard admission rule.
+- This reserve is only used when the existing pool cannot mathematically produce all 100 slots inside the user's budget.
+
+Diagnostics
+- The 100-Slot-Guard now reports the Safety-Reserve stage if even the reserve cannot reach 100.
+- A missing minimum-cost estimate no longer displays as “0 Coins”.
+
+Unchanged
+- saved PostgreSQL lists and reopen flow
+- persisted live KEEP/REPRICE/WAIT/DROP state
+- snapshot recovery/defer from v2.3.6
+- normal-card 82 floor
+- Bronze hard block
+- max 2 exact copies / max 3 slots per player
+- HA, Discord, PostgreSQL and Trader Brain server code

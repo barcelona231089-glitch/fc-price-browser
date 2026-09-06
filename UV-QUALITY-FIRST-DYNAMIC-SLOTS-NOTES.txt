@@ -1,0 +1,22 @@
+FC ÜV Brain v2.0 - Quality-First Dynamic Slots
+
+Problem
+- 300.000 Coins sollen als harte Budgetgrenze gelten.
+- Im aktuellen FC26-Endgame sind 100 brauchbare 85+-Karten häufig nicht für dieses Gesamtbudget verfügbar.
+- Ratings weiter zu senken widerspricht dem Ziel, nur aktuell relevante/liquide Karten zu handeln.
+
+Lösung
+- Ziel bleibt maximal 100 Slots.
+- Season + Live-Markt bestimmen den Qualitätsfloor.
+- Ist ein 100er-Portfolio mit diesem Qualitätsfloor nicht finanzierbar, wird die Slot-Anzahl automatisch reduziert.
+- Der Optimizer nutzt das Budget anschließend über die verbleibenden hochwertigen Positionen.
+- Bei besserem Markt oder höherem Budget steigt die Slot-Anzahl automatisch wieder bis 100.
+
+Unverändert
+- FUT.GG primär
+- FUTBIN nur über Parse
+- keine erfundenen Games/Sales
+- Bronze hard block
+- max. 2 exakte Kopien
+- Special-Priority
+- Live-Recheck vor Kauf

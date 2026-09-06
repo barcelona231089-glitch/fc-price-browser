@@ -1,0 +1,32 @@
+FC ÜV Brain v1.8 - Budget-aware Dynamic Market Policy
+
+Ziel
+Die App soll weder starr nach Kalender-Rating handeln noch das 100-Karten-Budget mit schwachen Low-Rating-Füllern retten. Season und Live-Markt setzen zuerst ein Qualitätsziel. Danach wird geprüft, ob 100 geeignete Karten mit maximal 2 exakten Kopien in das eingegebene Budget passen.
+
+Qualitätsziel
+- Basis = Budget-Floor + Season-Phase-Prior.
+- Das Live-Liquiditätsprofil darf dieses Ziel um maximal +1 anheben.
+- Berücksichtigt werden Gameplay-/Popularity-Demand, Sale-Likelihood, Trade-Qualität, Repeatability, Datenkonfidenz, vorhandene FUTBIN Games/Sales-Evidence und eigene Outcomes.
+- In FC26 ENDGAME startet das Qualitätsziel bei 85+ und kann auf 86+ steigen.
+
+Budgetbewusste Lockerung
+- Ist das Qualitätsziel für 100 Karten nicht finanzierbar, prüft der Brain Ratingstufen schrittweise nach unten.
+- FC26 ENDGAME fällt bei 300k/100 niemals unter Rating 83.
+- Jede Karte unter dem bevorzugten Qualitätsziel braucht belegten Demand/Liquidität.
+- Belegte Nachfrage kann aus FUT.GG Usage/Most Used/Momentum, echten FUTBIN Games/Sales sobald Parse sie liefert oder eigenen Outcomes kommen.
+- Billige 83/84 ohne belegten Demand werden nicht als Budgetfüller zugelassen.
+- Gold Non-Rare <=82 bleibt hart blockiert; Non-Rare 83-84 braucht weiterhin belegte Nachfrage.
+- Wenn selbst die demand-geprüfte Untergrenze nicht in das Budget passt, meldet die App ehrlich, dass das Budget zu klein ist.
+
+Special Mix
+- Das 30%-Ziel bei 300k bleibt nur ein Budget-Prior.
+- Das tatsächliche Special-Ziel wird aus dem qualifizierten Markt abgeleitet und bleibt zwischen 12% und 45%.
+- Schlechte oder zu teure Specials werden nicht erzwungen.
+
+Unverändert
+- Bronze hart blockiert.
+- Maximal 2 Exemplare derselben exakten Karte.
+- Maximal 3 Slots desselben Spielers über verschiedene Versionen.
+- Budget wird nicht überschritten.
+- Live-Recheck bleibt Pflicht vor dem Kaufen.
+- FUTBIN Games/Sales werden nur verwendet, wenn Parse strukturierte echte Daten liefert. Keine erfundenen Werte.

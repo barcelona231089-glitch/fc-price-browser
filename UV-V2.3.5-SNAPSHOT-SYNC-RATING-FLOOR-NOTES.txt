@@ -1,0 +1,26 @@
+UV Brain v2.3.5 — SNAPSHOT SYNC + NORMAL 82 FLOOR
+
+Ziel
+- Den sporadischen Fehler "Shared Trader Brain market snapshot is not ready yet" während der kurzen FUT.GG-Recovery-Quarantäne entschärfen, ohne den Pflicht-Live-Recheck vor dem Kauf zu verwässern.
+- Normale Karten unter Rating 82 vollständig aus ÜV entfernen.
+
+Snapshot-Sync
+- Die 100-Karten-GENERIERUNG darf während FUT.GG Status RECOVERING den letzten vollständig verarbeiteten Trader-Brain-Snapshot verwenden.
+- Dieser RECENT_SAFE Snapshot darf höchstens 5 Minuten alt sein.
+- Der Processing-Status muss weiterhin HEALTHY sein.
+- Bei FUT.GG UNHEALTHY, fehlendem Snapshot oder zu altem Snapshot wird weiterhin fail-closed mit UV_SHARED_MARKET_NOT_READY blockiert.
+- Live-Recheck, Rebalance und Background-History bleiben strikt live und verwenden keinen RECENT_SAFE-Fallback.
+- Eine aus RECENT_SAFE erzeugte Liste trägt requiresLiveRecheck=true und weist ausdrücklich darauf hin, dass vor jedem Kauf der Live-Recheck Pflicht ist.
+
+Rating-Floor
+- Normale/Base-Karten unter Rating 82 sind hart gesperrt, auch im Hard-100- und Budget-Adaptive-Fallback.
+- Eine Spezialkarte unter 82 darf nur mit stark belegtem Demand durch strukturierte/echte Evidenz passieren.
+- Bronze bleibt hart gesperrt.
+- Gold Non-Rare <=82 bleibt hart gesperrt; 83-84 braucht belegte Nachfrage.
+- Maximal 2 identische Karten und maximal 3 Slots desselben Fußballers bleiben unverändert.
+
+Verifikation
+- node --test: 113/113 bestanden.
+- HA-Tests: 6/6 bestanden.
+- node --check: 31/31 JS/MJS Dateien bestanden.
+- Kein Live-Produktionsclaim: Verhalten muss nach Deployment auf Wispbyte mit echtem FUT.GG-Recovery-Fenster und 300k/100-Liste bestätigt werden.

@@ -1,0 +1,27 @@
+UV Brain v2.3 — HARD 100 + SELLABILITY FIRST
+
+Goal
+- Every generated portfolio targets exactly 100 slots.
+- Total KAUFEN MAX remains <= user budget.
+- Do not burn the budget on a short list of expensive high-rated cards.
+
+Selection priority
+1. FUT.GG Most Used / gameplay popularity and community/pro usage
+2. FUT.GG Momentum and live promo relevance
+3. FUTBIN Games, Popular Rank and real sold-history evidence ONLY when the configured Parse API returns those structured fields
+4. Price activity, stable/healthy trend and source agreement
+5. Own reported outcomes/performance, sale-likelihood and repeatability
+6. Trade quality, risk and capital-lock control
+
+100-slot feasibility
+- Start with the live-market preferred rating band.
+- If 100 cards do not fit the total budget, relax the rating floor step-by-step.
+- Cards below the preferred live floor must prove demand/sellability.
+- Bronze stays hard blocked.
+- Gold Non-Rare <=82 stays hard blocked. 83-84 Non-Rare still needs verified demand.
+- Maximum 2 copies of an exact card, unique-first.
+- A weak/dead filler card is not admitted merely to reach 100. If the market truly has no safe 100-card pool, fail explicitly rather than output a shortened fake-complete list.
+
+Important deployment note
+- FUTBIN evidence is optional and fail-closed. Set FUTBIN_PARSE_API_KEY on the active host if FUTBIN Games/Sales/Popular Rank should participate.
+- No direct FUTBIN scraping and no invented sales.

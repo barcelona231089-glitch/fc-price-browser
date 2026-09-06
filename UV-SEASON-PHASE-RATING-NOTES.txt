@@ -1,0 +1,46 @@
+FC ÜV Brain v1.6 - Season Phase Rating Guard
+
+Ziel
+- Die Rating-Anforderungen passen sich nicht nur an das Budget, sondern auch an die Phase des aktuellen FC-Spielzyklus an.
+- Spaet im FC26-Zyklus sollen keine technisch guenstigen, aber praktisch kaum noch gespielten Low-Rating-Karten die Liste fuellen.
+- Beim FC27-Start wird die Grenze automatisch wieder lockerer, damit Early-Game-Karten nicht faelschlich ausgeschlossen werden.
+
+Season-Phasen
+- EARLY: Kalenderjahr liegt noch vor dem FC-Jahr (z. B. FC27 im September 2026).
+- MID: Januar-Februar des FC-Jahres.
+- MATURE: Maerz-Mai.
+- LATE: Juni-Juli.
+- ENDGAME: August und spaeter im FC-Jahr.
+
+Rating-Regeln
+- Budget-Floor bleibt als Basis aktiv.
+- MID: mindestens 82.
+- MATURE: mindestens 83.
+- LATE: mindestens 84.
+- ENDGAME: mindestens 85.
+- FC26 am 01.09.2026 => ENDGAME => normale Karten mindestens Rating 85.
+- Rating 84 Special ist im ENDGAME nur als Ausnahme erlaubt, wenn starker belegter Demand vorhanden ist.
+
+Starker Demand fuer die 84er-Special-Ausnahme
+Mindestens eines dieser belegten Signale:
+- FUTBIN Games >= 1.000.000 (nur wenn strukturiert via Parse geliefert),
+- FUTBIN Popular Rank <= 200 (nur wenn strukturiert via Parse geliefert),
+- mindestens 5 echte strukturierte FUTBIN Sold-Samples,
+- Community Usage >= 2,5 %, Pro Usage >= 1 % oder Usage >= 3 %,
+- Momentum + hoher Gameplay-Demand,
+- hoher Demand-Score mit ausreichender Datenqualitaet,
+- oder ausreichend eigene Outcomes mit guter Sell-Rate.
+
+Duplikate
+- Maximal 2 Exemplare derselben exakten Karte.
+- Keine dritte Kopie mehr als Budget-Fallback.
+- Wenn 100 geeignete Karten mit maximal zwei exakten Kopien das Budget nicht einhalten koennen, meldet die App das reale Mindestbudget.
+- Die Rating-Regel wird in diesem Fall NICHT aufgeweicht.
+
+Weiterhin aktiv
+- Bronze hard block.
+- Non-Rare Demand Gate.
+- Special Priority / weiches Special-Ziel.
+- FUT.GG Livepreise und Nachfrage.
+- FUTBIN via Parse nur bei echten strukturierten Daten.
+- PostgreSQL Outcome-/Preislernen.

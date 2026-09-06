@@ -1,0 +1,30 @@
+UV Brain v2.3.2 — HARD 100 PORTFOLIO SELLABILITY FALLBACK
+
+Problem fixed
+- v2.3.1 could still stop at 52/100 on the real FC26 300k market.
+- The remaining bottleneck was not the optimizer. The normal candidate gate could leave too few unique affordable cards before the optimizer was allowed to build 100 positions.
+- In late-cycle markets, rating by itself is a poor proxy for liquidity. Good cheap Rare cards can be more sellable than expensive high-rated cards.
+
+v2.3.2 behavior
+- Normal strict candidate pipeline remains first choice.
+- If fewer than 100 affordable positions remain, a dedicated portfolio sellability ladder expands from the fully scored market universe.
+- Dynamic rating-floor rejects may be reconsidered ONLY when live sellability evidence is coherent.
+- Sellability uses FUT.GG usage/popularity/momentum, FUTBIN Games/Sales/Popular Rank when configured, sale-likelihood, price activity, trend, trade quality, repeatability and reported performance.
+- FUTBIN is optional. FUT.GG + market/activity/trend evidence can carry a candidate when FUTBIN is not configured.
+
+Hard blocks never bypassed
+- Bronze blocked.
+- Gold Non-Rare <=82 blocked.
+- Gold Non-Rare 83-84 still needs verified demand evidence.
+- severe risk >=24 blocked.
+- history trend below -10 blocked.
+- source divergence >25% blocked.
+- trade quality below 42 blocked.
+- weak reported-outcome REJECT blocked.
+- maximum 2 copies of the exact same card remains.
+
+Portfolio contract
+- requested 100 means 100.
+- total buy budget may not exceed the user budget.
+- optimizer reserves capital for remaining slots before choosing expensive cards.
+- if even the final sellability ladder cannot prove 100 safe positions, it fails explicitly rather than adding dead filler.

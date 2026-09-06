@@ -1,0 +1,17 @@
+FC ÜV Brain v1.0 - Trader Method Consensus + Bronze Hard Block
+
+Added public-methodology proxies:
+- SwepixTV: public FC26 Overpriced Selling / 100k list-building methodology
+- MM___TV: public low-budget ÜV / turnover-oriented methodology references
+- Noah x Kai: public FC26 ÜV, market-update and low-budget trading methodology
+
+Important semantics:
+- These are methodology proxies only. They do NOT mean a named trader currently recommends a specific card.
+- No paid Patreon/Discord player picks are copied, scraped or imported.
+- The consensus can only nudge the existing trader prior by at most +/-3 points.
+- FUT.GG/FUTBIN, risk checks, PostgreSQL history, live recheck and reported sold/unsold/expired outcomes remain the hard evidence layers.
+
+Safety:
+- Bronze cards are hard rejected by the candidate gate.
+- Existing FUT.GG universe already starts at rating 75; the new Bronze guard is a second defensive layer.
+- PGP/Games, Player Sales History and Popular Players remain false when no reliable public source exists.

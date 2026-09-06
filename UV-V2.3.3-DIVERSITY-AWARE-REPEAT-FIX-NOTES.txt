@@ -1,0 +1,16 @@
+UV Brain v2.3.3 — DIVERSITY-AWARE HARD-100 REPEAT FIX
+
+Observed live failure fixed
+- v2.3.2 could report Sellability-Fallback 100/100 while the final affordability guard still saw only ~63/100.
+- Root cause: buildOptimizationPool decided that repeat fallback was unnecessary from raw unique-card count + raw cheapest sum, but ignored the real max-three-slots-per-player diversity cap.
+- In markets with many cheap versions concentrated on the same footballers, 100+ unique card objects can exist while fewer than 100 unique portfolio slots are actually usable.
+
+v2.3.3 behavior
+- Unique-first remains the default.
+- Before disabling repeats, the optimizer now checks unique-only feasibility with the same per-player cap used by the live portfolio.
+- If unique-only cannot really reach 100 within budget, the already-approved second exact copy is enabled.
+- Max exact copies remains 2.
+- Max portfolio slots per footballer remains 3.
+- Sellability/safety gates are not weakened by this fix.
+- Bronze and weak Non-Rare blocks remain unchanged.
+- Error diagnostics now distinguish structural slots from the minimum cost of the admissible 100-slot set.

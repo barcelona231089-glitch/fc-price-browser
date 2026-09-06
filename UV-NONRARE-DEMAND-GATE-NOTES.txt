@@ -1,0 +1,23 @@
+FC ÜV Brain v1.2 - Non-Rare Demand Quality Gate
+
+Ziel
+- Niedrig geratete Gold Non-Rares sollen eine 100er-ÜV-Liste nicht mehr als billiges Budget-Füllmaterial dominieren.
+- Rare/Spezial und Karten mit belegter Gameplay-/Marktnachfrage bekommen Vorrang.
+
+Regeln
+1. Bronze: weiterhin hart gesperrt.
+2. Gold Base Common / Non-Rare Rating <= 82: hart gesperrt.
+3. Gold Base Common / Non-Rare Rating 83-84: nur zulässig, wenn Nachfrage wirklich belegt ist durch mindestens eines der vorhandenen Signale:
+   - FUT.GG Most-Used / echte Usage,
+   - FUT.GG Momentum,
+   - ausreichend hoher Demand/Popularity-Score mit Datensicherheit,
+   - FUTBIN Games/Popular-Rank, falls Parse diese strukturiert liefert,
+   - mindestens 3 echte FUTBIN sold samples, falls Parse sie strukturiert liefert,
+   - oder genügend eigene gemeldete Outcomes mit guter Sell-Rate.
+4. Base Common ab 85 bleibt möglich, wird ohne Nachfrage aber zurückgestuft.
+5. Bei vergleichbaren Karten erhält Base Rare einen Ranking-Bonus und Special einen etwas größeren Bonus.
+
+Wichtig
+- Keine Games/Sales werden erfunden.
+- FUTBIN wird weiterhin nicht direkt gescraped.
+- Der Budget-Optimizer bleibt aktiv und muss weiterhin 100 geeignete Karten innerhalb des Gesamtbudgets finden.
