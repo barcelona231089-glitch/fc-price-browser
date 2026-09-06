@@ -1,3 +1,5 @@
+import { Worker } from 'node:worker_threads';
+
 const clamp = (value, min, max) => Math.max(min, Math.min(max, Number(value)));
 
 export function createHaCoordinator({
@@ -22,7 +24,21 @@ export function createHaCoordinator({
   const heartbeatSec = clamp(heartbeatSeconds, 5, Math.max(5, leaseSec - 10));
   const prio = Math.round(clamp(priority, 1, 1000));
 
+  const dedicatedHeartbeatRequested =
+    String(process.env.FC_HA_DEDICATED_HEARTBEAT || 'true').trim().toLowerCase() !== 'false';
+  const dedicatedHeartbeatAvailable =
+    enabled && dedicatedHeartbeatRequested && Boolean(String(process.env.DATABASE_URL || '').trim());
+
   let timer = null;
+  let restartTimer = null;
+  let heartbeatWorker = null;
+  let workerStopping = false;
+  let workerReady = false;
+  let workerLastMessageAt = null;
+  let workerLastError = null;
+  let workerRestarts = 0;
+  let workerTransitionQueue = Promise.resolve();
+
   let tickBusy = false;
   let started = false;
   let leader = enabled ? false : true;
@@ -92,6 +108,164 @@ export function createHaCoordinator({
     return Number.isFinite(until) && now() < until - 2_000;
   }
 
+  function ensureFallbackTimer() {
+    if (!started || !enabled || timer) return;
+    timer = setInterval(() => {
+      tick().catch(error => logger.error?.('[HA] tick error:', error));
+    }, heartbeatSec * 1000);
+    timer.unref?.();
+  }
+
+  function clearFallbackTimer() {
+    if (timer) clearInterval(timer);
+    timer = null;
+  }
+
+  async function handleWorkerMessage(message) {
+    if (!message || typeof message !== 'object') return;
+    workerLastMessageAt = new Date(now()).toISOString();
+
+    if (message.type === 'ready') {
+      workerReady = true;
+      workerLastError = null;
+      clearFallbackTimer();
+      return;
+    }
+
+    if (message.type === 'fatal') {
+      workerReady = false;
+      workerLastError = String(message.error || 'heartbeat worker fatal error');
+      lastError = workerLastError;
+      logger.error?.('[HA] dedicated heartbeat worker fatal:', workerLastError);
+      ensureFallbackTimer();
+      return;
+    }
+
+    if (message.type !== 'heartbeat') return;
+
+    lastTickAt = new Date(now()).toISOString();
+    if (!message.ok) {
+      workerLastError = String(message.error || 'heartbeat worker error');
+      lastError = workerLastError;
+      logger.error?.('[HA] dedicated heartbeat worker error:', workerLastError);
+      if (leader && !localLeaseStillValid()) {
+        await setLeader(false, 'lease-expired-after-worker-db-error');
+      }
+      return;
+    }
+
+    workerReady = true;
+    workerLastError = null;
+    lastError = null;
+    lastDbOkAt = new Date(now()).toISOString();
+    if (message.row) applyRow(message.row);
+
+    if (message.owned) {
+      await setLeader(true, leader ? 'worker-lease-renewed' : 'worker-lease-acquired');
+    } else {
+      await setLeader(false, 'worker-lease-held-by-other-instance');
+    }
+  }
+
+  function spawnHeartbeatWorker() {
+    if (!dedicatedHeartbeatAvailable || !started || heartbeatWorker) return false;
+
+    workerStopping = false;
+    try {
+      const worker = new Worker(new URL('./haHeartbeatWorker.cjs', import.meta.url), {
+        workerData: {
+          lockName,
+          instanceId: id,
+          priority: prio,
+          leaseSeconds: leaseSec,
+          heartbeatSeconds: heartbeatSec,
+          metadataJson: safeMetadata()
+        }
+      });
+
+      heartbeatWorker = worker;
+      workerReady = false;
+
+      worker.on('message', message => {
+        workerTransitionQueue = workerTransitionQueue
+          .then(() => handleWorkerMessage(message))
+          .catch(error => {
+            workerLastError = String(error?.message || error);
+            lastError = workerLastError;
+            logger.error?.('[HA] heartbeat worker message handler error:', error);
+          });
+      });
+
+      worker.on('error', error => {
+        workerReady = false;
+        workerLastError = String(error?.message || error);
+        lastError = workerLastError;
+        logger.error?.('[HA] heartbeat worker thread error:', error);
+      });
+
+      worker.on('exit', code => {
+        const expected = workerStopping || !started;
+        heartbeatWorker = null;
+        workerReady = false;
+
+        if (expected) return;
+
+        workerRestarts += 1;
+        workerLastError = `heartbeat worker exited with code ${code}`;
+        lastError = workerLastError;
+        logger.error?.(`[HA] ${workerLastError}; falling back to main-thread heartbeat.`);
+        ensureFallbackTimer();
+
+        if (restartTimer) clearTimeout(restartTimer);
+        restartTimer = setTimeout(() => {
+          restartTimer = null;
+          if (!started || heartbeatWorker) return;
+          if (spawnHeartbeatWorker()) clearFallbackTimer();
+        }, Math.min(5_000, heartbeatSec * 1000));
+        restartTimer.unref?.();
+      });
+
+      worker.unref?.();
+      return true;
+    } catch (error) {
+      workerLastError = String(error?.message || error);
+      lastError = workerLastError;
+      logger.error?.('[HA] failed to start dedicated heartbeat worker:', error);
+      heartbeatWorker = null;
+      workerReady = false;
+      return false;
+    }
+  }
+
+  async function stopHeartbeatWorker() {
+    if (restartTimer) clearTimeout(restartTimer);
+    restartTimer = null;
+
+    const worker = heartbeatWorker;
+    if (!worker) return;
+
+    workerStopping = true;
+    heartbeatWorker = null;
+    workerReady = false;
+
+    try {
+      worker.postMessage({ type: 'stop' });
+    } catch {}
+
+    try {
+      await Promise.race([
+        new Promise(resolve => worker.once('exit', resolve)),
+        new Promise(resolve => setTimeout(resolve, 2_000))
+      ]);
+    } catch {}
+
+    try {
+      await worker.terminate();
+    } catch {}
+
+    workerStopping = false;
+  }
+
   async function tick() {
     if (!enabled || tickBusy) return status();
     tickBusy = true;
@@ -153,6 +327,7 @@ export function createHaCoordinator({
     if (started) return status();
     started = true;
     if (!enabled) return status();
+
     try {
       await ensureTable();
       lastDbOkAt = new Date(now()).toISOString();
@@ -161,11 +336,13 @@ export function createHaCoordinator({
       lastError = String(error?.message || error);
       logger.error?.('[HA] init error:', error);
     }
+
     await tick();
-    timer = setInterval(() => {
-      tick().catch(error => logger.error?.('[HA] tick error:', error));
-    }, heartbeatSec * 1000);
-    timer.unref?.();
+
+    if (!spawnHeartbeatWorker()) {
+      ensureFallbackTimer();
+    }
+
     return status();
   }
 
@@ -189,9 +366,9 @@ export function createHaCoordinator({
   }
 
   async function stop({ releaseLease = true } = {}) {
-    if (timer) clearInterval(timer);
-    timer = null;
     started = false;
+    clearFallbackTimer();
+    await stopHeartbeatWorker();
     if (releaseLease) await release();
   }
 
@@ -212,6 +389,15 @@ export function createHaCoordinator({
       leaderPriority,
       leaseSeconds: leaseSec,
       heartbeatSeconds: heartbeatSec,
+      heartbeatMode: dedicatedHeartbeatAvailable
+        ? heartbeatWorker
+          ? 'WORKER_THREAD'
+          : 'MAIN_THREAD_FALLBACK'
+        : 'MAIN_THREAD',
+      heartbeatWorkerReady: workerReady,
+      heartbeatWorkerLastMessageAt: workerLastMessageAt,
+      heartbeatWorkerLastError: workerLastError,
+      heartbeatWorkerRestarts: workerRestarts,
       leaseUntil,
       leaseRemainingSeconds: Number.isFinite(untilMs) ? Math.max(0, Math.round((untilMs - now()) / 1000)) : null,
       acquiredAt,
