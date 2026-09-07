@@ -16,6 +16,177 @@ let universeBuiltAt = 0;
 const bulkPriceCache = new Map();
 const bulkInflight = new Map();
 
+// v2.10.1: FUT.GG's batch player-prices endpoint exposes whether an item is an
+// SBC reward, Objective/Season reward or extinct. The R2 bulk price feed alone
+// is not sufficient for an ÜV buy list because reward cards can carry a numeric
+// value that is not a transferable market BIN. Cache these confirmations briefly
+// so a generation/recheck does not hammer the endpoint.
+const marketVerificationCache = new Map();
+const MARKET_VERIFY_TTL_MS = Math.max(60_000, Math.min(PRICE_REFRESH_MS, 10 * 60_000));
+const MARKET_VERIFY_BATCH_SIZE = 50;
+
+function trueFlag(value) {
+  return value === true || value === 1 || String(value).toLowerCase() === 'true';
+}
+
+export function classifyFutggMarketRow(row = {}) {
+  const eaId = Number(row?.eaId);
+  const rawPrice = Number(row?.price);
+  const price = Number.isFinite(rawPrice) && rawPrice > 0 && rawPrice !== -1 ? rawPrice : null;
+  const isSbc = trueFlag(row?.isSbc);
+  const isObjective = trueFlag(row?.isObjective);
+  const isExtinct = trueFlag(row?.isExtinct);
+  const seasonPass = row?.premiumSeasonPassLevel != null || row?.standardSeasonPassLevel != null;
+
+  let rejectionReason = null;
+  if (isSbc) rejectionReason = 'SBC_REWARD';
+  else if (isObjective && seasonPass) rejectionReason = 'SEASON_REWARD';
+  else if (isObjective) rejectionReason = 'OBJECTIVE_REWARD';
+  else if (isExtinct) rejectionReason = 'EXTINCT_NO_LIVE_BIN';
+  else if (price == null) rejectionReason = 'NO_CONFIRMED_LIVE_BIN';
+
+  return {
+    eaId: Number.isFinite(eaId) ? eaId : null,
+    price,
+    isSbc,
+    isObjective,
+    isExtinct,
+    seasonPass,
+    premiumSeasonPassLevel: row?.premiumSeasonPassLevel ?? null,
+    standardSeasonPassLevel: row?.standardSeasonPassLevel ?? null,
+    marketTradeableConfirmed: rejectionReason == null,
+    rejectionReason
+  };
+}
+
+async function fetchFutggMarketVerificationBatch(ids, platform = 'console') {
+  const unique = [...new Set((Array.isArray(ids) ? ids : []).map(Number).filter(Number.isFinite))];
+  if (!unique.length) return [];
+  const params = unique.join(',');
+  const platformPart = platform === 'pc' ? '&platform=pc' : '';
+  const url = `https://www.fut.gg/api/fut/player-prices/${GAME_YEAR}/?ids=${encodeURIComponent(params)}${platformPart}`;
+  const json = await fetchJson(url);
+  if (!Array.isArray(json?.data)) throw new Error('Unexpected FUT.GG player-prices verification format');
+  return json.data;
+}
+
+/**
+ * Confirm that candidates have an actual transferable market price.
+ *
+ * Input order is priority order. We verify 50-card batches until minConfirmed
+ * safe candidates are available (or maxChecks is reached). Anything not
+ * explicitly confirmed is omitted from the returned cards: fail closed.
+ */
+export async function confirmTradeableMarketCards(cards = [], platform = 'console', options = {}) {
+  const input = Array.isArray(cards) ? cards : [];
+  const minConfirmed = Math.max(0, Number(options.minConfirmed || 0));
+  const maxChecks = Math.max(MARKET_VERIFY_BATCH_SIZE, Number(options.maxChecks || input.length || MARKET_VERIFY_BATCH_SIZE));
+  const normalizedPlatform = platform === 'pc' ? 'pc' : 'console';
+  const now = Date.now();
+  const ordered = [];
+  const seen = new Set();
+  for (const card of input) {
+    const id = Number(card?.eaId);
+    if (!Number.isFinite(id) || seen.has(String(id))) continue;
+    seen.add(String(id));
+    ordered.push(card);
+    if (ordered.length >= maxChecks) break;
+  }
+
+  const confirmedById = new Map();
+  const rejectedById = new Map();
+  let checked = 0;
+  let cacheHits = 0;
+  let apiCalls = 0;
+  let failedBatches = 0;
+  let cursor = 0;
+
+  const consumeRow = (id, rawRow) => {
+    const classified = classifyFutggMarketRow(rawRow || { eaId: id });
+    const key = `${normalizedPlatform}:${id}`;
+    marketVerificationCache.set(key, { savedAt: Date.now(), raw: rawRow || null, classified });
+    if (classified.marketTradeableConfirmed) confirmedById.set(String(id), classified);
+    else rejectedById.set(String(id), classified.rejectionReason || 'UNVERIFIED');
+  };
+
+  // First use fresh cache entries without spending requests.
+  for (const card of ordered) {
+    const id = Number(card.eaId);
+    const cached = marketVerificationCache.get(`${normalizedPlatform}:${id}`);
+    if (!cached || now - cached.savedAt > MARKET_VERIFY_TTL_MS) continue;
+    cacheHits += 1;
+    if (cached.classified?.marketTradeableConfirmed) confirmedById.set(String(id), cached.classified);
+    else rejectedById.set(String(id), cached.classified?.rejectionReason || 'UNVERIFIED');
+  }
+
+  while (cursor < ordered.length && (minConfirmed <= 0 || confirmedById.size < minConfirmed)) {
+    const batchCards = [];
+    while (cursor < ordered.length && batchCards.length < MARKET_VERIFY_BATCH_SIZE) {
+      const card = ordered[cursor++];
+      const id = Number(card.eaId);
+      const key = `${normalizedPlatform}:${id}`;
+      const cached = marketVerificationCache.get(key);
+      if (cached && now - cached.savedAt <= MARKET_VERIFY_TTL_MS) continue;
+      batchCards.push(card);
+    }
+    if (!batchCards.length) continue;
+    checked += batchCards.length;
+    apiCalls += 1;
+    try {
+      const rows = await fetchFutggMarketVerificationBatch(batchCards.map(c => c.eaId), normalizedPlatform);
+      const rowById = new Map(rows.map(row => [String(row?.eaId), row]));
+      for (const card of batchCards) {
+        const id = Number(card.eaId);
+        const raw = rowById.get(String(id));
+        if (raw) consumeRow(id, raw);
+        else rejectedById.set(String(id), 'NO_VERIFICATION_ROW');
+      }
+    } catch (error) {
+      failedBatches += 1;
+      for (const card of batchCards) rejectedById.set(String(card.eaId), 'VERIFY_REQUEST_FAILED');
+    }
+  }
+
+  const out = [];
+  for (const card of ordered) {
+    const id = String(card.eaId);
+    const verified = confirmedById.get(id);
+    if (!verified) continue;
+    out.push({
+      ...card,
+      price: verified.price,
+      priceSource: 'FUT.GG player-prices VERIFIED MARKET',
+      marketTradeableConfirmed: true,
+      marketVerificationSource: 'FUT.GG player-prices',
+      marketVerificationAt: new Date().toISOString(),
+      marketVerificationIsSbc: false,
+      marketVerificationIsObjective: false,
+      marketVerificationIsExtinct: false
+    });
+  }
+
+  const rejectedReasons = {};
+  for (const reason of rejectedById.values()) rejectedReasons[reason] = (rejectedReasons[reason] || 0) + 1;
+  return {
+    cards: out,
+    diagnostics: {
+      inputCandidates: input.length,
+      priorityCandidates: ordered.length,
+      confirmedTradeable: out.length,
+      rejected: rejectedById.size,
+      rejectedReasons,
+      cacheHits,
+      checkedByApi: checked,
+      apiCalls,
+      failedBatches,
+      minConfirmed,
+      maxChecks,
+      failClosed: true,
+      source: 'FUT.GG player-prices'
+    }
+  };
+}
+
 function classifyCard(card) {
   const rarity = String(card.rarityName || '').toLowerCase();
   const group = String(card.rarityGroupName || '').toLowerCase();
