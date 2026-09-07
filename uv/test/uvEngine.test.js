@@ -809,3 +809,35 @@ test('v2.9.1 allocator rescue returns the full portfolio when greedy tier select
   assert.ok(out.total <= 100_000);
   assert.equal(out.allocationRescueUsed, true);
 });
+
+test('v2.9.3 1M premium guard blocks normal 84 filler when higher-tier supply is sufficient', () => {
+  const cards = [];
+  let id = 1;
+  for (let i = 0; i < 80; i++) cards.push({
+    eaId:id++, name:`Base84 ${i}`, overall:84, cardType:'Base Rare', rarityName:'Rare',
+    recommendedBuyPrice:9000, price:9000, budgetTop100Score:99, selectionScore:96,
+    tradeQualityScore:90, uvScore:90, riskPenalty:0, traderEndgameProfileActive:true
+  });
+  for (let i = 0; i < 130; i++) cards.push({
+    eaId:id++, name:`Base87 ${i}`, overall:87 + (i % 5), cardType:'Base Rare', rarityName:'Rare',
+    recommendedBuyPrice:9800, price:9800, budgetTop100Score:82, selectionScore:84,
+    tradeQualityScore:84, uvScore:84, riskPenalty:0, traderEndgameProfileActive:true
+  });
+  for (let i = 0; i < 25; i++) cards.push({
+    eaId:id++, name:`Special84 ${i}`, overall:84, cardType:'Special', rarityName:'Promo',
+    recommendedBuyPrice:10500, price:10500, budgetTop100Score:88, selectionScore:89,
+    tradeQualityScore:88, uvScore:88, riskPenalty:0, traderEndgameProfileActive:true
+  });
+
+  const out = optimizeList(cards, 1_000_000, 100);
+  const normal84OrLess = out.selected.filter(c => c.cardType !== 'Special' && c.overall <= 84).length;
+  const special84 = out.selected.filter(c => c.cardType === 'Special' && c.overall === 84).length;
+
+  assert.equal(out.selected.length, 100);
+  assert.equal(out.traderMixPolicy.premiumBudgetGuard, true);
+  assert.equal(out.traderMixPolicy.preferredBaseMin, 87);
+  assert.equal(out.traderMixPolicy.maxBase84OrLess, 0);
+  assert.equal(normal84OrLess, 0, `normal<=84=${normal84OrLess}`);
+  assert.ok(special84 >= 0); // low-rated specials remain eligible; they are not filler-capped by OVR.
+  assert.ok(out.total <= 1_000_000);
+});

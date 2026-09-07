@@ -69,6 +69,8 @@ function renderSummary(data){
     metric('Normal-Versionen',`${data.normalVersionCount??Math.max(0,(data.count||0)-(data.specialCount||0))} / ${data.count}`),
     metric('82-Max (Endgame)',`${data.traderMixPolicy?.active?data.traderMixPolicy.maxBase82:'–'}`),
     metric('≤83-Max (Endgame)',`${data.traderMixPolicy?.active?data.traderMixPolicy.maxBase83OrLess:'–'}`),
+    metric('≤84 Normal-Max (1M+)',`${data.traderMixPolicy?.premiumBudgetGuard?data.traderMixPolicy.maxBase84OrLess:'–'}`),
+    metric('≤86 Normal-Max (1M+)',`${data.traderMixPolicy?.premiumBudgetGuard?data.traderMixPolicy.maxBase86OrLess:'–'}`),
     metric('Ø Nachfrage-Datenqualität',`${Number(data.avgDemandDataConfidence||0).toFixed(0)}/100`),
     metric('FUTBIN Games-Daten',`${data.futbinGamesMatches||0} / ${data.count}`),
     metric('FUTBIN echte Sales',`${data.futbinSalesHistoryMatches||0} / ${data.count}`),

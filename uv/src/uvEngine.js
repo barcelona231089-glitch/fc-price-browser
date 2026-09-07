@@ -1306,13 +1306,79 @@ export function maxAffordablePortfolioCount(candidates, budget, requestedCount =
 
 
 function buildEndgameTraderMixPolicy(candidates = [], budget, count = 100) {
-  const active = (Array.isArray(candidates) ? candidates : []).some(card => card?.traderEndgameProfileActive === true);
-  if (!active) return { active: false, maxBase82: Infinity, maxBase83OrLess: Infinity, preferredBaseMin: null };
-  const ideal = Number(budget) / Math.max(1, Number(count) || 100);
-  if (ideal >= 2500) return { active: true, maxBase82: Math.max(1, Math.round(count * 0.02)), maxBase83OrLess: Math.max(6, Math.round(count * 0.08)), preferredBaseMin: 84 };
-  if (ideal >= 1500) return { active: true, maxBase82: Math.max(3, Math.round(count * 0.05)), maxBase83OrLess: Math.max(10, Math.round(count * 0.16)), preferredBaseMin: 84 };
-  if (ideal >= 900) return { active: true, maxBase82: Math.max(7, Math.round(count * 0.12)), maxBase83OrLess: Math.max(18, Math.round(count * 0.28)), preferredBaseMin: 83 };
-  return { active: true, maxBase82: Math.max(15, Math.round(count * 0.30)), maxBase83OrLess: Math.max(30, Math.round(count * 0.55)), preferredBaseMin: 82 };
+  const rows = Array.isArray(candidates) ? candidates : [];
+  const active = rows.some(card => card?.traderEndgameProfileActive === true);
+  if (!active) return {
+    active: false,
+    maxBase82: Infinity,
+    maxBase83OrLess: Infinity,
+    maxBase84OrLess: Infinity,
+    maxBase86OrLess: Infinity,
+    preferredBaseMin: null
+  };
+
+  const targetCount = Math.max(1, Number(count) || 100);
+  const ideal = Number(budget) / targetCount;
+
+  // v2.9.3: premium-budget guard. With ~8k+ coins per slot, the old endgame
+  // policy only capped normal 82/83 cards, so normal 84 golds could flood a
+  // 1M portfolio simply because they sat near the average target price.
+  // Specials stay exempt because card version + live demand matter more than OVR.
+  // Caps are supply-aware so hard-100 remains feasible when higher tiers are thin.
+  if (ideal >= 8_000) {
+    const high85PlusOrSpecial = rows.filter(card =>
+      isPublicTraderSpecial(card) || Number(card?.overall || 0) >= 85
+    ).length;
+    const high87PlusOrSpecial = rows.filter(card =>
+      isPublicTraderSpecial(card) || Number(card?.overall || 0) >= 87
+    ).length;
+
+    const required84OrLess = Math.max(0, targetCount - high85PlusOrSpecial);
+    const required86OrLess = Math.max(0, targetCount - high87PlusOrSpecial);
+
+    return {
+      active: true,
+      maxBase82: Math.max(1, Math.round(targetCount * 0.01)),
+      maxBase83OrLess: Math.max(3, Math.round(targetCount * 0.04)),
+      maxBase84OrLess: required84OrLess,
+      maxBase86OrLess: Math.max(15, required86OrLess),
+      preferredBaseMin: 87,
+      premiumBudgetGuard: true
+    };
+  }
+
+  if (ideal >= 2500) return {
+    active: true,
+    maxBase82: Math.max(1, Math.round(targetCount * 0.02)),
+    maxBase83OrLess: Math.max(6, Math.round(targetCount * 0.08)),
+    maxBase84OrLess: Infinity,
+    maxBase86OrLess: Infinity,
+    preferredBaseMin: 84
+  };
+  if (ideal >= 1500) return {
+    active: true,
+    maxBase82: Math.max(3, Math.round(targetCount * 0.05)),
+    maxBase83OrLess: Math.max(10, Math.round(targetCount * 0.16)),
+    maxBase84OrLess: Infinity,
+    maxBase86OrLess: Infinity,
+    preferredBaseMin: 84
+  };
+  if (ideal >= 900) return {
+    active: true,
+    maxBase82: Math.max(7, Math.round(targetCount * 0.12)),
+    maxBase83OrLess: Math.max(18, Math.round(targetCount * 0.28)),
+    maxBase84OrLess: Infinity,
+    maxBase86OrLess: Infinity,
+    preferredBaseMin: 83
+  };
+  return {
+    active: true,
+    maxBase82: Math.max(15, Math.round(targetCount * 0.30)),
+    maxBase83OrLess: Math.max(30, Math.round(targetCount * 0.55)),
+    maxBase84OrLess: Infinity,
+    maxBase86OrLess: Infinity,
+    preferredBaseMin: 82
+  };
 }
 
 function isLowEndgameBase(card = {}, maxOverall = 83) {
@@ -1330,6 +1396,14 @@ function passesEndgameTraderMix(card, selectedCards = [], policy = null) {
   if (overall <= 83) {
     const n83 = selectedCards.filter(x => isLowEndgameBase(x, 83)).length;
     if (n83 >= policy.maxBase83OrLess) return false;
+  }
+  if (overall <= 84) {
+    const n84 = selectedCards.filter(x => isLowEndgameBase(x, 84)).length;
+    if (n84 >= policy.maxBase84OrLess) return false;
+  }
+  if (overall <= 86) {
+    const n86 = selectedCards.filter(x => isLowEndgameBase(x, 86)).length;
+    if (n86 >= policy.maxBase86OrLess) return false;
   }
   return true;
 }
@@ -1349,6 +1423,8 @@ function createOptimizerState(selectedCards = []) {
     specialCount: 0,
     low82Count: 0,
     low83Count: 0,
+    low84Count: 0,
+    low86Count: 0,
     size: 0
   };
   for (const card of selectedCards) optimizerStateAdd(state, card);
@@ -1362,6 +1438,8 @@ function cloneOptimizerState(state) {
     specialCount: state.specialCount,
     low82Count: state.low82Count,
     low83Count: state.low83Count,
+    low84Count: state.low84Count,
+    low86Count: state.low86Count,
     size: state.size
   };
 }
@@ -1381,6 +1459,8 @@ function optimizerStateAdd(state, card) {
     const overall = Number(card?.overall || 0);
     if (Number.isFinite(overall) && overall > 0 && overall <= 82) state.low82Count += 1;
     if (Number.isFinite(overall) && overall > 0 && overall <= 83) state.low83Count += 1;
+    if (Number.isFinite(overall) && overall > 0 && overall <= 84) state.low84Count += 1;
+    if (Number.isFinite(overall) && overall > 0 && overall <= 86) state.low86Count += 1;
   }
   state.size += 1;
 }
@@ -1394,6 +1474,8 @@ function optimizerStateRemove(state, card) {
     const overall = Number(card?.overall || 0);
     if (Number.isFinite(overall) && overall > 0 && overall <= 82) state.low82Count = Math.max(0, state.low82Count - 1);
     if (Number.isFinite(overall) && overall > 0 && overall <= 83) state.low83Count = Math.max(0, state.low83Count - 1);
+    if (Number.isFinite(overall) && overall > 0 && overall <= 84) state.low84Count = Math.max(0, state.low84Count - 1);
+    if (Number.isFinite(overall) && overall > 0 && overall <= 86) state.low86Count = Math.max(0, state.low86Count - 1);
   }
   state.size = Math.max(0, state.size - 1);
 }
@@ -1404,6 +1486,8 @@ function passesEndgameTraderMixState(card, state, policy = null) {
   if (!Number.isFinite(overall) || overall <= 0) return true;
   if (overall <= 82 && state.low82Count >= policy.maxBase82) return false;
   if (overall <= 83 && state.low83Count >= policy.maxBase83OrLess) return false;
+  if (overall <= 84 && state.low84Count >= policy.maxBase84OrLess) return false;
+  if (overall <= 86 && state.low86Count >= policy.maxBase86OrLess) return false;
   return true;
 }
 

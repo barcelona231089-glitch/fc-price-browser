@@ -101,7 +101,7 @@ test('v2.3 production status enforces hard 100 slots and sellability-first live 
   assert.match(uvApp, /sellabilityFirstRanking:\s*true/);
   assert.match(uvApp, /qualityFirstDynamicCount:\s*false/);
   assert.match(uvApp, /dynamicPortfolioSize:\s*false/);
-  assert.match(uvApp, /const UV_VERSION = '2\.9\.2'/);
+  assert.match(uvApp, /const UV_VERSION = '2\.9\.3'/);
   assert.ok(ui.includes('PROMO + LIVE MARKET'));
   assert.ok(ui.includes('Markt-Regime'));
   assert.ok(ui.includes('Promo-Heat'));
