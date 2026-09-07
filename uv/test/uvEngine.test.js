@@ -783,3 +783,29 @@ test('v2.7 high-budget allocator keeps exactly 100 slots and raises special mix 
   assert.ok(out.total <= 3000000);
   assert.ok(specials >= 58, `specials=${specials}`);
 });
+
+
+test('v2.9.1 allocator rescue returns the full portfolio when greedy tier selection dead-ends after feasibility was proven', () => {
+  const cards = [
+    {eaId:1,name:'P0',overall:83,cardType:'Special',recommendedBuyPrice:6000,price:6000,budgetTop100Score:87.48,selectionScore:65.88,tradeQualityScore:88.75,uvScore:85.99,riskPenalty:0,traderEndgameProfileActive:true},
+    {eaId:2,name:'P1',overall:82,cardType:'Base Rare',recommendedBuyPrice:9300,price:9300,budgetTop100Score:93.84,selectionScore:60.62,tradeQualityScore:80.87,uvScore:70.10,riskPenalty:0,traderEndgameProfileActive:true},
+    {eaId:3,name:'P2',overall:86,cardType:'Special',recommendedBuyPrice:11900,price:11900,budgetTop100Score:89.20,selectionScore:72.11,tradeQualityScore:93.39,uvScore:78.62,riskPenalty:0,traderEndgameProfileActive:true},
+    {eaId:4,name:'P3',overall:86,cardType:'Special',recommendedBuyPrice:10800,price:10800,budgetTop100Score:61.67,selectionScore:56.71,tradeQualityScore:90.86,uvScore:63.77,riskPenalty:0,traderEndgameProfileActive:true},
+    {eaId:5,name:'P3',overall:83,cardType:'Base Rare',recommendedBuyPrice:11900,price:11900,budgetTop100Score:79.02,selectionScore:50.27,tradeQualityScore:81.60,uvScore:80.17,riskPenalty:0,traderEndgameProfileActive:true},
+    {eaId:6,name:'P3',overall:82,cardType:'Base Rare',recommendedBuyPrice:2200,price:2200,budgetTop100Score:91.47,selectionScore:74.31,tradeQualityScore:76.45,uvScore:90.11,riskPenalty:0,traderEndgameProfileActive:true},
+    {eaId:7,name:'P4',overall:83,cardType:'Base Rare',recommendedBuyPrice:5900,price:5900,budgetTop100Score:92.64,selectionScore:62.98,tradeQualityScore:76.55,uvScore:94.15,riskPenalty:0,traderEndgameProfileActive:true},
+    {eaId:8,name:'P5',overall:82,cardType:'Special',recommendedBuyPrice:8500,price:8500,budgetTop100Score:66.61,selectionScore:95.96,tradeQualityScore:78.59,uvScore:87.37,riskPenalty:0,traderEndgameProfileActive:true},
+    {eaId:9,name:'P6',overall:85,cardType:'Base Rare',recommendedBuyPrice:12500,price:12500,budgetTop100Score:75.20,selectionScore:60.09,tradeQualityScore:72.04,uvScore:75.15,riskPenalty:0,traderEndgameProfileActive:true},
+    {eaId:10,name:'P7',overall:82,cardType:'Base Rare',recommendedBuyPrice:2800,price:2800,budgetTop100Score:89.80,selectionScore:77.46,tradeQualityScore:81.54,uvScore:63.66,riskPenalty:0,traderEndgameProfileActive:true},
+    {eaId:11,name:'P7',overall:83,cardType:'Special',recommendedBuyPrice:12900,price:12900,budgetTop100Score:98.30,selectionScore:97.30,tradeQualityScore:82.96,uvScore:66.57,riskPenalty:0,traderEndgameProfileActive:true},
+    {eaId:12,name:'P7',overall:86,cardType:'Base Rare',recommendedBuyPrice:12700,price:12700,budgetTop100Score:95.13,selectionScore:86.00,tradeQualityScore:92.70,uvScore:80.37,riskPenalty:0,traderEndgameProfileActive:true}
+  ];
+
+  const affordability = maxAffordablePortfolioCount(cards, 100_000, 10);
+  assert.equal(affordability.count, 10);
+
+  const out = optimizeList(cards, 100_000, 10);
+  assert.equal(out.selected.length, 10);
+  assert.ok(out.total <= 100_000);
+  assert.equal(out.allocationRescueUsed, true);
+});

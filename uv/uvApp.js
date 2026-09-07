@@ -15,7 +15,7 @@ import { runCandidatePipeline, deriveAdaptiveMarketPolicy, buildHard100Sellabili
 import { buildReportedOutcomeScore } from './src/outcomeLearning.js';
 
 export const uvRouter = express.Router();
-const UV_VERSION = '2.9.0';
+const UV_VERSION = '2.9.1';
 let uvActive = true;
 const app = uvRouter;
 const __dirname = path.dirname(fileURLToPath(import.meta.url));

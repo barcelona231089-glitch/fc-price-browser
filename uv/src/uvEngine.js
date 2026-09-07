@@ -1478,15 +1478,35 @@ export function optimizeList(candidates, budget, count = 100) {
     remaining -= budgetPrice(choice);
   }
 
-  if (selected.length < count) throw new Error(`Konnte nur ${selected.length}/${count} Karten innerhalb des Budgets zusammenstellen.`);
-  const improved = improveBudget(selected, optimizationCandidates, budget, new Set(), specialTargetRatio, traderMixPolicy);
+  // v2.9.1: hard-100 allocator rescue. The affordability guard above already
+  // proved that a valid 100-slot portfolio exists. The tier-aware greedy pass
+  // must therefore never turn that proven-feasible pool into a partial list.
+  // If the greedy path paints itself into a corner because of player-diversity
+  // or endgame-mix interactions, restart from the already validated cheapest
+  // constrained 100-slot baseline and then improve it toward the user's budget.
+  let allocationRescueUsed = false;
+  let allocationBase = selected;
+  if (selected.length < count) {
+    allocationRescueUsed = true;
+    allocationBase = constrainedMinimumRows.slice(0, count).map(card => ({
+      ...card,
+      portfolioFeasibilityRescue: true
+    }));
+  }
+
+  if (allocationBase.length < count) {
+    throw new Error(`Allocator-Rescue konnte nur ${allocationBase.length}/${count} Karten zusammenstellen, obwohl die Vorprüfung das Portfolio als machbar markiert hatte.`);
+  }
+
+  const improved = improveBudget(allocationBase, optimizationCandidates, budget, new Set(), specialTargetRatio, traderMixPolicy);
   return {
     ...improved,
     repeatMode: prepared.repeatMode,
     repeatedSlots: improved.selected.filter(card => Number(card?._portfolioCopyIndex || 1) > 1).length,
     uniqueMinimumCost: prepared.uniqueMinimum,
     specialTargetRatio,
-    traderMixPolicy
+    traderMixPolicy,
+    allocationRescueUsed
   };
 }
 
