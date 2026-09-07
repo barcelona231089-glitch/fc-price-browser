@@ -90,12 +90,16 @@ function versionTokens(card) {
   return raw.split(' ').filter(t => t.length >= 3 && !ignored.has(t)).slice(0, 7);
 }
 
-function versionMatchForSnippet(card, snippet) {
-  const tokens = versionTokens(card);
+function versionMatchForTokens(tokens, snippet) {
   if (!tokens.length) return { versionMatched: null, tokenMatches: 0, tokenCount: 0 };
-  const tokenMatches = tokens.filter(t => snippet.includes(t)).length;
+  let tokenMatches = 0;
+  for (const token of tokens) if (snippet.includes(token)) tokenMatches += 1;
   const required = tokens.length <= 2 ? 1 : 2;
   return { versionMatched: tokenMatches >= required, tokenMatches, tokenCount: tokens.length };
+}
+
+function versionMatchForSnippet(card, snippet) {
+  return versionMatchForTokens(versionTokens(card), snippet);
 }
 
 export function extractMostUsedSignals(html, cards) {
@@ -131,27 +135,44 @@ export function extractMostUsedSignals(html, cards) {
 export function extractNamedVersionSignals(html, cards, { requireVersionForSpecial = true } = {}) {
   const text = htmlToSearchText(html);
   const byCardId = new Map();
+
+  // v2.9.2 CPU-SAFE: search each player name in the HTML once, then evaluate
+  // the already found snippets against all card versions of that player. The old
+  // code rescanned the full page separately for every version of the same name.
+  const byName = new Map();
   for (const card of cards || []) {
     const name = normalizeName(card.name);
     if (name.length < 4) continue;
-    const cardId = String(card.eaId ?? card.id ?? `${name}|${card.overall}|${card.rarityName}`);
-    const special = String(card.cardType || '').toLowerCase() === 'special';
-    let best = null;
-    for (const at of allIndices(text, name)) {
-      const snippet = text.slice(Math.max(0, at - 90), Math.min(text.length, at + name.length + 260));
-      const vm = versionMatchForSnippet(card, snippet);
-      if (requireVersionForSpecial && special && vm.tokenCount > 0 && vm.versionMatched !== true) continue;
-      const quality = (vm.versionMatched === true ? 3 : vm.versionMatched === null ? 1 : 0) + vm.tokenMatches * 0.2;
-      if (!best || quality > best.quality) best = { hit: true, snippet, quality, ...vm };
+    if (!byName.has(name)) byName.set(name, []);
+    byName.get(name).push(card);
+  }
+
+  for (const [name, versions] of byName) {
+    const indices = allIndices(text, name);
+    if (!indices.length) continue;
+    const snippets = indices.map(at => text.slice(Math.max(0, at - 90), Math.min(text.length, at + name.length + 260)));
+
+    for (const card of versions) {
+      const cardId = String(card.eaId ?? card.id ?? `${name}|${card.overall}|${card.rarityName}`);
+      const special = String(card.cardType || '').toLowerCase() === 'special';
+      const tokens = versionTokens(card);
+      let best = null;
+      for (const snippet of snippets) {
+        const vm = versionMatchForTokens(tokens, snippet);
+        if (requireVersionForSpecial && special && vm.tokenCount > 0 && vm.versionMatched !== true) continue;
+        const quality = (vm.versionMatched === true ? 3 : vm.versionMatched === null ? 1 : 0) + vm.tokenMatches * 0.2;
+        if (!best || quality > best.quality) best = { hit: true, snippet, quality, ...vm };
+      }
+      if (best) byCardId.set(cardId, best);
     }
-    if (best) byCardId.set(cardId, best);
   }
   return byCardId;
 }
 
 function cardUsageSignal(card, record) {
   if (!record?.hits?.length) return null;
-  const candidates = record.hits.map(hit => ({ ...hit, ...versionMatchForSnippet(card, hit.snippet) }));
+  const tokens = versionTokens(card);
+  const candidates = record.hits.map(hit => ({ ...hit, ...versionMatchForTokens(tokens, hit.snippet) }));
   const exact = candidates.filter(h => h.versionMatched === true);
   const usable = exact.length ? exact : candidates;
   const audiencePriority = hit => hit.audience === 'community' ? 2 : hit.audience === 'pros' ? 1 : 0;
@@ -173,7 +194,7 @@ function cardUsageSignal(card, record) {
   const breadthComponent = Math.min(10, positions.length * 2.5);
   const rankComponent = usageBestRank === 1 ? 6 : usageBestRank === 2 ? 4 : usageBestRank === 3 ? 2.5 : 0;
   const exactVersion = exact.length > 0;
-  const matchPenalty = versionTokens(card).length && !exactVersion ? 7 : 0;
+  const matchPenalty = tokens.length && !exactVersion ? 7 : 0;
   const popularityScore = clamp(43 + communityComponent + proComponent + breadthComponent + rankComponent - matchPenalty, 42, 98);
 
   return {
@@ -187,7 +208,7 @@ function cardUsageSignal(card, record) {
     usagePositions: positions,
     usageBestRank,
     popularityScore,
-    usageEvidenceQuality: exactVersion ? 'exact-version' : versionTokens(card).length ? 'name-level' : 'generic-card'
+    usageEvidenceQuality: exactVersion ? 'exact-version' : tokens.length ? 'name-level' : 'generic-card'
   };
 }
 

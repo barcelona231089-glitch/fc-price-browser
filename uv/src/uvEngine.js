@@ -1334,39 +1334,135 @@ function passesEndgameTraderMix(card, selectedCards = [], policy = null) {
   return true;
 }
 
+function optimizerPlayerKey(card = {}) {
+  return String(card?.name || card?.eaId || '').toLowerCase();
+}
+
+function optimizerRarityKey(card = {}) {
+  return String(card?.rarityName || card?.cardName || card?.cardType || 'Unknown');
+}
+
+function createOptimizerState(selectedCards = []) {
+  const state = {
+    playerCounts: new Map(),
+    rarityCounts: new Map(),
+    specialCount: 0,
+    low82Count: 0,
+    low83Count: 0,
+    size: 0
+  };
+  for (const card of selectedCards) optimizerStateAdd(state, card);
+  return state;
+}
+
+function cloneOptimizerState(state) {
+  return {
+    playerCounts: new Map(state.playerCounts),
+    rarityCounts: new Map(state.rarityCounts),
+    specialCount: state.specialCount,
+    low82Count: state.low82Count,
+    low83Count: state.low83Count,
+    size: state.size
+  };
+}
+
+function mapCountBump(map, key, delta) {
+  const next = (map.get(key) || 0) + delta;
+  if (next <= 0) map.delete(key);
+  else map.set(key, next);
+}
+
+function optimizerStateAdd(state, card) {
+  mapCountBump(state.playerCounts, optimizerPlayerKey(card), 1);
+  mapCountBump(state.rarityCounts, optimizerRarityKey(card), 1);
+  const special = isPublicTraderSpecial(card);
+  if (special) state.specialCount += 1;
+  else {
+    const overall = Number(card?.overall || 0);
+    if (Number.isFinite(overall) && overall > 0 && overall <= 82) state.low82Count += 1;
+    if (Number.isFinite(overall) && overall > 0 && overall <= 83) state.low83Count += 1;
+  }
+  state.size += 1;
+}
+
+function optimizerStateRemove(state, card) {
+  mapCountBump(state.playerCounts, optimizerPlayerKey(card), -1);
+  mapCountBump(state.rarityCounts, optimizerRarityKey(card), -1);
+  const special = isPublicTraderSpecial(card);
+  if (special) state.specialCount = Math.max(0, state.specialCount - 1);
+  else {
+    const overall = Number(card?.overall || 0);
+    if (Number.isFinite(overall) && overall > 0 && overall <= 82) state.low82Count = Math.max(0, state.low82Count - 1);
+    if (Number.isFinite(overall) && overall > 0 && overall <= 83) state.low83Count = Math.max(0, state.low83Count - 1);
+  }
+  state.size = Math.max(0, state.size - 1);
+}
+
+function passesEndgameTraderMixState(card, state, policy = null) {
+  if (!policy?.active || isPublicTraderSpecial(card)) return true;
+  const overall = Number(card?.overall || 0);
+  if (!Number.isFinite(overall) || overall <= 0) return true;
+  if (overall <= 82 && state.low82Count >= policy.maxBase82) return false;
+  if (overall <= 83 && state.low83Count >= policy.maxBase83OrLess) return false;
+  return true;
+}
+
+function diversityBonusState(card, state, specialTargetRatio = 0.25) {
+  const usedRarity = state.rarityCounts.get(optimizerRarityKey(card)) || 0;
+  const usedPlayer = state.playerCounts.get(optimizerPlayerKey(card)) || 0;
+  const specialRatio = state.size ? state.specialCount / state.size : 0;
+  let bonus = 0;
+  if (usedRarity === 0) bonus += 0.10;
+  else if (usedRarity <= 2) bonus += 0.04;
+  else if (usedRarity >= 12) bonus -= 0.08;
+  if (usedPlayer >= 2) bonus -= 0.10;
+
+  const isSpecial = isPublicTraderSpecial(card);
+  if (isSpecial && specialRatio < specialTargetRatio) {
+    const deficit = Math.max(0, specialTargetRatio - specialRatio);
+    bonus += 0.08 + Math.min(0.10, deficit * 0.35);
+  } else if (isSpecial && specialRatio > specialTargetRatio + 0.06) {
+    bonus -= 0.08;
+  } else if (!isSpecial && specialRatio > specialTargetRatio + 0.06) {
+    bonus += 0.035;
+  }
+  return bonus;
+}
+
 function constrainedCheapestRows(candidates = [], count = 100, policy = null) {
   const sorted = [...candidates].sort((a, b) => budgetPrice(a) - budgetPrice(b) || Number(b.budgetTop100Score || b.selectionScore || 0) - Number(a.budgetTop100Score || a.selectionScore || 0));
   const selected = [];
-  const playerCounts = new Map();
+  const state = createOptimizerState();
   for (const card of sorted) {
     if (selected.length >= count) break;
-    const playerKey = String(card?.name || card?.eaId || '').toLowerCase();
-    if ((playerCounts.get(playerKey) || 0) >= 3) continue;
-    if (!passesEndgameTraderMix(card, selected, policy)) continue;
+    const playerKey = optimizerPlayerKey(card);
+    if ((state.playerCounts.get(playerKey) || 0) >= 3) continue;
+    if (!passesEndgameTraderMixState(card, state, policy)) continue;
     selected.push(card);
-    playerCounts.set(playerKey, (playerCounts.get(playerKey) || 0) + 1);
+    optimizerStateAdd(state, card);
   }
   return selected;
 }
 
-
-function chooseClosest(candidates, target, selectedIds, selectedCards, remaining, slotsLeft, cheapestSorted, specialTargetRatio = 0.25, traderMixPolicy = null) {
+// v2.9.2 CPU-SAFE: same greedy portfolio logic as before, but all player/rarity/
+// endgame counts are maintained incrementally. The old implementation repeatedly
+// filtered the whole selected array inside both the reserve scan and every
+// candidate comparison, turning a 5k-card pool into tens/hundreds of millions
+// of JS operations on constrained hosts.
+function chooseClosestCpuSafe(candidates, target, selectedIds, state, remaining, slotsLeft, cheapestSorted, specialTargetRatio = 0.25, traderMixPolicy = null) {
   const reserveList = [];
-  const reservePlayerCounts = new Map();
-  for (const selected of selectedCards) {
-    const key = String(selected.name || '').toLowerCase();
-    reservePlayerCounts.set(key, (reservePlayerCounts.get(key) || 0) + 1);
-  }
+  const reserveState = cloneOptimizerState(state);
   for (const c of cheapestSorted) {
     if (selectedIds.has(optimizerKey(c))) continue;
-    const playerKey = String(c.name || '').toLowerCase();
-    if ((reservePlayerCounts.get(playerKey) || 0) >= 3) continue;
-    if (!passesEndgameTraderMix(c, [...selectedCards, ...reserveList], traderMixPolicy)) continue;
+    const playerKey = optimizerPlayerKey(c);
+    if ((reserveState.playerCounts.get(playerKey) || 0) >= 3) continue;
+    if (!passesEndgameTraderMixState(c, reserveState, traderMixPolicy)) continue;
     reserveList.push(c);
-    reservePlayerCounts.set(playerKey, (reservePlayerCounts.get(playerKey) || 0) + 1);
+    optimizerStateAdd(reserveState, c);
     if (reserveList.length >= slotsLeft) break;
   }
   if (reserveList.length < slotsLeft) return null;
+
   const reserveSumAll = reserveList.reduce((sum, c) => sum + budgetPrice(c), 0);
   const reserveIds = new Set(reserveList.map(c => optimizerKey(c)));
   const highestReserved = budgetPrice(reserveList[reserveList.length - 1]) || 0;
@@ -1376,9 +1472,8 @@ function chooseClosest(candidates, target, selectedIds, selectedCards, remaining
   for (const c of candidates) {
     const id = optimizerKey(c);
     if (selectedIds.has(id)) continue;
-    const samePlayerCount = selectedCards.filter(x => String(x.name || '').toLowerCase() === String(c.name || '').toLowerCase()).length;
-    if (samePlayerCount >= 3) continue;
-    if (!passesEndgameTraderMix(c, selectedCards, traderMixPolicy)) continue;
+    if ((state.playerCounts.get(optimizerPlayerKey(c)) || 0) >= 3) continue;
+    if (!passesEndgameTraderMixState(c, state, traderMixPolicy)) continue;
     const cost = budgetPrice(c);
     const reserveAfterChoice = reserveIds.has(id) ? reserveSumAll - cost : reserveSumAll - highestReserved;
     if (cost + reserveAfterChoice > remaining) continue;
@@ -1386,18 +1481,35 @@ function chooseClosest(candidates, target, selectedIds, selectedCards, remaining
     const distance = Math.abs(Math.log(Math.max(1, cost) / Math.max(1, target)));
     const qualityPenalty = (100 - (c.budgetTop100Score ?? c.selectionScore ?? c.tradeQualityScore ?? c.uvScore ?? 50)) / 132;
     const riskPenalty = (c.riskPenalty || 0) / 150;
-    const diversity = diversityBonus(c, selectedCards, specialTargetRatio);
+    const diversity = diversityBonusState(c, state, specialTargetRatio);
     const value = distance * 0.70 + qualityPenalty + riskPenalty - diversity;
     if (value < bestValue) { best = c; bestValue = value; }
   }
   return best;
 }
 
-function improveBudget(selected, candidates, budget, protectedIds = new Set(), specialTargetRatio = 0.25, traderMixPolicy = null) {
+function chooseClosest(candidates, target, selectedIds, selectedCards, remaining, slotsLeft, cheapestSorted, specialTargetRatio = 0.25, traderMixPolicy = null) {
+  return chooseClosestCpuSafe(
+    candidates,
+    target,
+    selectedIds,
+    createOptimizerState(selectedCards),
+    remaining,
+    slotsLeft,
+    cheapestSorted,
+    specialTargetRatio,
+    traderMixPolicy
+  );
+}
+
+function improveBudgetCpuSafe(selected, candidates, budget, protectedIds = new Set(), specialTargetRatio = 0.25, traderMixPolicy = null) {
   let total = selected.reduce((sum, c) => sum + budgetPrice(c), 0);
   const selectedIds = new Set(selected.map(c => optimizerKey(c)));
   const unselected = candidates.filter(c => !selectedIds.has(optimizerKey(c))).sort((a, b) => budgetPrice(a) - budgetPrice(b));
+  const state = createOptimizerState(selected);
 
+  // Keep the original 16-pass ceiling, but each comparison is now O(1) for
+  // diversity/player/endgame checks instead of rebuilding 100-card arrays.
   for (let round = 0; round < 16; round++) {
     let improved = false;
     if (budget - total <= 0) break;
@@ -1406,40 +1518,47 @@ function improveBudget(selected, candidates, budget, protectedIds = new Set(), s
       if (gap <= 0) break;
       const old = selected[i];
       if (protectedIds.has(String(old.eaId))) continue;
+
+      optimizerStateRemove(state, old);
       let best = null;
       let bestGap = gap;
+      const currentSpecialRatio = selected.length ? (state.specialCount + (isPublicTraderSpecial(old) ? 1 : 0)) / selected.length : 0;
+
       for (const cand of unselected) {
         if (selectedIds.has(optimizerKey(cand))) continue;
-        const playerKey = String(cand.name || '').toLowerCase();
-        const samePlayerCount = selected.reduce((n, x, idx) => n + (idx !== i && String(x.name || '').toLowerCase() === playerKey ? 1 : 0), 0);
-        if (samePlayerCount >= 3) continue;
-        const withoutOld = selected.filter((_, idx) => idx !== i);
-        if (!passesEndgameTraderMix(cand, withoutOld, traderMixPolicy)) continue;
+        if ((state.playerCounts.get(optimizerPlayerKey(cand)) || 0) >= 3) continue;
+        if (!passesEndgameTraderMixState(cand, state, traderMixPolicy)) continue;
         const delta = budgetPrice(cand) - budgetPrice(old);
         if (delta <= 0 || delta > gap) continue;
         const newGap = gap - delta;
         const qualityLoss = (old.selectionScore ?? 50) - (cand.selectionScore ?? 50);
         if (qualityLoss > 10) continue;
         if ((cand.riskPenalty || 0) > (old.riskPenalty || 0) + 8) continue;
-        const specialCount = selected.reduce((n, x) => n + (String(x.cardType || '').toLowerCase() === 'special' ? 1 : 0), 0);
-        const oldSpecial = String(old.cardType || '').toLowerCase() === 'special';
-        const candSpecial = String(cand.cardType || '').toLowerCase() === 'special';
-        const currentSpecialRatio = selected.length ? specialCount / selected.length : 0;
+        const oldSpecial = isPublicTraderSpecial(old);
+        const candSpecial = isPublicTraderSpecial(cand);
         if (oldSpecial && !candSpecial && currentSpecialRatio <= specialTargetRatio + 0.02) continue;
         if (newGap < bestGap) { best = cand; bestGap = newGap; if (newGap === 0) break; }
       }
+
       if (best) {
         selectedIds.delete(optimizerKey(old));
         selectedIds.add(optimizerKey(best));
         selected[i] = best;
         total += budgetPrice(best) - budgetPrice(old);
+        optimizerStateAdd(state, best);
         improved = true;
         if (total === budget) return { selected, total };
+      } else {
+        optimizerStateAdd(state, old);
       }
     }
     if (!improved) break;
   }
   return { selected, total };
+}
+
+function improveBudget(selected, candidates, budget, protectedIds = new Set(), specialTargetRatio = 0.25, traderMixPolicy = null) {
+  return improveBudgetCpuSafe(selected, candidates, budget, protectedIds, specialTargetRatio, traderMixPolicy);
 }
 
 export function optimizeList(candidates, budget, count = 100) {
@@ -1465,16 +1584,20 @@ export function optimizeList(candidates, budget, count = 100) {
   const specialTargetRatio = adaptiveSpecialTargetRatioForMarket(optimizationCandidates, budget, count);
   const selected = [];
   const ids = new Set();
+  const selectionState = createOptimizerState();
+  const multiplierSuffix = new Array(multipliers.length + 1).fill(0);
+  for (let i = multipliers.length - 1; i >= 0; i--) multiplierSuffix[i] = multiplierSuffix[i + 1] + multipliers[i];
   let remaining = budget;
 
   for (let i = 0; i < count; i++) {
     const slotsLeft = count - i;
-    const remainingMultiplierSum = multipliers.slice(i).reduce((a, b) => a + b, 0);
-    const target = remaining * (multipliers[i] / remainingMultiplierSum);
-    const choice = chooseClosest(optimizationCandidates, target, ids, selected, remaining, slotsLeft, cheapestSorted, specialTargetRatio, traderMixPolicy);
+    const remainingMultiplierSum = multiplierSuffix[i];
+    const target = remaining * (multipliers[i] / Math.max(0.0001, remainingMultiplierSum));
+    const choice = chooseClosestCpuSafe(optimizationCandidates, target, ids, selectionState, remaining, slotsLeft, cheapestSorted, specialTargetRatio, traderMixPolicy);
     if (!choice) break;
     selected.push(choice);
     ids.add(optimizerKey(choice));
+    optimizerStateAdd(selectionState, choice);
     remaining -= budgetPrice(choice);
   }
 
@@ -1498,7 +1621,7 @@ export function optimizeList(candidates, budget, count = 100) {
     throw new Error(`Allocator-Rescue konnte nur ${allocationBase.length}/${count} Karten zusammenstellen, obwohl die Vorprüfung das Portfolio als machbar markiert hatte.`);
   }
 
-  const improved = improveBudget(allocationBase, optimizationCandidates, budget, new Set(), specialTargetRatio, traderMixPolicy);
+  const improved = improveBudgetCpuSafe(allocationBase, optimizationCandidates, budget, new Set(), specialTargetRatio, traderMixPolicy);
   return {
     ...improved,
     repeatMode: prepared.repeatMode,

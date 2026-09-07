@@ -1,7 +1,7 @@
 import express from 'express';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import { GAME_YEAR, HISTORY_SAMPLE_LIMIT, HISTORY_MONITOR_MS, HISTORY_MONITOR_MAX_CARDS, HISTORY_HEARTBEAT_MINUTES, LIVE_RECHECK_BATCH_SIZE, LIVE_RECHECK_BATCH_PAUSE_MS, LIVE_RECHECK_MAX_QUEUE, LIVE_RECHECK_JOB_TTL_MS } from './src/config.js';
+import { GAME_YEAR, HISTORY_SAMPLE_LIMIT, HISTORY_MONITOR_MS, HISTORY_MONITOR_MAX_CARDS, HISTORY_HEARTBEAT_MINUTES, LIVE_RECHECK_BATCH_SIZE, LIVE_RECHECK_BATCH_PAUSE_MS, LIVE_RECHECK_MAX_QUEUE, LIVE_RECHECK_JOB_TTL_MS, GENERATION_SCORE_BATCH_SIZE, GENERATION_BATCH_PAUSE_MS, GENERATION_CPU_WINDOW_WAIT_MS } from './src/config.js';
 import { getLiveFutggCards as fetchLiveFutggCards } from './src/futgg.js';
 import { crosscheckFutbin, getFutbinMarketTrends, attachMarketMoverSignals, getFutbinExtendedDataStatus } from './src/futbin.js';
 import { attachFutggDemandSignals, attachCachedFutggDemandSignals } from './src/demand.js';
@@ -15,7 +15,7 @@ import { runCandidatePipeline, deriveAdaptiveMarketPolicy, buildHard100Sellabili
 import { buildReportedOutcomeScore } from './src/outcomeLearning.js';
 
 export const uvRouter = express.Router();
-const UV_VERSION = '2.9.1';
+const UV_VERSION = '2.9.2';
 let uvActive = true;
 const app = uvRouter;
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -247,7 +247,7 @@ app.get('/api/uv/status', (req, res) => {
       postgresHistory: isDbEnabled(), budgetOptimizer100: true, eaTax: true,
       conservativeProfit: true, longTermScore: true, priceActivityProxy: isDbEnabled(),
       sourceRiskFilter: true, adaptiveCardMix: true, specialCardPriority: true, specialCardSoftTarget300k100: 'promo-live-market-adaptive', seasonPhaseRatingGuard: false, calendarPhaseContextOnly: true, promoMarketAdaptive: true, promoInPacksAwareness: true, promoMomentumAwareness: true, dynamicMarketPolicy: true, budgetAwareDynamicRating: true, demandGatedRatingRelaxation: true, budgetFeasibilityFallback: true, balancedLiquidityFallback: true, qualityFirstDynamicCount: false, dynamicPortfolioSize: false, hard100Slots: true, sellabilityFirstRanking: true, hard100PortfolioSellabilityFallback: true, adaptiveSpecialMix: true, maxExactCardCopies: 2, futggMostUsedDemand: true, futggMomentumDemand: true,
-      backgroundHistoryMonitor: isDbEnabled(), selfLearningPriceSafety: isDbEnabled(), smartBuyCeiling: true, qualityFirstOptimizer: true, budgetTop100Ranking: true, budgetTop100SafetyIsolation: true, budgetSafetyReserveFallback: true, publicTraderEndgameLogic: true, traderConsensusRanker: true, budgetTierAllocator: true, candidatePoolAllocationSeparation: true, budgetTierReferenceMode: 'soft-observed-shape-only', ratingAsSecondaryPortfolioSignal: true, cardVersionClassFromItemRecord: true, traderConsensusSources: ['Futpepi-budget-method','FUT.GG-usage-momentum','PostgreSQL-price-stability','FutStarz-demand-window-method','public-popularity-tiebreak'], endgameLowGoldCaps: true, endgame300kBase82Max: 2, endgame300kBase83OrLessMax: 8, futtiesDemandPriority: true, popularLeagueNationTieBreak: true, savedLists: isDbEnabled(), savedListReopen: isDbEnabled(), persistedLiveRecheck: isDbEnabled(), liveRecheckPost: true, liveRecheckAsyncJob: true, liveRecheckCpuSafeQueue: true, liveRecheckDemandCacheOnly: true, liveRecheckBatchSize: LIVE_RECHECK_BATCH_SIZE, liveRecheckBatchPauseMs: LIVE_RECHECK_BATCH_PAUSE_MS, batchedRecheckPersistence: isDbEnabled(), currentBuyPricesVisible: true, capitalEfficiencyScore: true, adaptiveCapitalLadder: true, repeatabilityScore: true, longTermProfitRanker: true, portfolioDiagnostics: true, traderKnowledgePriors: true, verifiedPublicUvMethodConsensus: true, externalTraderPlayerPicksImported: false, bronzeHardBlock: true, normalCardMinimumRating: 82, specialBelow82StrongDemandOnly: true, nonRareDemandGate: true, lowNonRareRatingHardBlockMax: 82, midNonRareDemandGateMin: 83, midNonRareDemandGateMax: 84, traderRulePriceSafetyLearning: isDbEnabled(), saleLikelihoodIndex: true, traderAwarePricingOptimizer: true, empiricalTargetSupportLearning: isDbEnabled(), optionalReportedTradeFeedback: isDbEnabled(), listLifecycleGuard: true, liveStoredListRecheck: isDbEnabled(), portfolioRebalancing: isDbEnabled(), reportedOutcomeLearning: isDbEnabled(), robustCandidatePipeline: true, apiNamespaceUv: true, futggUsageAudienceSplit: true, futggUsagePositionBreadth: true, futggInPacksSupply: true, demandEvidenceConfidence: true,
+      backgroundHistoryMonitor: isDbEnabled(), selfLearningPriceSafety: isDbEnabled(), smartBuyCeiling: true, qualityFirstOptimizer: true, budgetTop100Ranking: true, budgetTop100SafetyIsolation: true, budgetSafetyReserveFallback: true, publicTraderEndgameLogic: true, traderConsensusRanker: true, budgetTierAllocator: true, candidatePoolAllocationSeparation: true, budgetTierReferenceMode: 'soft-observed-shape-only', ratingAsSecondaryPortfolioSignal: true, cardVersionClassFromItemRecord: true, traderConsensusSources: ['Futpepi-budget-method','FUT.GG-usage-momentum','PostgreSQL-price-stability','FutStarz-demand-window-method','public-popularity-tiebreak'], endgameLowGoldCaps: true, endgame300kBase82Max: 2, endgame300kBase83OrLessMax: 8, futtiesDemandPriority: true, popularLeagueNationTieBreak: true, savedLists: isDbEnabled(), savedListReopen: isDbEnabled(), persistedLiveRecheck: isDbEnabled(), liveRecheckPost: true, liveRecheckAsyncJob: true, liveRecheckCpuSafeQueue: true, generationCpuSafeBatches: true, generationWaitsForIdleCpuWindow: true, optimizerLinearStateCache: true, liveRecheckDemandCacheOnly: true, liveRecheckBatchSize: LIVE_RECHECK_BATCH_SIZE, liveRecheckBatchPauseMs: LIVE_RECHECK_BATCH_PAUSE_MS, batchedRecheckPersistence: isDbEnabled(), currentBuyPricesVisible: true, capitalEfficiencyScore: true, adaptiveCapitalLadder: true, repeatabilityScore: true, longTermProfitRanker: true, portfolioDiagnostics: true, traderKnowledgePriors: true, verifiedPublicUvMethodConsensus: true, externalTraderPlayerPicksImported: false, bronzeHardBlock: true, normalCardMinimumRating: 82, specialBelow82StrongDemandOnly: true, nonRareDemandGate: true, lowNonRareRatingHardBlockMax: 82, midNonRareDemandGateMin: 83, midNonRareDemandGateMax: 84, traderRulePriceSafetyLearning: isDbEnabled(), saleLikelihoodIndex: true, traderAwarePricingOptimizer: true, empiricalTargetSupportLearning: isDbEnabled(), optionalReportedTradeFeedback: isDbEnabled(), listLifecycleGuard: true, liveStoredListRecheck: isDbEnabled(), portfolioRebalancing: isDbEnabled(), reportedOutcomeLearning: isDbEnabled(), robustCandidatePipeline: true, apiNamespaceUv: true, futggUsageAudienceSplit: true, futggUsagePositionBreadth: true, futggInPacksSupply: true, demandEvidenceConfidence: true,
       playerSalesHistory: Boolean(futbinExtended.salesHistoryObserved),
       pgpGames: Boolean(futbinExtended.gamesObserved),
       popularPlayers: Boolean(futbinExtended.gamesObserved || futbinExtended.popularRankObserved),
@@ -267,6 +267,12 @@ function scheduleHistoryMonitorRetry(delayMs = 10_000) {
 
 async function runHistoryMonitorOnce() {
   if (!uvActive || !isDbEnabled() || historyMonitorBusy) return;
+  if (generationBusy) {
+    lastHistoryMonitorDeferredAt = new Date().toISOString();
+    lastHistoryMonitorDeferredReason = 'CPU-SAFE: ÜV-Generierung hat Priorität; History-Monitor wird bis danach verschoben.';
+    scheduleHistoryMonitorRetry(Math.max(10_000, GENERATION_BATCH_PAUSE_MS * 100));
+    return;
+  }
   if (liveRecheckActiveJobId) {
     lastHistoryMonitorDeferredAt = new Date().toISOString();
     lastHistoryMonitorDeferredReason = 'CPU-SAFE: Live-Recheck hat Prioritaet; History-Monitor wird bis danach verschoben.';
@@ -519,6 +525,29 @@ function cpuSafePause(ms = LIVE_RECHECK_BATCH_PAUSE_MS) {
     const timer = setTimeout(resolve, Math.max(0, Number(ms) || 0));
     timer.unref?.();
   });
+}
+
+
+async function generationCpuSafeMap(rows, mapper) {
+  const input = Array.isArray(rows) ? rows : [];
+  const out = new Array(input.length);
+  for (let offset = 0; offset < input.length; offset += GENERATION_SCORE_BATCH_SIZE) {
+    const end = Math.min(input.length, offset + GENERATION_SCORE_BATCH_SIZE);
+    for (let i = offset; i < end; i++) out[i] = mapper(input[i], i);
+    if (end < input.length) await cpuSafePause(GENERATION_BATCH_PAUSE_MS);
+  }
+  return out;
+}
+
+async function waitForGenerationCpuWindow() {
+  const startedAt = Date.now();
+  while (Date.now() - startedAt < GENERATION_CPU_WINDOW_WAIT_MS) {
+    const sharedRuntime = typeof sharedRuntimeProvider === 'function' ? sharedRuntimeProvider() : null;
+    const sharedBusy = sharedRuntime?.monitoringBusy === true;
+    if (!sharedBusy && !historyMonitorBusy && !liveRecheckActiveJobId) return true;
+    await cpuSafePause(300);
+  }
+  return false;
 }
 
 async function performLiveRecheck(listId, job = null) {
@@ -1001,6 +1030,11 @@ app.post('/api/uv/generate', async (req, res) => {
     const count = 100;
     if (!Number.isFinite(budget) || budget < 30_000) return res.status(400).json({ error: 'Für eine 100-Karten-Liste bitte mindestens 30.000 Coins eingeben.' });
 
+    // CPU-SAFE v2.9.2: do not stack a manual 100-card build on top of the
+    // Trader market loop, History monitor or Live-Recheck. Wait briefly for an
+    // idle window instead of pushing constrained hosts over their CPU cap.
+    await waitForGenerationCpuWindow();
+
     const [live, marketContext] = await Promise.all([
       getLiveFutggCards(platform, { allowRecentSafeSnapshot: true }),
       getFutbinMarketTrends(platform)
@@ -1038,30 +1072,29 @@ app.post('/api/uv/generate', async (req, res) => {
       loadTargetSupportPerformance(platform)
     ]);
 
-    let scored = pool.map(card => {
+    let scored = await generationCpuSafeMap(pool, card => {
       const history = historyMap.get(String(card.eaId)) || null;
       const learning = performanceMap.get(String(card.eaId)) || null;
       const base = { ...card, learning };
-      const s = scoreCard(base, history, ideal, marketContext);
-      return { ...base, ...s, history };
+      const score = scoreCard(base, history, ideal, marketContext);
+      const enriched = { ...base, ...score, history };
+      return {
+        ...enriched,
+        selectionScore: enriched.uvScore * 0.32 + enriched.longTermScore * 0.23 + enriched.budgetFit * 0.10 + enriched.priceActivityScore * 0.08 + enriched.popularityScore * 0.09 + enriched.demandEvidenceScore * 0.06 + enriched.learningScore * 0.12 - enriched.riskPenalty
+      };
     });
-
-    scored = scored.map(c => ({
-      ...c,
-      selectionScore: c.uvScore * 0.32 + c.longTermScore * 0.23 + c.budgetFit * 0.10 + c.priceActivityScore * 0.08 + c.popularityScore * 0.09 + c.demandEvidenceScore * 0.06 + c.learningScore * 0.12 - c.riskPenalty
-    }));
 
     // FUTBIN cross-check happens BEFORE the final 100-card optimizer,
     // so confirmed source agreement can influence which cards make the list.
     scored = await crosscheckFutbin(scored, platform);
-    scored = scored.map(card => {
+    scored = await generationCpuSafeMap(scored, card => {
       const history = historyMap.get(String(card.eaId)) || null;
       const learning = performanceMap.get(String(card.eaId)) || card.learning || null;
       const base = { ...card, learning };
-      const s = scoreCard(base, history, ideal, marketContext);
+      const score = scoreCard(base, history, ideal, marketContext);
       const withScore = {
         ...base,
-        ...s,
+        ...score,
         history
       };
       const withBuy = { ...withScore, ...buildBuyPlan(withScore, history) };
@@ -1368,6 +1401,13 @@ export function getUvRuntimeStatus() {
       consideredCards: lastHistoryMonitorConsideredCards,
       deferredAt: lastHistoryMonitorDeferredAt,
       deferredReason: lastHistoryMonitorDeferredReason
+    },
+    generationCpuSafe: {
+      busy: generationBusy,
+      batchSize: GENERATION_SCORE_BATCH_SIZE,
+      batchPauseMs: GENERATION_BATCH_PAUSE_MS,
+      cpuWindowWaitMs: GENERATION_CPU_WINDOW_WAIT_MS,
+      optimizerMode: 'INCREMENTAL_STATE_CACHE'
     },
     liveRecheckCpuSafe: {
       activeJobId: liveRecheckActiveJobId,

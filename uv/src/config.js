@@ -23,3 +23,9 @@ export const LIVE_RECHECK_BATCH_SIZE = Math.max(2, Math.min(20, Number(process.e
 export const LIVE_RECHECK_BATCH_PAUSE_MS = Math.max(25, Math.min(1000, Number(process.env.LIVE_RECHECK_BATCH_PAUSE_MS || 180)));
 export const LIVE_RECHECK_MAX_QUEUE = Math.max(1, Math.min(10, Number(process.env.LIVE_RECHECK_MAX_QUEUE || 3)));
 export const LIVE_RECHECK_JOB_TTL_MS = Math.max(120_000, Math.min(3_600_000, Number(process.env.LIVE_RECHECK_JOB_TTL_MS || 600_000)));
+
+// v2.9.2 CPU-safe list generation. Heavy scoring is split into short batches and
+// waits for the shared Trader/History loops to become idle before starting.
+export const GENERATION_SCORE_BATCH_SIZE = Math.max(25, Math.min(250, Number(process.env.GENERATION_SCORE_BATCH_SIZE || 90)));
+export const GENERATION_BATCH_PAUSE_MS = Math.max(5, Math.min(250, Number(process.env.GENERATION_BATCH_PAUSE_MS || 35)));
+export const GENERATION_CPU_WINDOW_WAIT_MS = Math.max(1000, Math.min(30000, Number(process.env.GENERATION_CPU_WINDOW_WAIT_MS || 12000)));
