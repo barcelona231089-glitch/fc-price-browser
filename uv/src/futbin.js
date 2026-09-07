@@ -242,8 +242,9 @@ export async function crosscheckFutbin(cards, platform = 'console') {
 
   return cards.map(card => {
     const result = byId.get(String(card.eaId));
-    const futbinPrice = Number.isFinite(result?.price) ? result.price : null;
-    const diffPct = futbinPrice && card.price ? ((futbinPrice - card.price) / card.price) * 100 : null;
+    const previousFutbinPrice = Number.isFinite(Number(card?.futbinPrice)) ? Number(card.futbinPrice) : null;
+    const futbinPrice = Number.isFinite(result?.price) ? result.price : previousFutbinPrice;
+    const diffPct = Number.isFinite(futbinPrice) && card.price ? ((futbinPrice - card.price) / card.price) * 100 : (Number.isFinite(Number(card?.sourceDiffPct)) ? Number(card.sourceDiffPct) : null);
     const evidence = result?.evidence || {};
 
     let popularityScore = Number.isFinite(card.popularityScore) ? Number(card.popularityScore) : null;
@@ -266,10 +267,10 @@ export async function crosscheckFutbin(cards, platform = 'console') {
     return {
       ...card,
       futbinPrice,
-      futbinChecked: Boolean(result),
-      futbinMatch: result?.ok || false,
-      futbinId: result?.id ?? null,
-      futbinVersion: result?.version ?? null,
+      futbinChecked: result ? true : Boolean(card.futbinChecked),
+      futbinMatch: result ? Boolean(result?.ok) : Boolean(card.futbinMatch),
+      futbinId: result?.id ?? card.futbinId ?? null,
+      futbinVersion: result?.version ?? card.futbinVersion ?? null,
       image: card.image || result?.image || null,
       sourceDiffPct: Number.isFinite(diffPct) ? diffPct : null,
       ...evidence,

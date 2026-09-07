@@ -101,7 +101,7 @@ test('v2.3 production status enforces hard 100 slots and sellability-first live 
   assert.match(uvApp, /sellabilityFirstRanking:\s*true/);
   assert.match(uvApp, /qualityFirstDynamicCount:\s*false/);
   assert.match(uvApp, /dynamicPortfolioSize:\s*false/);
-  assert.match(uvApp, /const UV_VERSION = '2\.10\.1'/);
+  assert.match(uvApp, /const UV_VERSION = '2\.10\.2'/);
   assert.ok(ui.includes('PROMO + LIVE MARKET'));
   assert.ok(ui.includes('Markt-Regime'));
   assert.ok(ui.includes('Promo-Heat'));
@@ -157,7 +157,9 @@ test('v2.7.2 live recheck uses proxy-safe async job polling and batched DB persi
   assert.ok(ui.includes('startLiveRecheckJob'));
   assert.ok(ui.includes('waitForLiveRecheckJob'));
   assert.ok(ui.includes('/api/uv/recheck-job/'));
-  assert.ok(ui.includes('transientFetchErrors < 5'));
+  assert.ok(ui.includes('transientFetchErrors < 15'));
+  assert.equal(ui.includes('const deadline = Date.now() + 300000'), false);
+  assert.ok(ui.includes('läuft weiter, nicht fehlgeschlagen'));
   assert.equal(ui.includes('setTimeout(()=>controller.abort(),90000)'), false);
   assert.ok(db.includes('jsonb_to_recordset($2::jsonb)'));
   const saveStart = db.indexOf('export async function saveListRecheck');
@@ -198,18 +200,41 @@ test('v2.10 demand/market-fit is the primary ranking layer and rating is not the
   assert.ok(uvApp.includes('ratingAsSecondaryPortfolioSignal: true'));
 });
 
-test('v2.9 CPU-safe live recheck serializes heavy work and reuses demand cache', () => {
+test('v2.10.2 CPU-safe full live recheck refreshes demand and preserves degraded-cache fallback', () => {
   assert.ok(uvApp.includes('LIVE_RECHECK_QUEUE'));
   assert.ok(uvApp.includes('liveRecheckActiveJobId'));
   assert.ok(uvApp.includes('LIVE_RECHECK_BATCH_SIZE'));
   assert.ok(uvApp.includes('LIVE_RECHECK_BATCH_PAUSE_MS'));
   assert.ok(uvApp.includes('attachCachedFutggDemandSignals'));
-  assert.ok(uvApp.includes("job.phase = 'CPU_SAFE_SCORING'"));
+  assert.ok(uvApp.includes("job.phase = 'FULL_CPU_SAFE_SCORING'"));
+  assert.ok(uvApp.includes("job.phase = 'FRESH_FUTGG_DEMAND'"));
+  assert.ok(uvApp.includes("job.phase = 'FUTBIN_CROSSCHECK'"));
+  assert.ok(uvApp.includes('await attachFutggDemandSignals(current)'));
+  assert.ok(uvApp.includes('current = await crosscheckFutbin(current, platform)'));
+  assert.ok(uvApp.includes('fullLiveRecheck: true'));
+  assert.ok(uvApp.includes('futbinGamesCoverage'));
+  assert.ok(uvApp.includes('futbinSalesCoverage'));
   assert.ok(uvApp.includes('await cpuSafePause()'));
   assert.ok(uvApp.includes('if (liveRecheckActiveJobId)'));
   assert.ok(uvApp.includes('liveRecheckCpuSafeQueue: true'));
   assert.ok(ui.includes("data.status === 'QUEUED'"));
   assert.ok(ui.includes('data.processed'));
+});
+
+test('v2.10.2 budget supports manual entry plus quick presets and saving is explicit opt-in', () => {
+  assert.ok(html.includes('id="budget"'));
+  for (const value of ['100000','300000','500000','1000000','3000000','12000000']) {
+    assert.ok(html.includes(`data-budget="${value}"`), value);
+  }
+  assert.ok(html.includes('id="saveListChoice"'));
+  assert.ok(html.includes('Liste speichern'));
+  assert.ok(ui.includes('budgetPresetButtons'));
+  assert.ok(ui.includes('saveList = Boolean(saveListChoice?.checked)'));
+  assert.ok(ui.includes('JSON.stringify({budget,platform,saveList})'));
+  assert.ok(uvApp.includes('const saveListRequested = req.body?.saveList === true'));
+  assert.ok(uvApp.includes('saveListRequested ? await saveGeneratedList(result).catch(() => null) : null'));
+  assert.ok(uvApp.includes('result.saved = Boolean(listId)'));
+  assert.equal(html.includes('automatisch gespeichert'), false);
 });
 
 test('v2.9 preserves rating-first manual player-list plan lock', () => {

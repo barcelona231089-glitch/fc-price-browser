@@ -75,3 +75,14 @@
 .savedListControl .secondary{height:38px;padding:7px 11px}
 @media(max-width:900px){.savedListControl{width:100%}.savedListControl select{flex:1;max-width:none;width:auto}.savedListControl .secondary{flex:0 0 auto}.tableActions{display:flex;flex-wrap:wrap}}
 @media(max-width:560px){.savedListControl{display:grid;grid-template-columns:1fr auto}.savedListControl select{width:100%}}
+
+/* v2.10.2 Manual budget presets + explicit save choice */
+.budgetPresets{display:flex;gap:5px;flex-wrap:wrap;margin-top:6px}
+.budgetPreset{min-width:0;padding:5px 8px;border:1px solid #344154;background:#151c27;color:#bfcadb;box-shadow:none;border-radius:7px;font-size:10px;font-weight:850}
+.budgetPreset:hover,.budgetPreset.active{border-color:#3b9b72;background:#143528;color:#7ff0b8}
+.generateActions{display:grid;grid-template-rows:auto 42px;gap:5px;align-self:end}
+.generateActions #generateBtn{width:100%}
+.saveChoice{display:flex;align-items:center;justify-content:flex-end;gap:6px;color:#b7c2d1;font-size:10px;font-weight:750;user-select:none;cursor:pointer}
+.saveChoice input{accent-color:var(--green);width:15px;height:15px;margin:0}
+@media(max-width:900px){.generateActions{grid-column:1/-1}.saveChoice{justify-content:flex-start}.compactGenerator #generateBtn{grid-column:auto}}
+@media(max-width:560px){.generateActions{grid-column:1}.budgetPresets{gap:4px}.budgetPreset{flex:1 1 27%;padding:6px}.saveChoice{justify-content:flex-start}}

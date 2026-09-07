@@ -15,7 +15,7 @@ import { runCandidatePipeline, deriveAdaptiveMarketPolicy, buildHard100Sellabili
 import { buildReportedOutcomeScore } from './src/outcomeLearning.js';
 
 export const uvRouter = express.Router();
-const UV_VERSION = '2.10.1';
+const UV_VERSION = '2.10.2';
 let uvActive = true;
 const app = uvRouter;
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -258,7 +258,7 @@ app.get('/api/uv/status', (req, res) => {
       postgresHistory: isDbEnabled(), budgetOptimizer100: true, eaTax: true,
       conservativeProfit: true, longTermScore: true, priceActivityProxy: isDbEnabled(),
       sourceRiskFilter: true, adaptiveCardMix: true, specialCardPriority: true, specialCardSoftTarget300k100: 'promo-live-market-adaptive', seasonPhaseRatingGuard: false, calendarPhaseContextOnly: true, promoMarketAdaptive: true, promoInPacksAwareness: true, promoMomentumAwareness: true, dynamicMarketPolicy: true, budgetAwareDynamicRating: true, demandGatedRatingRelaxation: true, budgetFeasibilityFallback: true, balancedLiquidityFallback: true, qualityFirstDynamicCount: false, dynamicPortfolioSize: false, hard100Slots: true, sellabilityFirstRanking: true, demandMarketFitFirstRanker: true, marketTradeableHardGuard: true, confirmedLiveBinRequired: true, sbcObjectiveRewardHardBlock: true, ratingPrimaryRanker: false, hard100PortfolioSellabilityFallback: true, adaptiveSpecialMix: true, maxExactCardCopies: 2, futggMostUsedDemand: true, futggMomentumDemand: true,
-      backgroundHistoryMonitor: isDbEnabled(), selfLearningPriceSafety: isDbEnabled(), smartBuyCeiling: true, qualityFirstOptimizer: true, budgetTop100Ranking: true, budgetTop100SafetyIsolation: true, budgetSafetyReserveFallback: true, publicTraderEndgameLogic: true, traderConsensusRanker: true, budgetTierAllocator: true, candidatePoolAllocationSeparation: true, budgetTierReferenceMode: 'soft-observed-shape-only', ratingAsSecondaryPortfolioSignal: true, cardVersionClassFromItemRecord: true, traderConsensusSources: ['Futpepi-budget-method','FUT.GG-usage-momentum','PostgreSQL-price-stability','FutStarz-demand-window-method','public-popularity-tiebreak'], endgameLowGoldCaps: true, endgame300kBase82Max: 2, endgame300kBase83OrLessMax: 8, futtiesDemandPriority: true, popularLeagueNationTieBreak: true, savedLists: isDbEnabled(), savedListReopen: isDbEnabled(), persistedLiveRecheck: isDbEnabled(), liveRecheckPost: true, liveRecheckAsyncJob: true, liveRecheckCpuSafeQueue: true, generationCpuSafeBatches: true, generationWaitsForIdleCpuWindow: true, optimizerLinearStateCache: true, liveRecheckDemandCacheOnly: true, liveRecheckBatchSize: LIVE_RECHECK_BATCH_SIZE, liveRecheckBatchPauseMs: LIVE_RECHECK_BATCH_PAUSE_MS, batchedRecheckPersistence: isDbEnabled(), currentBuyPricesVisible: true, capitalEfficiencyScore: true, adaptiveCapitalLadder: true, repeatabilityScore: true, longTermProfitRanker: true, portfolioDiagnostics: true, traderKnowledgePriors: true, verifiedPublicUvMethodConsensus: true, externalTraderPlayerPicksImported: false, bronzeHardBlock: true, normalCardMinimumRating: 82, specialBelow82StrongDemandOnly: true, nonRareDemandGate: true, lowNonRareRatingHardBlockMax: 82, midNonRareDemandGateMin: 83, midNonRareDemandGateMax: 84, traderRulePriceSafetyLearning: isDbEnabled(), saleLikelihoodIndex: true, traderAwarePricingOptimizer: true, empiricalTargetSupportLearning: isDbEnabled(), optionalReportedTradeFeedback: isDbEnabled(), listLifecycleGuard: true, liveStoredListRecheck: isDbEnabled(), portfolioRebalancing: isDbEnabled(), reportedOutcomeLearning: isDbEnabled(), robustCandidatePipeline: true, apiNamespaceUv: true, futggUsageAudienceSplit: true, futggUsagePositionBreadth: true, futggInPacksSupply: true, demandEvidenceConfidence: true,
+      backgroundHistoryMonitor: isDbEnabled(), selfLearningPriceSafety: isDbEnabled(), smartBuyCeiling: true, qualityFirstOptimizer: true, budgetTop100Ranking: true, budgetTop100SafetyIsolation: true, budgetSafetyReserveFallback: true, publicTraderEndgameLogic: true, traderConsensusRanker: true, budgetTierAllocator: true, candidatePoolAllocationSeparation: true, budgetTierReferenceMode: 'soft-observed-shape-only', ratingAsSecondaryPortfolioSignal: true, cardVersionClassFromItemRecord: true, traderConsensusSources: ['Futpepi-budget-method','FUT.GG-usage-momentum','PostgreSQL-price-stability','FutStarz-demand-window-method','public-popularity-tiebreak'], endgameLowGoldCaps: true, endgame300kBase82Max: 2, endgame300kBase83OrLessMax: 8, futtiesDemandPriority: true, popularLeagueNationTieBreak: true, savedLists: isDbEnabled(), savedListReopen: isDbEnabled(), manualListSaveChoice: true, autoSaveGeneratedLists: false, persistedLiveRecheck: isDbEnabled(), liveRecheckPost: true, liveRecheckAsyncJob: true, liveRecheckCpuSafeQueue: true, fullLiveRecheckFreshDemand: true, liveRecheckFutbinStructuredEvidence: true, generationCpuSafeBatches: true, generationWaitsForIdleCpuWindow: true, optimizerLinearStateCache: true, liveRecheckDemandCacheOnly: false, liveRecheckBatchSize: LIVE_RECHECK_BATCH_SIZE, liveRecheckBatchPauseMs: LIVE_RECHECK_BATCH_PAUSE_MS, batchedRecheckPersistence: isDbEnabled(), currentBuyPricesVisible: true, capitalEfficiencyScore: true, adaptiveCapitalLadder: true, repeatabilityScore: true, longTermProfitRanker: true, portfolioDiagnostics: true, traderKnowledgePriors: true, verifiedPublicUvMethodConsensus: true, externalTraderPlayerPicksImported: false, bronzeHardBlock: true, normalCardMinimumRating: 82, specialBelow82StrongDemandOnly: true, nonRareDemandGate: true, lowNonRareRatingHardBlockMax: 82, midNonRareDemandGateMin: 83, midNonRareDemandGateMax: 84, traderRulePriceSafetyLearning: isDbEnabled(), saleLikelihoodIndex: true, traderAwarePricingOptimizer: true, empiricalTargetSupportLearning: isDbEnabled(), optionalReportedTradeFeedback: isDbEnabled(), listLifecycleGuard: true, liveStoredListRecheck: isDbEnabled(), portfolioRebalancing: isDbEnabled(), reportedOutcomeLearning: isDbEnabled(), robustCandidatePipeline: true, apiNamespaceUv: true, futggUsageAudienceSplit: true, futggUsagePositionBreadth: true, futggInPacksSupply: true, demandEvidenceConfidence: true,
       playerSalesHistory: Boolean(futbinExtended.salesHistoryObserved),
       pgpGames: Boolean(futbinExtended.gamesObserved),
       popularPlayers: Boolean(futbinExtended.gamesObserved || futbinExtended.popularRankObserved),
@@ -588,29 +588,53 @@ async function performLiveRecheck(listId, job = null) {
   if (job) job.phase = 'LOAD_LIST';
   const stored = await loadGeneratedList(listId);
   const platform = stored.platform === 'pc' ? 'pc' : 'console';
-  const previousPayloadById = new Map(stored.items.map(item => [String(item.eaId), item.payload || {}]));
+  const items = Array.isArray(stored.items) ? stored.items : [];
+  const previousPayloadById = new Map(items.map(item => [String(item.eaId), item.payload || {}]));
+  const ideal = stored.budget / Math.max(1, stored.cardCount || items.length || 100);
 
-  if (job) { job.total = stored.items.length; job.processed = 0; job.phase = 'LIVE_MARKET'; }
+  if (job) { job.total = items.length; job.processed = 0; job.phase = 'LIVE_MARKET'; }
   const live = await getLiveFutggCards(platform);
-  const wanted = new Set(stored.items.map(i => String(i.eaId)));
+  const wanted = new Set(items.map(i => String(i.eaId)));
   let current = live.cards.filter(c => wanted.has(String(c.eaId)));
 
-  // CPU-SAFE v2.9.0: A live recheck must refresh live prices, but it does not
-  // need to re-parse three large FUT.GG HTML pages. Reuse the existing demand
-  // cache when available and otherwise carry the list's previous demand fields.
-  // This removes the main bursty parser work from the manual 100-card recheck.
-  if (job) job.phase = 'DEMAND_CACHE';
-  const demandAttached = attachCachedFutggDemandSignals(current);
-  current = demandAttached.cards.map(card => ({
-    ...carryPreviousDemand(previousPayloadById.get(String(card.eaId)) || {}),
-    ...card
-  }));
+  // v2.10.2 FULL LIVE RECHECK: refresh FUT.GG demand instead of treating the
+  // generation-time demand snapshot as fresh forever. If the public demand
+  // pages fail temporarily, fall back to the local demand cache and clearly
+  // report that degraded mode in the recheck summary.
+  let demandAttached;
+  let demandMode = 'FRESH_FUTGG_DEMAND';
+  if (job) job.phase = 'FRESH_FUTGG_DEMAND';
+  try {
+    demandAttached = await attachFutggDemandSignals(current);
+  } catch (error) {
+    demandAttached = attachCachedFutggDemandSignals(current);
+    demandMode = demandAttached.context?.cacheAvailable ? 'CACHED_FUTGG_DEMAND_FALLBACK' : 'PREVIOUS_LIST_DEMAND_FALLBACK';
+    demandAttached.context = {
+      ...(demandAttached.context || {}),
+      errors: [...(Array.isArray(demandAttached.context?.errors) ? demandAttached.context.errors : []), String(error?.message || error)]
+    };
+  }
+
+  current = demandAttached.cards.map(card => {
+    const previous = previousPayloadById.get(String(card.eaId)) || {};
+    // Keep prior structured FUTBIN/history fields as fallback, but live FUT.GG
+    // price/version/tradeability and freshly attached demand fields always win.
+    return { ...previous, ...carryPreviousDemand(previous), ...card };
+  });
 
   if (job) job.phase = 'MARKET_CONTEXT';
   const marketContext = await getFutbinMarketTrends(platform);
   current = attachMarketMoverSignals(current, marketContext);
+
+  // FUTBIN remains the secondary confirmation source for Games, popularity,
+  // sales history and cross-source price agreement. crosscheckFutbin is quota-
+  // aware and checks only its configured priority slice; unrefreshed rows retain
+  // their previous structured evidence instead of being erased.
+  if (job) job.phase = 'FUTBIN_CROSSCHECK';
+  current = await crosscheckFutbin(current, platform);
+
   const liveById = new Map(current.map(c => [String(c.eaId), c]));
-  const ids = stored.items.map(i => i.eaId);
+  const ids = items.map(i => i.eaId);
 
   if (job) job.phase = 'POSTGRES_FEATURES';
   const [historyMap, performanceMap, traderRulePerformance, targetSupportPerformance] = await Promise.all([
@@ -620,12 +644,10 @@ async function performLiveRecheck(listId, job = null) {
     loadTargetSupportPerformance(platform)
   ]);
 
-  const ideal = stored.budget / Math.max(1, stored.cardCount || stored.items.length || 100);
   const checkedAt = new Date();
   const rows = [];
-  const items = Array.isArray(stored.items) ? stored.items : [];
 
-  if (job) job.phase = 'CPU_SAFE_SCORING';
+  if (job) job.phase = 'FULL_CPU_SAFE_SCORING';
   for (let offset = 0; offset < items.length; offset += LIVE_RECHECK_BATCH_SIZE) {
     if (!uvWriteAllowed()) throw new Error('HA-Lease waehrend des Live-Rechecks verloren. Ergebnis wurde verworfen.');
     const batch = items.slice(offset, offset + LIVE_RECHECK_BATCH_SIZE);
@@ -640,15 +662,7 @@ async function performLiveRecheck(listId, job = null) {
 
       const history = historyMap.get(String(item.eaId)) || null;
       const learning = performanceMap.get(String(item.eaId)) || null;
-      const merged = {
-        ...liveCard,
-        learning,
-        futbinPrice: previous.futbinPrice ?? null,
-        futbinChecked: Boolean(previous.futbinChecked),
-        futbinMatch: Boolean(previous.futbinMatch),
-        sourceDiffPct: previous.sourceDiffPct ?? null,
-        ...Object.fromEntries(Object.entries(liveCard).filter(([,v]) => v !== undefined))
-      };
+      const merged = { ...liveCard, learning };
       const score = scoreCard(merged, history, ideal, marketContext);
       const withScore = { ...merged, ...score, history };
       const withBuy = { ...withScore, ...buildBuyPlan(withScore, history) };
@@ -662,11 +676,16 @@ async function performLiveRecheck(listId, job = null) {
       const economics = buildTradingEconomics(withTarget);
       const freshBase = { ...withTarget, ...economics };
       const sellabilityScore = buildSellabilityScore(freshBase);
-      const traderProfiled = attachPublicTraderProfile({ ...freshBase, sellabilityScore }, stored.budget, stored.cardCount || stored.items.length || 100);
+      const traderProfiled = attachPublicTraderProfile(
+        { ...freshBase, sellabilityScore },
+        stored.budget,
+        stored.cardCount || items.length || 100
+      );
       const budgetTop100Score = buildBudgetTop100Score(traderProfiled, ideal);
-      const baseSelectionScore = buildSelectionScore(traderProfiled);
-      const fresh = { ...traderProfiled, budgetTop100Score, selectionScore: baseSelectionScore };
+      const selectionScore = buildSelectionScore(traderProfiled);
+      const fresh = { ...traderProfiled, budgetTop100Score, selectionScore };
       const state = recheckRecommendation(previous, fresh, checkedAt);
+
       rows.push({
         slot: item.slot,
         eaId: item.eaId,
@@ -682,12 +701,39 @@ async function performLiveRecheck(listId, job = null) {
           uvScore: fresh.uvScore,
           longTermScore: fresh.longTermScore,
           tradeQualityScore: fresh.tradeQualityScore,
+          qualityGrade: fresh.qualityGrade,
+          qualityEligible: fresh.qualityEligible,
           selectionScore: fresh.selectionScore,
+          budgetTop100Score: fresh.budgetTop100Score,
+          demandMarketFitScore: fresh.demandMarketFitScore,
+          traderConsensusScore: fresh.traderConsensusScore,
+          sellabilityScore: fresh.sellabilityScore,
+          turnoverIndex: fresh.turnoverIndex,
+          popularityScore: fresh.popularityScore,
+          gameplayDemandScore: fresh.gameplayDemandScore,
+          priceActivityScore: fresh.priceActivityScore,
+          stability: fresh.stability,
           riskPenalty: fresh.riskPenalty,
           riskFlags: fresh.riskFlags,
           historyTrendPct: fresh.historyTrendPct,
           demandDataConfidence: fresh.demandDataConfidence,
           saleLikelihoodIndex: fresh.saleLikelihoodIndex,
+          sourceDiffPct: fresh.sourceDiffPct,
+          futbinPrice: fresh.futbinPrice,
+          futbinChecked: fresh.futbinChecked,
+          futbinMatch: fresh.futbinMatch,
+          futbinGamesCount: fresh.futbinGamesCount,
+          futbinPopularRank: fresh.futbinPopularRank,
+          futbinSoldSampleCount: fresh.futbinSoldSampleCount,
+          futbinSoldPriceMedian: fresh.futbinSoldPriceMedian,
+          futbinObservedSalesPerDay: fresh.futbinObservedSalesPerDay,
+          usagePct: fresh.usagePct,
+          communityUsagePct: fresh.communityUsagePct,
+          proUsagePct: fresh.proUsagePct,
+          momentumHit: fresh.momentumHit,
+          inPacksHit: fresh.inPacksHit,
+          supplyPressureScore: fresh.supplyPressureScore,
+          promoMarketScore: fresh.promoMarketScore,
           salesProbability: null
         }
       });
@@ -699,14 +745,27 @@ async function performLiveRecheck(listId, job = null) {
 
   const counts = rows.reduce((acc, row) => { acc[row.status] = (acc[row.status] || 0) + 1; return acc; }, {});
   const actionable = rows.filter(r => r.actionable).length;
+  const futbinConfirmed = rows.filter(r => r.fresh?.futbinMatch === true).length;
+  const futbinPriceCoverage = rows.filter(r => Number.isFinite(Number(r.fresh?.futbinPrice))).length;
+  const futbinGamesCoverage = rows.filter(r => Number.isFinite(Number(r.fresh?.futbinGamesCount))).length;
+  const futbinSalesCoverage = rows.filter(r => Number(r.fresh?.futbinSoldSampleCount || 0) > 0).length;
   const recheckSummary = {
     total: rows.length,
     actionable,
     counts,
     cpuSafe: true,
+    fullLiveRecheck: true,
     batchSize: LIVE_RECHECK_BATCH_SIZE,
     batchPauseMs: LIVE_RECHECK_BATCH_PAUSE_MS,
-    demandMode: demandAttached.context?.cacheAvailable ? 'CACHED_FUTGG_DEMAND' : 'PREVIOUS_LIST_DEMAND'
+    demandMode,
+    futbin: {
+      configured: Boolean(process.env.FUTBIN_PARSE_API_KEY),
+      confirmedMatches: futbinConfirmed,
+      priceCoverage: futbinPriceCoverage,
+      gamesCoverage: futbinGamesCoverage,
+      salesHistoryCoverage: futbinSalesCoverage,
+      note: 'FUTBIN is a quota-aware secondary evidence source; missing fresh coverage is reported, never invented.'
+    }
   };
 
   if (!uvWriteAllowed()) throw new Error('HA-Lease waehrend des Live-Rechecks verloren. Ergebnis wurde nicht als frisch gespeichert.');
@@ -725,18 +784,19 @@ async function performLiveRecheck(listId, job = null) {
     durationMs,
     cpuSafe: {
       enabled: true,
+      fullLiveRecheck: true,
       batchSize: LIVE_RECHECK_BATCH_SIZE,
       batchPauseMs: LIVE_RECHECK_BATCH_PAUSE_MS,
-      demandMode: recheckSummary.demandMode
+      demandMode
     },
     ageMinutes: Math.max(0, Math.round((checkedAt.getTime() - new Date(stored.createdAt).getTime()) / 60000)),
     summary: recheckSummary,
     semantics: {
-      KEEP: 'alte Empfehlung liegt noch nahe am aktuellen Preis-/Qualitaetsprofil',
-      REPRICE: 'Karte bleibt brauchbar, aber Kauf-/Verkaufspreise sollten aktualisiert werden',
-      WAIT: 'Qualitaet kann gut bleiben, aktueller Preis liegt aber zu weit ueber der alten Kaufgrenze',
-      DROP: 'konservative Sicherheits-/Qualitaetsgrenze wurde verletzt',
-      MISSING: 'kein aktueller FUT.GG-Preis vorhanden'
+      KEEP: 'Preis, Nachfrage, Marktaktivitaet, Risiko und Qualitaetsprofil bleiben innerhalb der Kaufregeln',
+      REPRICE: 'Karte bleibt brauchbar, aber Kauf-/Verkaufspreise oder Qualitaetsprofil wurden live aktualisiert',
+      WAIT: 'Qualitaet kann gut bleiben, der aktuelle Markt rechtfertigt aber keinen Kauf an der alten Grenze',
+      DROP: 'mindestens eine konservative Markt-/Demand-/Risiko-/Qualitaetsgrenze wurde verletzt',
+      MISSING: 'kein aktueller handelbarer FUT.GG-Marktpreis fuer diese Karten-ID vorhanden'
     },
     marketContext: { direction: marketContext?.direction || 'unknown', changePct: marketContext?.changePct ?? null, stabilityScore: marketContext?.stabilityScore ?? 55 },
     demandContext: demandAttached.context,
@@ -859,6 +919,7 @@ app.post('/api/uv/rebalance/:listId', async (req, res) => {
     const stored = await loadGeneratedList(req.params.listId);
     const platform = stored.platform === 'pc' ? 'pc' : 'console';
     const budget = Number(stored.budget);
+    const saveListRequested = req.body?.saveList === true;
     const count = Number(stored.cardCount || stored.items.length || 100);
 
     const [live, marketContext] = await Promise.all([
@@ -995,7 +1056,7 @@ app.post('/api/uv/rebalance/:listId', async (req, res) => {
       totalExpectedProfit: metrics.totalExpectedProfit,
       avgUvScore: metrics.avgUvScore
     };
-    const newListId = await saveGeneratedList(savePayload);
+    const newListId = saveListRequested ? await saveGeneratedList(savePayload) : null;
     const recheckCounts = recheckRows.reduce((acc, row) => { acc[row.status] = (acc[row.status] || 0) + 1; return acc; }, {});
 
     res.json({
@@ -1005,6 +1066,8 @@ app.post('/api/uv/rebalance/:listId', async (req, res) => {
       platform,
       budget,
       listId: newListId,
+      saved: Boolean(newListId),
+      saveRequested: saveListRequested,
       rebalanceFromListId: stored.id,
       checkedAt: checkedAt.toISOString(),
       ...metrics,
@@ -1057,6 +1120,7 @@ app.post('/api/uv/generate', async (req, res) => {
   try {
     const budget = Math.floor(Number(req.body?.budget));
     const platform = req.body?.platform === 'pc' ? 'pc' : 'console';
+    const saveListRequested = req.body?.saveList === true;
     const count = 100;
     if (!Number.isFinite(budget) || budget < 30_000) return res.status(400).json({ error: 'Für eine 100-Karten-Liste bitte mindestens 30.000 Coins eingeben.' });
 
@@ -1368,8 +1432,10 @@ app.post('/api/uv/generate', async (req, res) => {
       cards: selected
     };
 
-    const listId = await saveGeneratedList(result).catch(() => null);
+    const listId = saveListRequested ? await saveGeneratedList(result).catch(() => null) : null;
     result.listId = listId;
+    result.saved = Boolean(listId);
+    result.saveRequested = saveListRequested;
     lastGenerationAt = new Date().toISOString();
     lastError = null;
     res.json(result);

@@ -9,6 +9,8 @@ const recheckBtn = $('#recheckBtn');
 const rebalanceBtn = $('#rebalanceBtn');
 const savedListSelect = $('#savedListSelect');
 const loadSavedBtn = $('#loadSavedBtn');
+const saveListChoice = $('#saveListChoice');
+const budgetPresetButtons = [...document.querySelectorAll('.budgetPreset')];
 const statusFilters = [...document.querySelectorAll('.statusFilter')];
 let lastCards = [];
 let lastListId = null;
@@ -382,6 +384,7 @@ async function openSavedList(listId){
     const r=await fetch(`/api/uv/list/${encodeURIComponent(listId)}`);
     const data=await r.json(); if(!r.ok) throw new Error(data.error||'Liste konnte nicht geöffnet werden.');
     $('#budget').value=data.budget;
+    syncBudgetPresetState();
     $('#platform').value=data.platform;
     lastCards=data.cards||[];
     lastListId=data.listId||Number(listId);
@@ -403,14 +406,21 @@ async function openSavedList(listId){
 
 btn.addEventListener('click', async()=>{
   const budget = Number($('#budget').value); const platform=$('#platform').value;
+  const saveList = Boolean(saveListChoice?.checked);
   btn.disabled=true;loading.classList.remove('hidden');summary.classList.add('hidden');notice.classList.add('hidden');
   rows.innerHTML='<tr><td colspan="9" class="empty">Live-Marktdaten, Nachfrage, Outcome-Lernen und robuste Kandidaten-Gates werden geprüft; danach werden bis zu 100 hochwertige Karten innerhalb des Budgets optimiert…</td></tr>';
   try{
-    const r=await fetch('/api/uv/generate',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({budget,platform})});
-    const data=await r.json(); if(!r.ok) throw new Error(data.error||'Fehler');
+    const r=await fetch('/api/uv/generate',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({budget,platform,saveList})});
+    const text=await r.text();
+    let data;
+    try{data=JSON.parse(text)}catch{throw new Error(`Server lieferte keine JSON-Antwort (HTTP ${r.status}).`)}
+    if(!r.ok) throw new Error(data.error||'Fehler');
     lastCards=data.cards; lastListId=data.listId||null; lastCheckedListId=null; resetListUiState(); renderSummary(data); renderCurrentRows(); filter.disabled=false; recheckBtn.disabled=!lastListId; rebalanceBtn.disabled=true;
-    $('#tableSub').textContent=`${data.count} Karten • Pool ${data.candidatePoolSize} • Budget übrig ${coins(data.unusedBudget)} • Vor dem Kaufen: Liste live prüfen`;
-    notice.textContent=`${data.listId?`Liste #${data.listId} automatisch in PostgreSQL gespeichert. `:''}${data.dataNotice}`; notice.classList.remove('hidden');
+    $('#tableSub').textContent=`${data.count} Karten • Pool ${data.candidatePoolSize} • Budget übrig ${coins(data.unusedBudget)}${lastListId?' • Vor dem Kaufen: Liste live prüfen':' • Nicht gespeichert'}`;
+    notice.textContent=lastListId
+      ? `Liste #${lastListId} gespeichert. Vor dem Kaufen zuerst „Liste live prüfen“ verwenden. ${data.dataNotice||''}`
+      : `Liste nur angezeigt und NICHT gespeichert. Wenn du eine Liste für später behalten, live prüfen oder neu ausbalancieren willst, aktiviere vor der nächsten Generierung „Liste speichern“. ${data.dataNotice||''}`;
+    notice.classList.remove('hidden');
     await loadSavedLists(data.listId||null);
   }catch(e){rows.innerHTML=`<tr><td colspan="9" class="empty error">${e.message}</td></tr>`}
   finally{btn.disabled=false;loading.classList.add('hidden')}
@@ -441,13 +451,15 @@ async function startLiveRecheckJob(listId) {
 }
 
 async function waitForLiveRecheckJob(jobId, listId) {
-  const deadline = Date.now() + 300000;
+  const startedPollingAt = Date.now();
   let transientFetchErrors = 0;
-  while (Date.now() < deadline) {
+  while (true) {
     await sleep(2000);
     try {
       const r = await fetch(`/api/uv/recheck-job/${encodeURIComponent(jobId)}?t=${Date.now()}`, { cache:'no-store' });
-      const data = await r.json();
+      const text = await r.text();
+      let data;
+      try{data=JSON.parse(text)}catch{throw new Error(`Recheck-Status war keine JSON-Antwort (HTTP ${r.status}).`)}
       if (!r.ok) throw new Error(data.error || 'Recheck-Status nicht abrufbar');
       transientFetchErrors = 0;
       if (data.status === 'DONE') return data.result;
@@ -456,21 +468,25 @@ async function waitForLiveRecheckJob(jobId, listId) {
         $('#tableSub').textContent=`Live-Recheck für Liste #${listId} wartet CPU-sicher in der Queue${data.queuePosition?` • Position ${data.queuePosition}`:''}…`;
         continue;
       }
-      const seconds = Math.max(1, Math.round((Date.now() - new Date(data.startedAt || Date.now()).getTime()) / 1000));
+      const seconds = Math.max(1, Math.round((Date.now() - new Date(data.startedAt || startedPollingAt).getTime()) / 1000));
       const progress = Number(data.total) > 0 ? ` • ${Number(data.processed||0)}/${Number(data.total)}` : '';
       const phase = data.phase ? ` • ${String(data.phase).replaceAll('_',' ')}` : '';
-      $('#tableSub').textContent=`Live-Recheck für Liste #${listId} läuft CPU-sicher… ${seconds}s${progress}${phase}`;
+      const longRun = seconds >= 300 ? ' • läuft weiter, nicht fehlgeschlagen' : '';
+      $('#tableSub').textContent=`Live-Recheck für Liste #${listId} läuft CPU-sicher… ${seconds}s${progress}${phase}${longRun}`;
+      if(seconds >= 300){
+        notice.textContent='Live-Prüfung dauert länger als 5 Minuten, läuft serverseitig aber weiter. Die Oberfläche wartet auf DONE oder einen echten FAILED-Status.';
+        notice.classList.remove('hidden');
+      }
     } catch (error) {
-      const transient = error instanceof TypeError || /failed to fetch|network/i.test(String(error?.message || ''));
-      if (transient && transientFetchErrors < 5) {
+      const transient = error instanceof TypeError || /failed to fetch|network|keine json-antwort/i.test(String(error?.message || ''));
+      if (transient && transientFetchErrors < 15) {
         transientFetchErrors++;
-        $('#tableSub').textContent=`Live-Recheck läuft weiter… Verbindung wird erneut geprüft (${transientFetchErrors}/5)`;
+        $('#tableSub').textContent=`Live-Recheck läuft vermutlich weiter… Verbindung wird erneut geprüft (${transientFetchErrors}/15)`;
         continue;
       }
       throw error;
     }
   }
-  throw new Error('Live-Prüfung läuft länger als 5 Minuten. Der Server-Job wurde nicht abgebrochen; bitte kurz erneut auf „Liste live prüfen“ klicken, um den aktuellen Stand abzurufen.');
 }
 
 recheckBtn.addEventListener('click', async()=>{
@@ -479,14 +495,17 @@ recheckBtn.addEventListener('click', async()=>{
   rebalanceBtn.disabled=true;
   const oldText=recheckBtn.textContent;
   recheckBtn.textContent='Prüfe live…';
-  notice.textContent=`Live-Prüfung für Liste #${lastListId} startet… Der Server prüft FUT.GG im Hintergrund.`;
+  notice.textContent=`Live-Prüfung für Liste #${lastListId} startet… FUT.GG, FUTBIN, Nachfrage, Markttrend, PostgreSQL-Historie, Risiko und Profit werden neu bewertet.`;
   notice.classList.remove('hidden');
   $('#tableSub').textContent=`Live-Recheck für Liste #${lastListId} startet…`;
   try{
     const started = await startLiveRecheckJob(lastListId);
     const data = await waitForLiveRecheckJob(started.jobId, lastListId);
     const byId=new Map((data.cards||[]).map(x=>[String(x.eaId),x]));
-    lastCards=lastCards.map(c=>({...c,_recheck:byId.get(String(c.eaId))||null}));
+    lastCards=lastCards.map(c=>{
+      const liveRow=byId.get(String(c.eaId))||null;
+      return liveRow?.fresh ? {...c,...liveRow.fresh,_recheck:liveRow} : {...c,_recheck:liveRow};
+    });
     lastCheckedListId=lastListId;
     renderCurrentRows();
     const c=data.summary?.counts||{};
@@ -511,22 +530,45 @@ rebalanceBtn.addEventListener('click', async()=>{
   rebalanceBtn.textContent='Balanciere neu…';
   try{
     const oldListId=lastListId;
-    const r=await fetch(`/api/uv/rebalance/${lastListId}`,{method:'POST'});
-    const data=await r.json(); if(!r.ok) throw new Error(data.error||'Rebalance fehlgeschlagen');
-    lastCards=data.cards||[]; lastListId=data.listId||lastListId; lastCheckedListId=null; activeStatusFilter='ALL'; expandedRows.clear();
+    const saveList=Boolean(saveListChoice?.checked);
+    const r=await fetch(`/api/uv/rebalance/${lastListId}`,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({saveList})});
+    const text=await r.text();
+    let data;
+    try{data=JSON.parse(text)}catch{throw new Error(`Server lieferte keine JSON-Antwort (HTTP ${r.status}).`)}
+    if(!r.ok) throw new Error(data.error||'Rebalance fehlgeschlagen');
+    lastCards=data.cards||[]; lastListId=data.listId||null; lastCheckedListId=null; activeStatusFilter='ALL'; expandedRows.clear();
     renderSummary(data); renderCurrentRows();
     const rb=data.rebalance||{};
-    $('#tableSub').textContent=`Rebalance #${oldListId} → #${lastListId} • behalten ${rb.retainedCount||0} • ersetzt ${rb.replacementCount||0} • Vor dem Kaufen wieder live prüfen`;
-    notice.textContent=`Neue ${data.count||lastCards.length}er-Liste #${lastListId} automatisch gespeichert: ${rb.retainedCount||0} Positionen behalten, ${rb.replacementCount||0} neu besetzt. Die neue Liste gilt in der UI bewusst wieder als ungeprüft. Vor dem Kaufen zuerst „Liste live prüfen“ drücken.`;
+    $('#tableSub').textContent=lastListId
+      ? `Rebalance #${oldListId} → #${lastListId} • behalten ${rb.retainedCount||0} • ersetzt ${rb.replacementCount||0} • Vor dem Kaufen wieder live prüfen`
+      : `Rebalance von #${oldListId} nur angezeigt • behalten ${rb.retainedCount||0} • ersetzt ${rb.replacementCount||0} • Nicht gespeichert`;
+    notice.textContent=lastListId
+      ? `Neue ${data.count||lastCards.length}er-Liste #${lastListId} gespeichert. Die neue Liste gilt wieder als ungeprüft. Vor dem Kaufen zuerst „Liste live prüfen“ drücken.`
+      : `Neu ausbalancierte Liste wurde NICHT gespeichert. Aktiviere „Liste speichern“, wenn du die nächste erzeugte oder ausbalancierte Liste behalten möchtest.`;
     notice.classList.remove('hidden');
-    await loadSavedLists(lastListId);
+    recheckBtn.disabled=!lastListId;
+    rebalanceBtn.disabled=true;
+    await loadSavedLists(lastListId||null);
   }catch(e){notice.textContent=e.message;notice.classList.remove('hidden');rebalanceBtn.disabled=false}
-  finally{recheckBtn.disabled=!lastListId;rebalanceBtn.textContent=oldText}
+  finally{recheckBtn.disabled=!lastListId;rebalanceBtn.disabled=!lastListId;rebalanceBtn.textContent=oldText}
 });
 
 savedListSelect?.addEventListener('change',()=>{ loadSavedBtn.disabled=!savedListSelect.value; });
 loadSavedBtn?.addEventListener('click',()=>openSavedList(savedListSelect.value));
 $('#platform')?.addEventListener('change',()=>loadSavedLists());
+
+function syncBudgetPresetState(){
+  const value=Number($('#budget')?.value||0);
+  for(const button of budgetPresetButtons) button.classList.toggle('active',Number(button.dataset.budget)===value);
+}
+for(const button of budgetPresetButtons){
+  button.addEventListener('click',()=>{
+    $('#budget').value=button.dataset.budget;
+    syncBudgetPresetState();
+  });
+}
+$('#budget')?.addEventListener('input',syncBudgetPresetState);
+syncBudgetPresetState();
 
 filter.addEventListener('input',renderCurrentRows);
 

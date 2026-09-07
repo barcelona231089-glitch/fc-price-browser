@@ -14,16 +14,27 @@
     </header>
 
     <section class="generator panel compactGenerator">
-      <div class="field grow">
+      <div class="field grow budgetField">
         <label for="budget">Budget</label>
-        <div class="coinInput"><span>🪙</span><input id="budget" type="number" min="30000" step="1000" value="300000" /></div>
+        <div class="coinInput"><span>🪙</span><input id="budget" type="number" min="30000" step="1000" value="300000" inputmode="numeric" /></div>
+        <div class="budgetPresets" role="group" aria-label="Schnelle Budgetauswahl">
+          <button type="button" class="budgetPreset" data-budget="100000">100k</button>
+          <button type="button" class="budgetPreset" data-budget="300000">300k</button>
+          <button type="button" class="budgetPreset" data-budget="500000">500k</button>
+          <button type="button" class="budgetPreset" data-budget="1000000">1M</button>
+          <button type="button" class="budgetPreset" data-budget="3000000">3M</button>
+          <button type="button" class="budgetPreset" data-budget="12000000">12M</button>
+        </div>
       </div>
       <div class="field platformField">
         <label for="platform">Plattform</label>
         <select id="platform"><option value="console">Konsole</option><option value="pc">PC</option></select>
       </div>
-      <button id="generateBtn">ÜV-Liste generieren</button>
-      <div class="generatorNote">Top 100 fürs Budget • automatisch gespeichert • FUT.GG + FUTBIN • Demand/Trend vor Rating</div>
+      <div class="generateActions">
+        <label class="saveChoice"><input id="saveListChoice" type="checkbox" /> <span>Liste speichern</span></label>
+        <button id="generateBtn">ÜV-Liste generieren</button>
+      </div>
+      <div class="generatorNote">Top 100 fürs Budget • Budget frei eingeben oder Schnellbetrag wählen • Speichern nur wenn du es auswählst • FUT.GG + FUTBIN • Demand/Trend vor Rating</div>
     </section>
 
     <section id="loading" class="panel loading hidden">
