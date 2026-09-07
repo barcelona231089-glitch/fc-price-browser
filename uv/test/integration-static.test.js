@@ -101,7 +101,7 @@ test('v2.3 production status enforces hard 100 slots and sellability-first live 
   assert.match(uvApp, /sellabilityFirstRanking:\s*true/);
   assert.match(uvApp, /qualityFirstDynamicCount:\s*false/);
   assert.match(uvApp, /dynamicPortfolioSize:\s*false/);
-  assert.match(uvApp, /const UV_VERSION = '2\.9\.3'/);
+  assert.match(uvApp, /const UV_VERSION = '2\.10\.0'/);
   assert.ok(ui.includes('PROMO + LIVE MARKET'));
   assert.ok(ui.includes('Markt-Regime'));
   assert.ok(ui.includes('Promo-Heat'));
@@ -175,7 +175,7 @@ test('v2.7 trader consensus + budget tier allocator combine demand, stability, p
   assert.ok(uvApp.includes('endgame300kBase83OrLessMax: 8'));
   assert.ok(uvApp.includes('futtiesDemandPriority: true'));
   assert.ok(uvApp.includes('buildTraderConsensusScore'));
-  assert.ok(uvApp.includes('budget-top100-v2.7-budget-tier-allocator+trader-consensus'));
+  assert.ok(uvApp.includes('budget-top100-v2.10-demand-market-fit+budget-tier-allocator+trader-consensus'));
   assert.ok(uvApp.includes('budgetTierAllocator: true'));
   assert.ok(uvApp.includes('candidatePoolAllocationSeparation: true'));
   assert.ok(uvApp.includes('buildBudgetTierScore'));
@@ -185,6 +185,15 @@ test('v2.7 trader consensus + budget tier allocator combine demand, stability, p
   assert.ok(ui.includes('Consensus-Tags'));
 });
 
+
+
+test('v2.10 demand/market-fit is the primary ranking layer and rating is not the primary ranker', () => {
+  assert.ok(uvApp.includes('buildDemandMarketFitScore'));
+  assert.ok(uvApp.includes('demandMarketFitScore: marketFit.score'));
+  assert.ok(uvApp.includes('demandMarketFitFirstRanker: true'));
+  assert.ok(uvApp.includes('ratingPrimaryRanker: false'));
+  assert.ok(uvApp.includes('ratingAsSecondaryPortfolioSignal: true'));
+});
 
 test('v2.9 CPU-safe live recheck serializes heavy work and reuses demand cache', () => {
   assert.ok(uvApp.includes('LIVE_RECHECK_QUEUE'));

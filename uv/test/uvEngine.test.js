@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { buildBuyPlan, buildPricing, optimizeList, optimizeListWithSeed, maxAffordablePortfolioCount, scoreCard, filterConservativeCandidates, buildLongTermProjection, buildSelectionScore, buildSellabilityScore, buildBudgetTop100Score, buildPublicTraderEndgameScore, buildTraderConsensusScore, buildBudgetTierProfile, buildBudgetTierScore } from '../src/uvEngine.js';
+import { buildBuyPlan, buildPricing, optimizeList, optimizeListWithSeed, maxAffordablePortfolioCount, scoreCard, filterConservativeCandidates, buildLongTermProjection, buildSelectionScore, buildSellabilityScore, buildBudgetTop100Score, buildPublicTraderEndgameScore, buildTraderConsensusScore, buildBudgetTierProfile, buildBudgetTierScore, buildDemandMarketFitScore } from '../src/uvEngine.js';
 
 test('5% tax and conservative profit are calculated', () => {
   const p = buildPricing(20_000, 80, 80);
@@ -840,4 +840,58 @@ test('v2.9.3 1M premium guard blocks normal 84 filler when higher-tier supply is
   assert.equal(normal84OrLess, 0, `normal<=84=${normal84OrLess}`);
   assert.ok(special84 >= 0); // low-rated specials remain eligible; they are not filler-capped by OVR.
   assert.ok(out.total <= 1_000_000);
+});
+
+
+test('v2.10 demand market-fit beats rating when the lower-rated Special has real demand', () => {
+  const opts = { budget: 1_000_000, count: 100, gameYear: 26, now: new Date('2026-09-07T00:00:00Z') };
+  const demandedSpecial = buildDemandMarketFitScore({
+    overall: 84, cardType: 'Special', recommendedBuyPrice: 10_500,
+    gameplayDemandScore: 88, saleLikelihoodIndex: 82, turnoverIndex: 80,
+    priceActivityScore: 78, trendScore: 65, stability: 76, tradeQualityScore: 84,
+    repeatabilityScore: 80, demandDataConfidence: 82, futbinGamesScore: 86,
+    futbinSalesEvidenceScore: 82, futbinGamesCount: 1_200_000, futbinSoldSampleCount: 8,
+    usagePct: 5, momentumHit: true, netProfit: 1500, riskPenalty: 0
+  }, opts);
+  const quietHighRated = buildDemandMarketFitScore({
+    overall: 90, cardType: 'Base Rare', recommendedBuyPrice: 10_500,
+    gameplayDemandScore: 52, saleLikelihoodIndex: 50, turnoverIndex: 48,
+    priceActivityScore: 52, trendScore: 48, stability: 70, tradeQualityScore: 62,
+    repeatabilityScore: 55, demandDataConfidence: 50, futbinGamesScore: 48,
+    futbinSalesEvidenceScore: 45, netProfit: 1500, riskPenalty: 0
+  }, opts);
+  assert.ok(demandedSpecial.score > quietHighRated.score, `special=${demandedSpecial.score} normal90=${quietHighRated.score}`);
+  assert.ok(demandedSpecial.tags.includes('SPECIAL_STRONG_DEMAND'));
+  assert.ok(demandedSpecial.tags.includes('LOW_OVR_SPECIAL_VERSION_OK'));
+});
+
+test('v2.10 weak Special does not get a free promo pass', () => {
+  const opts = { budget: 1_000_000, count: 100, gameYear: 26, now: new Date('2026-09-07T00:00:00Z') };
+  const weakSpecial = buildDemandMarketFitScore({
+    overall: 95, cardType: 'Special', recommendedBuyPrice: 10_000,
+    gameplayDemandScore: 42, saleLikelihoodIndex: 44, turnoverIndex: 42,
+    priceActivityScore: 45, trendScore: 45, stability: 58, tradeQualityScore: 52,
+    repeatabilityScore: 48, demandDataConfidence: 42, netProfit: 1500, riskPenalty: 0
+  }, opts);
+  const demandedNormal = buildDemandMarketFitScore({
+    overall: 87, cardType: 'Base Rare', recommendedBuyPrice: 10_000,
+    gameplayDemandScore: 82, saleLikelihoodIndex: 78, turnoverIndex: 75,
+    priceActivityScore: 72, trendScore: 60, stability: 74, tradeQualityScore: 78,
+    repeatabilityScore: 72, demandDataConfidence: 74, futbinGamesCount: 800_000,
+    futbinSoldSampleCount: 4, communityUsagePct: 3, netProfit: 1500, riskPenalty: 0
+  }, opts);
+  assert.ok(demandedNormal.score > weakSpecial.score, `normal=${demandedNormal.score} weakSpecial=${weakSpecial.score}`);
+  assert.ok(weakSpecial.tags.includes('SPECIAL_WITHOUT_PROOF'));
+});
+
+test('v2.10 selection score is demand-market-fit first when other quality is equal', () => {
+  const common = {
+    overall: 88, cardType: 'Base Rare', sellabilityScore: 70, tradeQualityScore: 72,
+    repeatabilityScore: 70, longTermProfitScore: 70, capitalEfficiencyScore: 70,
+    traderConsensusScore: 70, budgetTierScore: 70, reportedOutcomeScore: 60,
+    targetSupportScore: 60, demandDataConfidence: 65, riskPenalty: 0
+  };
+  const strong = buildSelectionScore({ ...common, demandMarketFitScore: 88 });
+  const weak = buildSelectionScore({ ...common, demandMarketFitScore: 48 });
+  assert.ok(strong > weak, `strong=${strong} weak=${weak}`);
 });

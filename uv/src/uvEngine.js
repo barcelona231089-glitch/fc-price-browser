@@ -578,34 +578,41 @@ export function buildSellabilityScore(card = {}) {
 export function buildSelectionScore(card) {
   const overall = Number(card.overall || 0);
   const cardType = String(card.cardType || '').toLowerCase();
-  const rarityPreference = cardType === 'special'
-    ? 7
+  const sellability = Number.isFinite(Number(card.sellabilityScore)) ? Number(card.sellabilityScore) : buildSellabilityScore(card);
+  const tradeQuality = Number(card.tradeQualityScore || 50);
+  const marketFit = Number.isFinite(Number(card.demandMarketFitScore))
+    ? Number(card.demandMarketFitScore)
+    : clamp(sellability * 0.72 + tradeQuality * 0.28, 0, 100);
+
+  // v2.10: card rating is no longer a primary ranking input. A Special gets only
+  // a tiny version nudge here because the real Special advantage must already be
+  // justified by demandMarketFitScore. Low-rated/common normals keep a small
+  // safety/ranking penalty so cheap filler cannot win on price alone.
+  const versionNudge = cardType === 'special'
+    ? 2
     : cardType === 'base rare'
-      ? 3
+      ? 1
       : cardType === 'base common'
         ? (overall >= 85 ? -3 : overall >= 83 ? -7 : -12)
         : 0;
-  const sellability = Number.isFinite(Number(card.sellabilityScore)) ? Number(card.sellabilityScore) : buildSellabilityScore(card);
+
   return clamp(
-    sellability * 0.31 +
-    Number(card.tradeQualityScore || 50) * 0.15 +
-    Number(card.longTermProfitScore || 50) * 0.09 +
+    marketFit * 0.38 +
+    sellability * 0.20 +
+    tradeQuality * 0.10 +
     Number(card.repeatabilityScore || 50) * 0.07 +
-    Number(card.longTermScore || 50) * 0.06 +
-    Number(card.uvScore || 50) * 0.055 +
-    Number(card.capitalEfficiencyScore || 50) * 0.055 +
-    Number(card.traderPriorScore || 50) * 0.05 +
-    Number(card.promoMarketScore || 50) * 0.035 +
-    Number(card.demandDataConfidence || 45) * 0.03 +
-    Number(card.targetSupportScore || 50) * 0.025 +
+    Number(card.longTermProfitScore || 50) * 0.05 +
+    Number(card.capitalEfficiencyScore || 50) * 0.04 +
+    Number(card.traderConsensusScore || 50) * 0.05 +
+    Number(card.budgetTierScore || 50) * 0.04 +
     Number(card.reportedOutcomeScore || 50) * 0.025 +
-    Number(card.budgetFit || 50) * 0.045 +
-    Number(card.learningScore || 50) * 0.025 +
-    (Number(card.budgetTierScore || 50) - 50) * 0.12 +
-    rarityPreference -
+    Number(card.targetSupportScore || 50) * 0.015 +
+    Number(card.demandDataConfidence || 45) * 0.015 +
+    Number(card.promoMarketScore || 50) * 0.01 +
+    versionNudge -
     Number(card.capitalLockRisk || 0) * 0.08 -
     Number(card.contentRiskScore || 0) * 0.04 -
-    Number(card.supplyPressureScore || 0) * 0.02 -
+    Number(card.supplyPressureScore || 0) * 0.025 -
     Number(card.riskPenalty || 0) * 0.62,
     0,
     100
@@ -806,6 +813,171 @@ export function buildBudgetTierScore(card = {}, { budget = null, count = 100, ga
     band: budgetTierBandForRatio(ratio),
     versionClass,
     specialTargetRatio: profile.specialTargetRatio,
+    tags,
+    phase: gameYear == null ? 'UNKNOWN' : traderSeasonPhaseForGameYear(gameYear, now)
+  };
+}
+
+
+/**
+ * v2.10 Demand / Market-Fit ranker.
+ *
+ * Public ÜV methodology is translated into one explicit decision layer:
+ *   1) live demand / sellability evidence,
+ *   2) active + stable market,
+ *   3) price tier that matches capital per transfer-list slot,
+ *   4) repeatable net margin and data confidence.
+ *
+ * Overall rating is deliberately only a weak control signal for NORMAL cards.
+ * Specials are judged by their exact card version and live demand evidence, so
+ * an 84 Special can beat a 90 normal when the Special is the card buyers seek.
+ */
+export function buildDemandMarketFitScore(card = {}, { budget = null, count = 100, gameYear = null, now = new Date() } = {}) {
+  const total = Math.max(1, Number(budget) || 1);
+  const slots = Math.max(1, Number(count) || 100);
+  const profile = buildBudgetTierProfile(total, slots);
+  const ideal = Math.max(1, profile.idealPrice);
+  const price = Number(card?.recommendedBuyPrice ?? card?.buyPrice ?? card?.price ?? 0);
+  const priceRatio = price > 0 ? price / ideal : 1;
+  const special = isPublicTraderSpecial(card);
+  const overall = Number(card?.overall || 0);
+
+  const gameplay = clamp(Number(card?.gameplayDemandScore ?? card?.popularityScore ?? 50), 0, 100);
+  const sale = clamp(Number(card?.saleLikelihoodIndex ?? 50), 0, 100);
+  const turnover = clamp(Number(card?.turnoverIndex ?? 50), 0, 100);
+  const activity = clamp(Number(card?.priceActivityScore ?? 50), 0, 100);
+  const trend = clamp(Number(card?.trendScore ?? 50), 0, 100);
+  const stability = clamp(Number(card?.stability ?? 50), 0, 100);
+  const trade = clamp(Number(card?.tradeQualityScore ?? 50), 0, 100);
+  const repeatability = clamp(Number(card?.repeatabilityScore ?? 50), 0, 100);
+  const confidence = clamp(Number(card?.demandDataConfidence ?? card?.confidenceScore ?? 45), 0, 100);
+  const outcome = clamp(Number(card?.reportedOutcomeScore ?? card?.learningScore ?? 50), 0, 100);
+  const gamesScore = clamp(Number(card?.futbinGamesScore ?? 50), 0, 100);
+  const salesScore = clamp(Number(card?.futbinSalesEvidenceScore ?? card?.salesEvidenceScore ?? 50), 0, 100);
+  const usage = Math.max(0, Number(card?.usagePct || 0), Number(card?.communityUsagePct || 0), Number(card?.proUsagePct || 0));
+  const popularRank = Number(card?.futbinPopularRank);
+  const gamesCount = Number(card?.futbinGamesCount);
+  const soldSamples = Math.max(0, Number(card?.futbinSoldSampleCount || 0));
+  const netProfit = Math.max(0, Number(card?.netProfit || 0));
+  const profit = profitQualityScore(netProfit);
+  const risk = Number(card?.riskPenalty || 0);
+  const capitalLock = Number(card?.capitalLockRisk || 0);
+  const supply = Number(card?.supplyPressureScore || 0);
+
+  const usageScore = usage > 0 ? clamp(58 + Math.log1p(usage) * 14, 58, 100) : 45;
+  const popularRankScore = Number.isFinite(popularRank) && popularRank > 0
+    ? clamp(105 - Math.log10(Math.max(1, popularRank)) * 24, 35, 100)
+    : 50;
+
+  let demandEvidenceCount = 0;
+  if (usage > 0) demandEvidenceCount += 1;
+  if (card?.momentumHit === true) demandEvidenceCount += 1;
+  if (Number.isFinite(popularRank) && popularRank > 0 && popularRank <= 500) demandEvidenceCount += 1;
+  if (Number.isFinite(gamesCount) && gamesCount >= 250_000) demandEvidenceCount += 1;
+  if (soldSamples >= 3) demandEvidenceCount += 1;
+  if (gameplay >= 70) demandEvidenceCount += 1;
+  if (sale >= 65) demandEvidenceCount += 1;
+
+  const demandScore = clamp(
+    gameplay * 0.25 +
+    sale * 0.22 +
+    turnover * 0.13 +
+    gamesScore * 0.10 +
+    salesScore * 0.10 +
+    usageScore * 0.08 +
+    popularRankScore * 0.06 +
+    confidence * 0.06 +
+    (card?.momentumHit === true ? 6 : 0),
+    0,
+    100
+  );
+
+  let marketEvidenceCount = 0;
+  if (activity >= 60) marketEvidenceCount += 1;
+  if (stability >= 60) marketEvidenceCount += 1;
+  if (trend >= 50) marketEvidenceCount += 1;
+  if (trade >= 60) marketEvidenceCount += 1;
+  if (repeatability >= 55) marketEvidenceCount += 1;
+  if (outcome >= 55) marketEvidenceCount += 1;
+
+  const marketScore = clamp(
+    activity * 0.24 +
+    stability * 0.20 +
+    trend * 0.15 +
+    trade * 0.18 +
+    repeatability * 0.12 +
+    outcome * 0.06 +
+    confidence * 0.05 -
+    Math.max(0, supply - 55) * 0.09 -
+    risk * 0.45 -
+    capitalLock * 0.05,
+    0,
+    100
+  );
+
+  const nearestDistance = Math.min(...profile.targetPriceRatios.map(anchor =>
+    Math.abs(Math.log(Math.max(0.01, priceRatio) / Math.max(0.01, anchor)))
+  ));
+  const priceTierFit = clamp(100 - nearestDistance * 70, 0, 100);
+
+  let score =
+    demandScore * 0.46 +
+    marketScore * 0.24 +
+    priceTierFit * 0.15 +
+    profit * 0.08 +
+    confidence * 0.07;
+
+  const tags = [];
+  const demandBacked = demandScore >= 64 || demandEvidenceCount >= 3;
+  const stronglyDemanded = demandScore >= 76 || demandEvidenceCount >= 5;
+
+  if (special) {
+    if (stronglyDemanded) {
+      score += 8;
+      tags.push('SPECIAL_STRONG_DEMAND');
+    } else if (demandBacked) {
+      score += 4;
+      tags.push('SPECIAL_DEMAND_BACKED');
+    } else {
+      score -= 7;
+      tags.push('SPECIAL_WITHOUT_PROOF');
+    }
+    if (overall > 0 && overall <= 84) tags.push('LOW_OVR_SPECIAL_VERSION_OK');
+  } else {
+    // Rating is a control signal only. It can break a close tie, but it must not
+    // outrank verified demand, market activity or slot-price fit.
+    if (overall >= 87) score += 2;
+    else if (overall > 0 && overall <= 84 && !stronglyDemanded) score -= 2;
+    if (overall > 0 && overall <= 84 && demandScore < 58) {
+      score -= 5;
+      tags.push('LOW_NORMAL_WEAK_DEMAND');
+    }
+  }
+
+  if (priceRatio > 3.2 && demandScore < 75) {
+    score -= 8;
+    tags.push('EXPENSIVE_WITHOUT_DEMAND');
+  } else if (priceRatio >= 0.70 && priceRatio <= 1.70) {
+    score += 2;
+    tags.push('SLOT_PRICE_MATCH');
+  }
+
+  if (usage > 0) tags.push('USAGE_EVIDENCE');
+  if (card?.momentumHit === true) tags.push('MOMENTUM_EVIDENCE');
+  if (soldSamples >= 3) tags.push('SALE_EVIDENCE');
+  if (marketEvidenceCount >= 4) tags.push('ACTIVE_STABLE_MARKET');
+
+  return {
+    score: clamp(score, 0, 100),
+    demandScore,
+    marketScore,
+    priceTierFit,
+    priceRatio,
+    demandEvidenceCount,
+    marketEvidenceCount,
+    demandBacked,
+    stronglyDemanded,
+    versionClass: special ? 'SPECIAL' : 'NORMAL',
     tags,
     phase: gameYear == null ? 'UNKNOWN' : traderSeasonPhaseForGameYear(gameYear, now)
   };
@@ -1021,48 +1193,42 @@ export function buildBudgetTop100Score(card = {}, idealPrice = null) {
     0,
     100
   );
-  const popularity = Number.isFinite(Number(card.gameplayDemandScore))
-    ? Number(card.gameplayDemandScore)
-    : Number(card.popularityScore || 50);
+  const marketFit = Number.isFinite(Number(card.demandMarketFitScore))
+    ? Number(card.demandMarketFitScore)
+    : clamp(sellability * 0.68 + tradeQuality * 0.20 + priceFit * 0.12, 0, 100);
   const netProfit = Math.max(0, Number(card.netProfit || 0));
-  // The preferred everyday ÜV window is roughly 1k-2k net. More profit can be
-  // useful, but it must not dominate sellability or tempt the optimizer into a
-  // slow card merely because its theoretical margin is large.
   const profitScore = clamp(netProfit <= 1800 ? (netProfit / 1800) * 100 : 100 - Math.min(25, (netProfit - 1800) / 120), 0, 100);
   const capitalEfficiency = Number(card.capitalEfficiencyScore || 50);
   const risk = Number(card.riskPenalty || 0);
   const capitalLock = Number(card.capitalLockRisk || 0);
 
+  // v2.10: the optimizer now ranks the actual 100 slots primarily by demand /
+  // market fit. Rating is absent from this formula. The old rating guards remain
+  // separate safety controls and therefore cannot masquerade as demand.
   const baseScore =
-    sellability * 0.22 +
-    tradeQuality * 0.13 +
-    stability * 0.10 +
-    profitScore * 0.14 +
-    confidence * 0.12 +
-    popularity * 0.10 +
-    priceFit * 0.14 +
+    marketFit * 0.34 +
+    sellability * 0.20 +
+    tradeQuality * 0.10 +
+    priceFit * 0.12 +
+    stability * 0.07 +
+    profitScore * 0.07 +
+    confidence * 0.05 +
     capitalEfficiency * 0.05 -
     risk * 0.40 -
     capitalLock * 0.06;
+
   const traderConsensusScore = Number(card.traderConsensusScore);
   const budgetTierScore = Number(card.budgetTierScore);
   if (Number.isFinite(traderConsensusScore) && Number.isFinite(budgetTierScore)) {
-    // v2.7: sellability/safety remain the majority. Trader Consensus supplies
-    // demand/market quality, while Budget Tier adds portfolio-shape fit without
-    // turning rating or an external tier list into a hard rule.
-    return clamp(baseScore * 0.60 + traderConsensusScore * 0.22 + budgetTierScore * 0.18, 0, 100);
+    return clamp(baseScore * 0.76 + traderConsensusScore * 0.14 + budgetTierScore * 0.10, 0, 100);
   }
   if (Number.isFinite(traderConsensusScore)) {
-    return clamp(baseScore * 0.72 + traderConsensusScore * 0.28, 0, 100);
+    return clamp(baseScore * 0.84 + traderConsensusScore * 0.16, 0, 100);
   }
   if (Number.isFinite(budgetTierScore)) {
-    return clamp(baseScore * 0.82 + budgetTierScore * 0.18, 0, 100);
+    return clamp(baseScore * 0.88 + budgetTierScore * 0.12, 0, 100);
   }
-  const traderEndgameScore = Number(card.publicTraderEndgameScore);
-  const endgameNudge = card.traderEndgameProfileActive === true && Number.isFinite(traderEndgameScore)
-    ? (traderEndgameScore - 50) * 0.34
-    : 0;
-  return clamp(baseScore + endgameNudge, 0, 100);
+  return clamp(baseScore, 0, 100);
 }
 
 function targetMultipliers(count, idealPrice = 3000) {

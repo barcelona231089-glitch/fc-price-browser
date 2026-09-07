@@ -6,7 +6,7 @@ import { getLiveFutggCards as fetchLiveFutggCards } from './src/futgg.js';
 import { crosscheckFutbin, getFutbinMarketTrends, attachMarketMoverSignals, getFutbinExtendedDataStatus } from './src/futbin.js';
 import { attachFutggDemandSignals, attachCachedFutggDemandSignals } from './src/demand.js';
 import { initDb, configureDbPool, closeDb, isDbEnabled, recordSnapshot, upsertCards, loadHistoryFeatures, loadPerformanceFeatures, loadTraderRulePerformance, loadTargetSupportPerformance, recordTradeFeedback, getTradeFeedbackStatus, saveGeneratedList, saveListRecheck, recordMarketSnapshot, recordDemandSnapshot, loadWatchPlatforms, loadWatchedEaIds, recordSmartSnapshot, evaluateGeneratedLists, getLearningStatus, loadGeneratedList, listGeneratedLists } from './src/db.js';
-import { buildCandidatePool, scoreCard, buildBuyPlan, buildTradingEconomics, buildSelectionScore, buildSellabilityScore, buildBudgetTop100Score, buildPublicTraderEndgameScore, buildTraderConsensusScore, buildBudgetTierScore, optimizeList, maxAffordablePortfolioCount, filterConservativeCandidates, buildPortfolioSummary, capitalBandForPrice, targetProfitCandidates, specialTargetRatioForBudget } from './src/uvEngine.js';
+import { buildCandidatePool, scoreCard, buildBuyPlan, buildTradingEconomics, buildSelectionScore, buildSellabilityScore, buildBudgetTop100Score, buildPublicTraderEndgameScore, buildTraderConsensusScore, buildBudgetTierScore, buildDemandMarketFitScore, optimizeList, maxAffordablePortfolioCount, filterConservativeCandidates, buildPortfolioSummary, capitalBandForPrice, targetProfitCandidates, specialTargetRatioForBudget } from './src/uvEngine.js';
 import { buildRebalanceSeed, rebalancePortfolio } from './src/rebalance.js';
 import { buildTraderKnowledge, TRADER_KNOWLEDGE_SOURCES } from './src/traderKnowledge.js';
 import { attachTargetLearningProfiles } from './src/targetLearning.js';
@@ -15,7 +15,7 @@ import { runCandidatePipeline, deriveAdaptiveMarketPolicy, buildHard100Sellabili
 import { buildReportedOutcomeScore } from './src/outcomeLearning.js';
 
 export const uvRouter = express.Router();
-const UV_VERSION = '2.9.3';
+const UV_VERSION = '2.10.0';
 let uvActive = true;
 const app = uvRouter;
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -122,6 +122,7 @@ function attachPublicTraderProfile(card = {}, budget, count = 100) {
   const profile = buildPublicTraderEndgameScore(card, { budget, count, gameYear: GAME_YEAR });
   const consensus = buildTraderConsensusScore(card, { budget, count, gameYear: GAME_YEAR });
   const tier = buildBudgetTierScore(card, { budget, count, gameYear: GAME_YEAR });
+  const marketFit = buildDemandMarketFitScore(card, { budget, count, gameYear: GAME_YEAR });
   return {
     ...card,
     publicTraderEndgameScore: profile.score,
@@ -139,7 +140,16 @@ function attachPublicTraderProfile(card = {}, budget, count = 100) {
     budgetTierPriceRatio: tier.priceRatio,
     budgetTierFit: tier.priceTierFit,
     cardVersionClass: tier.versionClass,
-    budgetTierTags: Array.isArray(tier.tags) ? tier.tags : []
+    budgetTierTags: Array.isArray(tier.tags) ? tier.tags : [],
+    demandMarketFitScore: marketFit.score,
+    demandMarketFitDemandScore: marketFit.demandScore,
+    demandMarketFitMarketScore: marketFit.marketScore,
+    demandMarketFitPriceTierFit: marketFit.priceTierFit,
+    demandMarketFitPriceRatio: marketFit.priceRatio,
+    demandMarketFitDemandEvidenceCount: marketFit.demandEvidenceCount,
+    demandMarketFitMarketEvidenceCount: marketFit.marketEvidenceCount,
+    demandMarketFitVersionClass: marketFit.versionClass,
+    demandMarketFitTags: Array.isArray(marketFit.tags) ? marketFit.tags : []
   };
 }
 
@@ -166,6 +176,7 @@ function summarizeSelectedCards(selected, budget, specialTargetRatio = null) {
     avgTradeQuality: avg('tradeQualityScore'),
     avgCapitalEfficiency: avg('capitalEfficiencyScore'),
     avgBudgetTop100Score: avg('budgetTop100Score'),
+    avgDemandMarketFitScore: avg('demandMarketFitScore'),
     avgRepeatability: avg('repeatabilityScore'),
     avgLongTermProfitScore: avg('longTermProfitScore'),
     avgTraderPriorScore: avg('traderPriorScore'),
@@ -246,7 +257,7 @@ app.get('/api/uv/status', (req, res) => {
       futbinStructuredEvidenceAdapter: true,
       postgresHistory: isDbEnabled(), budgetOptimizer100: true, eaTax: true,
       conservativeProfit: true, longTermScore: true, priceActivityProxy: isDbEnabled(),
-      sourceRiskFilter: true, adaptiveCardMix: true, specialCardPriority: true, specialCardSoftTarget300k100: 'promo-live-market-adaptive', seasonPhaseRatingGuard: false, calendarPhaseContextOnly: true, promoMarketAdaptive: true, promoInPacksAwareness: true, promoMomentumAwareness: true, dynamicMarketPolicy: true, budgetAwareDynamicRating: true, demandGatedRatingRelaxation: true, budgetFeasibilityFallback: true, balancedLiquidityFallback: true, qualityFirstDynamicCount: false, dynamicPortfolioSize: false, hard100Slots: true, sellabilityFirstRanking: true, hard100PortfolioSellabilityFallback: true, adaptiveSpecialMix: true, maxExactCardCopies: 2, futggMostUsedDemand: true, futggMomentumDemand: true,
+      sourceRiskFilter: true, adaptiveCardMix: true, specialCardPriority: true, specialCardSoftTarget300k100: 'promo-live-market-adaptive', seasonPhaseRatingGuard: false, calendarPhaseContextOnly: true, promoMarketAdaptive: true, promoInPacksAwareness: true, promoMomentumAwareness: true, dynamicMarketPolicy: true, budgetAwareDynamicRating: true, demandGatedRatingRelaxation: true, budgetFeasibilityFallback: true, balancedLiquidityFallback: true, qualityFirstDynamicCount: false, dynamicPortfolioSize: false, hard100Slots: true, sellabilityFirstRanking: true, demandMarketFitFirstRanker: true, ratingPrimaryRanker: false, hard100PortfolioSellabilityFallback: true, adaptiveSpecialMix: true, maxExactCardCopies: 2, futggMostUsedDemand: true, futggMomentumDemand: true,
       backgroundHistoryMonitor: isDbEnabled(), selfLearningPriceSafety: isDbEnabled(), smartBuyCeiling: true, qualityFirstOptimizer: true, budgetTop100Ranking: true, budgetTop100SafetyIsolation: true, budgetSafetyReserveFallback: true, publicTraderEndgameLogic: true, traderConsensusRanker: true, budgetTierAllocator: true, candidatePoolAllocationSeparation: true, budgetTierReferenceMode: 'soft-observed-shape-only', ratingAsSecondaryPortfolioSignal: true, cardVersionClassFromItemRecord: true, traderConsensusSources: ['Futpepi-budget-method','FUT.GG-usage-momentum','PostgreSQL-price-stability','FutStarz-demand-window-method','public-popularity-tiebreak'], endgameLowGoldCaps: true, endgame300kBase82Max: 2, endgame300kBase83OrLessMax: 8, futtiesDemandPriority: true, popularLeagueNationTieBreak: true, savedLists: isDbEnabled(), savedListReopen: isDbEnabled(), persistedLiveRecheck: isDbEnabled(), liveRecheckPost: true, liveRecheckAsyncJob: true, liveRecheckCpuSafeQueue: true, generationCpuSafeBatches: true, generationWaitsForIdleCpuWindow: true, optimizerLinearStateCache: true, liveRecheckDemandCacheOnly: true, liveRecheckBatchSize: LIVE_RECHECK_BATCH_SIZE, liveRecheckBatchPauseMs: LIVE_RECHECK_BATCH_PAUSE_MS, batchedRecheckPersistence: isDbEnabled(), currentBuyPricesVisible: true, capitalEfficiencyScore: true, adaptiveCapitalLadder: true, repeatabilityScore: true, longTermProfitRanker: true, portfolioDiagnostics: true, traderKnowledgePriors: true, verifiedPublicUvMethodConsensus: true, externalTraderPlayerPicksImported: false, bronzeHardBlock: true, normalCardMinimumRating: 82, specialBelow82StrongDemandOnly: true, nonRareDemandGate: true, lowNonRareRatingHardBlockMax: 82, midNonRareDemandGateMin: 83, midNonRareDemandGateMax: 84, traderRulePriceSafetyLearning: isDbEnabled(), saleLikelihoodIndex: true, traderAwarePricingOptimizer: true, empiricalTargetSupportLearning: isDbEnabled(), optionalReportedTradeFeedback: isDbEnabled(), listLifecycleGuard: true, liveStoredListRecheck: isDbEnabled(), portfolioRebalancing: isDbEnabled(), reportedOutcomeLearning: isDbEnabled(), robustCandidatePipeline: true, apiNamespaceUv: true, futggUsageAudienceSplit: true, futggUsagePositionBreadth: true, futggInPacksSupply: true, demandEvidenceConfidence: true,
       playerSalesHistory: Boolean(futbinExtended.salesHistoryObserved),
       pgpGames: Boolean(futbinExtended.gamesObserved),
@@ -948,7 +959,7 @@ app.post('/api/uv/rebalance/:listId', async (req, res) => {
 
     let selected = balanced.selected.map(card => ({
       ...card,
-      recommendationMode: 'conservative-demand+reported-outcome-learning+lifecycle+portfolio-rebalance+candidate-gate-v2.1+promo-live-market-adaptive+hard-100-slots+demand-sellability-budget-relax+hard100-sellability-ladder-v2.3.5+budget-adaptive-rating-floor+budget-top100-v2.7-budget-tier-allocator+trader-consensus+budget-safe-reserve+adaptive-special-mix+budget-rating-guard+max-two-exact-copies+nonrare-demand-gate+futbin-structured-evidence',
+      recommendationMode: 'conservative-demand+reported-outcome-learning+lifecycle+portfolio-rebalance+candidate-gate-v2.1+promo-live-market-adaptive+hard-100-slots+demand-sellability-budget-relax+hard100-sellability-ladder-v2.3.5+budget-adaptive-rating-floor+budget-top100-v2.10-demand-market-fit+budget-tier-allocator+trader-consensus+budget-safe-reserve+adaptive-special-mix+budget-rating-guard+max-two-exact-copies+nonrare-demand-gate+futbin-structured-evidence',
       capitalBand: capitalBandForPrice(card.buyPrice, budget, effectiveCount),
       recommendationLifecycle: buildRecommendationLifecycle(card, checkedAt),
       rebalanceFromListId: stored.id,
@@ -1196,7 +1207,7 @@ app.post('/api/uv/generate', async (req, res) => {
 
     let selected = optimized.selected.map(card => ({
       ...card,
-      recommendationMode: 'conservative-demand+reported-outcome-learning+lifecycle+portfolio-rebalance+candidate-gate-v2.1+promo-live-market-adaptive+hard-100-slots+demand-sellability-budget-relax+hard100-sellability-ladder-v2.3.5+budget-adaptive-rating-floor+budget-top100-v2.7-budget-tier-allocator+trader-consensus+budget-safe-reserve+adaptive-special-mix+budget-rating-guard+max-two-exact-copies+nonrare-demand-gate+futbin-structured-evidence',
+      recommendationMode: 'conservative-demand+reported-outcome-learning+lifecycle+portfolio-rebalance+candidate-gate-v2.1+promo-live-market-adaptive+hard-100-slots+demand-sellability-budget-relax+hard100-sellability-ladder-v2.3.5+budget-adaptive-rating-floor+budget-top100-v2.10-demand-market-fit+budget-tier-allocator+trader-consensus+budget-safe-reserve+adaptive-special-mix+budget-rating-guard+max-two-exact-copies+nonrare-demand-gate+futbin-structured-evidence',
       capitalBand: capitalBandForPrice(card.buyPrice, budget, count),
       recommendationLifecycle: buildRecommendationLifecycle(card),
       salesProbability: null
@@ -1246,6 +1257,7 @@ app.post('/api/uv/generate', async (req, res) => {
     const learningMatches = selected.filter(c => (c.learning?.evalCount || 0) > 0).length;
     const avgLearningScore = selected.reduce((sum, c) => sum + (c.learningScore || 50), 0) / selected.length;
     const avgBudgetTop100Score = selected.reduce((sum, c) => sum + Number(c.budgetTop100Score || 0), 0) / selected.length;
+    const avgDemandMarketFitScore = selected.reduce((sum, c) => sum + Number(c.demandMarketFitScore || 0), 0) / selected.length;
     const futtiesCount = selected.filter(c => c.cardType === 'Special' && `${c.rarityName || ''} ${c.cardName || ''} ${c.version || ''}`.toLowerCase().includes('futties')).length;
     const base82Count = selected.filter(c => c.cardType !== 'Special' && Number(c.overall) === 82).length;
     const base83Count = selected.filter(c => c.cardType !== 'Special' && Number(c.overall) === 83).length;
@@ -1274,7 +1286,7 @@ app.post('/api/uv/generate', async (req, res) => {
       specialTargetRatio: optimized.specialTargetRatio,
       specialTargetCount: Math.round(Number(optimized.specialTargetRatio || 0) * selected.length),
       adaptiveMarketPolicy,
-      futbinChecked, futbinGamesMatches, futbinSalesHistoryMatches, futbinRealSalePriceMatches, avgFutbinGamesScore, avgFutbinSalesEvidence, moverMatches, lowRiskCount, learningMatches, avgLearningScore, avgBudgetTop100Score,
+      futbinChecked, futbinGamesMatches, futbinSalesHistoryMatches, futbinRealSalePriceMatches, avgFutbinGamesScore, avgFutbinSalesEvidence, moverMatches, lowRiskCount, learningMatches, avgLearningScore, avgBudgetTop100Score, avgDemandMarketFitScore,
       candidatePoolSize: pool.length,
       rawCandidatePoolSize: rawPool.length,
       candidatePipeline: pipelineResult.diagnostics,
