@@ -1,6 +1,6 @@
 import { attachFutggDemandSignals } from './uv/src/demand.js';
 
-export const ADAPTIVE_BRAIN_VERSION = '10.62-adaptive-market-intelligence';
+export const ADAPTIVE_BRAIN_VERSION = '10.63-adaptive-market-intelligence';
 
 const BUY_SELL_ONLY = String(process.env.FC_V1062_BUY_SELL_ONLY || 'true').trim().toLowerCase() !== 'false';
 const MIN_PUBLIC_BUY_CONFIDENCE = clamp(Number(process.env.FC_V1062_MIN_BUY_CONFIDENCE || 76), 60, 95);
@@ -666,6 +666,53 @@ function futbinScore(row) {
   return 0;
 }
 
+function futbinPublicMarketScore(row, side = 'BUY') {
+  const metrics = row?.futbinPublic?.salesMetrics || {};
+  const sellThrough = Number(metrics.sellThroughRate);
+  const liquidity = Number(metrics.liquidityScore);
+  const medianSold = Number(metrics.medianSoldPrice);
+  const current = Number(row?.price);
+  const trend = Number(row?.futbinTrendPct ?? row?.futbinPublic?.trendConsolePct ?? row?.futbinPublic?.marketTrendPct);
+  const games = Number(row?.futbinGamesPlayedConsole ?? row?.futbinPublic?.gamesPlayedConsole);
+  const observed = Number(metrics.listingsObserved || 0);
+  let buy = 0;
+
+  if (Number.isFinite(sellThrough) && observed >= 5) buy += clamp((sellThrough - 50) / 8, -6, 6);
+  if (Number.isFinite(liquidity)) buy += clamp((liquidity - 50) / 10, -5, 5);
+  if (Number.isFinite(trend)) buy += clamp(trend / 5, -5, 5);
+  if (Number.isFinite(games) && games > 0) buy += clamp(Math.log10(games + 1) - 3.5, -1, 3);
+  if (Number.isFinite(medianSold) && medianSold > 0 && Number.isFinite(current) && current > 0) {
+    const gapPct = ((medianSold - current) / current) * 100;
+    buy += clamp(gapPct / 2.5, -8, 8);
+  }
+
+  buy = clamp(buy, -14, 14);
+  if (side === 'SELL') return clamp(-buy * 0.75, -10, 10);
+  return buy;
+}
+
+function seasonMemoryAdjustment(row, side = 'BUY') {
+  const m = row?.fc26SeasonMemory;
+  if (!m || Number(m.days || 0) < 5) return 0;
+  const price = Number(row?.price);
+  const low = Number(m.seasonLow);
+  const high = Number(m.seasonHigh);
+  if (!(price > 0) || !(low > 0) || !(high > low)) return 0;
+  const percentile = clamp((price - low) / (high - low), 0, 1);
+  const recent = numberOr(row?.change15m, 0) * 0.35 + numberOr(row?.change1h, 0) * 0.45 + numberOr(row?.change24h, 0) * 0.20;
+  let buy = 0;
+  if (percentile <= 0.20) buy += 4;
+  else if (percentile >= 0.85) buy -= 4;
+  if (percentile <= 0.35 && recent > 0.5) buy += 3;
+  if (percentile >= 0.80 && recent < -0.5) buy -= 3;
+  const crashShare = Number(m.crashDaySharePct);
+  if (Number.isFinite(crashShare) && crashShare >= 10) buy -= 1.5;
+  const depth = Math.min(1, Number(m.days || 0) / 90);
+  buy *= 0.5 + depth * 0.5;
+  if (side === 'SELL') return clamp(-buy * 0.8, -7, 7);
+  return clamp(buy, -8, 8);
+}
+
 function momentumScore(row) {
   const raw =
     numberOr(row?.change1m, 0) * 0.08 +
@@ -751,7 +798,7 @@ function chooseDataNeeds(row, regime, catalyst) {
 
 function enrichReason(row, decision) {
   const parts = [
-    `v10.62 ${REGIME_LABELS[decision.regime] || decision.regime}.`,
+    `v10.63 ${REGIME_LABELS[decision.regime] || decision.regime}.`,
     decision.catalyst !== 'NONE' ? `Katalysator ${decision.catalyst}.` : null,
     decision.source.sourceCount ? `${decision.source.sourceCount} Leak/Trader-Quelle(n), ${decision.source.reliableCount} historisch belastbar.` : null,
     decision.pattern?.effectiveSamples >= 2
@@ -761,6 +808,9 @@ function enrichReason(row, decision) {
       ? `Karten-Gedächtnis ${decision.cardMemory.accuracy.toFixed(1)}%.`
       : null,
     row?.futbinCrossCheck ? `FUTBIN ${row.futbinCrossCheck}.` : null,
+    row?.futbinPublic?.salesMetrics?.listingsObserved ? `FUTBIN Sales: ${row.futbinPublic.salesMetrics.soldListings}/${row.futbinPublic.salesMetrics.listingsObserved} verkauft, Median ${row.futbinPublic.salesMetrics.medianSoldPrice ?? 'n/a'}, Liquidität ${row.futbinPublic.salesMetrics.liquidityScore ?? 'n/a'}/100.` : null,
+    row?.futbinGamesPlayedConsole ? `FUTBIN Games ${row.futbinGamesPlayedConsole}.` : null,
+    row?.fc26SeasonMemory?.days ? `FC26-Saisonmemory ${row.fc26SeasonMemory.days} Tage, Range ${row.fc26SeasonMemory.seasonLow}-${row.fc26SeasonMemory.seasonHigh}.` : null,
     row?.demandEvidenceScore != null ? `FUT.GG Demand ${Math.round(numberOr(row.demandEvidenceScore, 50))}/100.` : null,
     decision.contradictions.count ? `Widerspruch: ${decision.contradictions.reasons.join('; ')}.` : null,
     decision.hardBlock ? `Block: ${decision.hardBlock}.` : null,
@@ -809,6 +859,8 @@ function applyDecision(row, work, context) {
   buyScore += regimeBuyAdjustment(regime, row, relevance);
   buyScore += clamp(source.netDirection * 10, -10, 10);
   buyScore += futbinScore(row);
+  buyScore += futbinPublicMarketScore(row, 'BUY');
+  buyScore += seasonMemoryAdjustment(row, 'BUY');
   buyScore += historyAdjustment(patternBuy, 12);
   buyScore += historyAdjustment(cardBuy, 8);
   if (row?.aiLeakIntel?.active) buyScore += row.aiLeakIntel.marketReaction ? 5 * relevance : 1.5 * relevance;
@@ -832,6 +884,8 @@ function applyDecision(row, work, context) {
     sellScore += historyAdjustment(patternSell, 10);
     sellScore += historyAdjustment(cardSell, 7);
     if (String(row?.futbinCrossCheck || '') === 'OUTLIER') sellScore -= 6;
+    sellScore += futbinPublicMarketScore(row, 'SELL');
+    sellScore += seasonMemoryAdjustment(row, 'SELL');
     sellScore -= contradictions.count * 2;
   }
   sellScore = clamp(sellScore, 0, 100);
@@ -889,6 +943,13 @@ function applyDecision(row, work, context) {
     legacyBuyGuardBlock,
     legacySanityBlock,
     dataNeeds,
+    futbinPublic: row?.futbinPublic ? {
+      trendPct: row.futbinTrendPct ?? null,
+      gamesPlayedConsole: row.futbinGamesPlayedConsole ?? null,
+      gamesPlayedPc: row.futbinGamesPlayedPc ?? null,
+      salesMetrics: row.futbinPublic.salesMetrics ?? null
+    } : null,
+    fc26SeasonMemory: row?.fc26SeasonMemory ?? null,
     previousSeasonWeight: previousSeasonWeight(context.gameYear),
     cpuMode: cpuState.mode,
     evaluatedAt: new Date().toISOString()
@@ -897,7 +958,7 @@ function applyDecision(row, work, context) {
   row.aiConfidence = finalConfidence;
   row.aiMarketState = decision.regimeLabel;
   row.aiReason = enrichReason(row, decision);
-  row.aiModelUsed = `${String(row.aiModelUsed || 'Quantitative Core')} + v10.62 Adaptive`;
+  row.aiModelUsed = `${String(row.aiModelUsed || 'Quantitative Core')} + v10.63 Adaptive`;
   row.aiAdaptiveV1062 = decision;
   row.adaptivePublicCall = publicCall;
   row.adaptiveDataNeeds = dataNeeds;
@@ -916,7 +977,9 @@ function applyDecision(row, work, context) {
       patternSamples: selectedPattern?.effectiveSamples ?? 0,
       previousSeasonWeight: decision.previousSeasonWeight,
       contradictions: contradictions.reasons,
-      dataNeeds
+      dataNeeds,
+      futbinPublic: decision.futbinPublic,
+      fc26SeasonMemory: decision.fc26SeasonMemory
     };
   }
 
