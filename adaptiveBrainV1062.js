@@ -1121,9 +1121,8 @@ export function adaptiveV1062DiscordPayloadAllowed(payload) {
   if (/^🟢\s*KAUFEN\b/i.test(title)) return true;
   if (/^🔴\s*VERKAUFEN\b/i.test(title)) return true;
 
-  // Operational health is not a trading opinion and remains visible.
-  if (/(FC Trader Brain verbunden|Datenquelle|Source Health|HA |Server |System |Fehler|wieder stabil)/i.test(text)) return true;
-
+  // Discord is intentionally strict: only final BUY / SELL calls are public.
+  // Health, HA, source, startup and error notices remain internal in Hostless logs.
   return false;
 }
 
