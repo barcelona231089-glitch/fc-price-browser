@@ -1,11 +1,12 @@
 {
   "name": "fc-trading-intelligence",
-  "version": "10.63.0",
+  "version": "10.65.0",
   "private": true,
   "type": "module",
   "scripts": {
-    "start": "node --loader ./v1063Loader.mjs server.js",
-    "test": "node --test test/*.test.mjs uv/test/*.test.js"
+    "start": "node --import ./v1065Register.mjs server.js",
+    "test": "node --test test/*.test.mjs uv/test/*.test.js",
+    "test:final": "node --test test/futbinMarketV1064.test.mjs test/loaderV1064.test.mjs test/loaderV1065.test.mjs"
   },
   "engines": {
     "node": ">=20"
