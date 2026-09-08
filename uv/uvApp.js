@@ -15,7 +15,7 @@ import { runCandidatePipeline, deriveAdaptiveMarketPolicy, buildHard100Sellabili
 import { buildReportedOutcomeScore } from './src/outcomeLearning.js';
 
 export const uvRouter = express.Router();
-const UV_VERSION = '2.10.2';
+const UV_VERSION = '2.10.4';
 let uvActive = true;
 const app = uvRouter;
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -257,7 +257,7 @@ app.get('/api/uv/status', (req, res) => {
       futbinStructuredEvidenceAdapter: true,
       postgresHistory: isDbEnabled(), budgetOptimizer100: true, eaTax: true,
       conservativeProfit: true, longTermScore: true, priceActivityProxy: isDbEnabled(),
-      sourceRiskFilter: true, adaptiveCardMix: true, specialCardPriority: true, specialCardSoftTarget300k100: 'promo-live-market-adaptive', seasonPhaseRatingGuard: false, calendarPhaseContextOnly: true, promoMarketAdaptive: true, promoInPacksAwareness: true, promoMomentumAwareness: true, dynamicMarketPolicy: true, budgetAwareDynamicRating: true, demandGatedRatingRelaxation: true, budgetFeasibilityFallback: true, balancedLiquidityFallback: true, qualityFirstDynamicCount: false, dynamicPortfolioSize: false, hard100Slots: true, sellabilityFirstRanking: true, demandMarketFitFirstRanker: true, marketTradeableHardGuard: true, confirmedLiveBinRequired: true, sbcObjectiveRewardHardBlock: true, ratingPrimaryRanker: false, hard100PortfolioSellabilityFallback: true, adaptiveSpecialMix: true, maxExactCardCopies: 2, futggMostUsedDemand: true, futggMomentumDemand: true,
+      sourceRiskFilter: true, adaptiveCardMix: true, specialCardPriority: true, specialCardSoftTarget300k100: 'promo-live-market-adaptive', seasonPhaseRatingGuard: false, calendarPhaseContextOnly: true, promoMarketAdaptive: true, promoInPacksAwareness: true, promoMomentumAwareness: true, dynamicMarketPolicy: true, budgetAwareDynamicRating: true, demandGatedRatingRelaxation: true, budgetFeasibilityFallback: true, balancedLiquidityFallback: true, qualityFirstDynamicCount: false, dynamicPortfolioSize: false, hard100Slots: true, sellabilityFirstRanking: true, demandMarketFitFirstRanker: true, marketTradeableHardGuard: true, confirmedLiveBinRequired: true, marketVerificationFailFast: true, marketMetadataSafeFallback: true, unresolvedSpecialsFailClosed: true, sbcObjectiveRewardHardBlock: true, ratingPrimaryRanker: false, hard100PortfolioSellabilityFallback: true, adaptiveSpecialMix: true, maxExactCardCopies: 2, futggMostUsedDemand: true, futggMomentumDemand: true,
       backgroundHistoryMonitor: isDbEnabled(), selfLearningPriceSafety: isDbEnabled(), smartBuyCeiling: true, qualityFirstOptimizer: true, budgetTop100Ranking: true, budgetTop100SafetyIsolation: true, budgetSafetyReserveFallback: true, publicTraderEndgameLogic: true, traderConsensusRanker: true, budgetTierAllocator: true, candidatePoolAllocationSeparation: true, budgetTierReferenceMode: 'soft-observed-shape-only', ratingAsSecondaryPortfolioSignal: true, cardVersionClassFromItemRecord: true, traderConsensusSources: ['Futpepi-budget-method','FUT.GG-usage-momentum','PostgreSQL-price-stability','FutStarz-demand-window-method','public-popularity-tiebreak'], endgameLowGoldCaps: true, endgame300kBase82Max: 2, endgame300kBase83OrLessMax: 8, futtiesDemandPriority: true, popularLeagueNationTieBreak: true, savedLists: isDbEnabled(), savedListReopen: isDbEnabled(), manualListSaveChoice: true, autoSaveGeneratedLists: false, persistedLiveRecheck: isDbEnabled(), liveRecheckPost: true, liveRecheckAsyncJob: true, liveRecheckCpuSafeQueue: true, fullLiveRecheckFreshDemand: true, liveRecheckFutbinStructuredEvidence: true, generationCpuSafeBatches: true, generationWaitsForIdleCpuWindow: true, optimizerLinearStateCache: true, liveRecheckDemandCacheOnly: false, liveRecheckBatchSize: LIVE_RECHECK_BATCH_SIZE, liveRecheckBatchPauseMs: LIVE_RECHECK_BATCH_PAUSE_MS, batchedRecheckPersistence: isDbEnabled(), currentBuyPricesVisible: true, capitalEfficiencyScore: true, adaptiveCapitalLadder: true, repeatabilityScore: true, longTermProfitRanker: true, portfolioDiagnostics: true, traderKnowledgePriors: true, verifiedPublicUvMethodConsensus: true, externalTraderPlayerPicksImported: false, bronzeHardBlock: true, normalCardMinimumRating: 82, specialBelow82StrongDemandOnly: true, nonRareDemandGate: true, lowNonRareRatingHardBlockMax: 82, midNonRareDemandGateMin: 83, midNonRareDemandGateMax: 84, traderRulePriceSafetyLearning: isDbEnabled(), saleLikelihoodIndex: true, traderAwarePricingOptimizer: true, empiricalTargetSupportLearning: isDbEnabled(), optionalReportedTradeFeedback: isDbEnabled(), listLifecycleGuard: true, liveStoredListRecheck: isDbEnabled(), portfolioRebalancing: isDbEnabled(), reportedOutcomeLearning: isDbEnabled(), robustCandidatePipeline: true, apiNamespaceUv: true, futggUsageAudienceSplit: true, futggUsagePositionBreadth: true, futggInPacksSupply: true, demandEvidenceConfidence: true,
       playerSalesHistory: Boolean(futbinExtended.salesHistoryObserved),
       pgpGames: Boolean(futbinExtended.gamesObserved),
@@ -1039,7 +1039,7 @@ app.post('/api/uv/rebalance/:listId', async (req, res) => {
 
     let selected = balanced.selected.map(card => ({
       ...card,
-      recommendationMode: 'conservative-demand+reported-outcome-learning+lifecycle+portfolio-rebalance+candidate-gate-v2.1+promo-live-market-adaptive+hard-100-slots+demand-sellability-budget-relax+hard100-sellability-ladder-v2.3.5+budget-adaptive-rating-floor+budget-top100-v2.10-demand-market-fit+market-tradeable-hard-guard+budget-tier-allocator+trader-consensus+budget-safe-reserve+adaptive-special-mix+budget-rating-guard+max-two-exact-copies+nonrare-demand-gate+futbin-structured-evidence',
+      recommendationMode: 'conservative-demand+reported-outcome-learning+lifecycle+portfolio-rebalance+candidate-gate-v2.1+promo-live-market-adaptive+hard-100-slots+demand-sellability-budget-relax+hard100-sellability-ladder-v2.3.5+budget-adaptive-rating-floor+budget-top100-v2.10.3-demand-market-fit+resilient-market-tradeable-hard-guard+budget-tier-allocator+trader-consensus+budget-safe-reserve+adaptive-special-mix+budget-rating-guard+max-two-exact-copies+nonrare-demand-gate+futbin-structured-evidence',
       capitalBand: capitalBandForPrice(card.buyPrice, budget, effectiveCount),
       recommendationLifecycle: buildRecommendationLifecycle(card, checkedAt),
       rebalanceFromListId: stored.id,
@@ -1178,7 +1178,7 @@ app.post('/api/uv/generate', async (req, res) => {
       };
     });
 
-    // v2.10.1 HARD MARKET GUARD: R2 bulk prices are useful for the broad
+    // v2.10.3 RESILIENT HARD MARKET GUARD: R2 bulk prices are useful for the broad
     // universe but do not prove that a card is transferable. FUT.GG's batch
     // player-prices endpoint explicitly marks SBC, Objective/Season and extinct
     // items. Verify a deep demand/price-fit priority universe, fail closed, and
@@ -1186,12 +1186,17 @@ app.post('/api/uv/generate', async (req, res) => {
     const verificationPriority = prioritizeMarketVerificationCandidates(scored, ideal);
     const marketTradeability = await confirmTradeableMarketCards(verificationPriority, platform, {
       minConfirmed: Math.max(400, count * 4),
-      maxChecks: Math.min(1000, verificationPriority.length)
+      maxChecks: Math.min(5000, verificationPriority.length),
+      maxApiChecks: 200
     });
     if (marketTradeability.cards.length < count) {
-      const reasons = Object.entries(marketTradeability.diagnostics?.rejectedReasons || {})
+      const diagnostics = marketTradeability.diagnostics || {};
+      const reasons = Object.entries(diagnostics.rejectedReasons || {})
         .map(([reason, n]) => `${reason}:${n}`)
         .join(', ');
+      if (diagnostics.verificationSourceDown) {
+        throw new Error(`Market-Tradeable-Guard: FUT.GG Zusatz-Verifizierung ist vom Server aktuell nicht erreichbar. ${marketTradeability.cards.length}/${count} Kandidaten konnten trotzdem sicher ueber FUT.GG-Metadaten + R2-Live-BIN bestaetigt werden. Unklare Specials bleiben gesperrt; keine SBC/Objective/Reward-Karten werden durchgewunken. ${reasons || ''}`.trim());
+      }
       throw new Error(`Market-Tradeable-Guard: Nur ${marketTradeability.cards.length}/${count} Karten mit bestaetigtem handelbarem FUT.GG-Live-BIN. ${reasons || 'Keine weiteren bestaetigten Markt-Kandidaten.'}`);
     }
     scored = marketTradeability.cards;
@@ -1308,7 +1313,7 @@ app.post('/api/uv/generate', async (req, res) => {
 
     let selected = optimized.selected.map(card => ({
       ...card,
-      recommendationMode: 'conservative-demand+reported-outcome-learning+lifecycle+portfolio-rebalance+candidate-gate-v2.1+promo-live-market-adaptive+hard-100-slots+demand-sellability-budget-relax+hard100-sellability-ladder-v2.3.5+budget-adaptive-rating-floor+budget-top100-v2.10-demand-market-fit+market-tradeable-hard-guard+budget-tier-allocator+trader-consensus+budget-safe-reserve+adaptive-special-mix+budget-rating-guard+max-two-exact-copies+nonrare-demand-gate+futbin-structured-evidence',
+      recommendationMode: 'conservative-demand+reported-outcome-learning+lifecycle+portfolio-rebalance+candidate-gate-v2.1+promo-live-market-adaptive+hard-100-slots+demand-sellability-budget-relax+hard100-sellability-ladder-v2.3.5+budget-adaptive-rating-floor+budget-top100-v2.10.3-demand-market-fit+resilient-market-tradeable-hard-guard+budget-tier-allocator+trader-consensus+budget-safe-reserve+adaptive-special-mix+budget-rating-guard+max-two-exact-copies+nonrare-demand-gate+futbin-structured-evidence',
       capitalBand: capitalBandForPrice(card.buyPrice, budget, count),
       recommendationLifecycle: buildRecommendationLifecycle(card),
       salesProbability: null
@@ -1428,7 +1433,7 @@ app.post('/api/uv/generate', async (req, res) => {
         history: isDbEnabled() ? 'PostgreSQL' : 'not configured',
         traderKnowledge: TRADER_KNOWLEDGE_SOURCES.map(s => s.name)
       },
-      dataNotice: (dynamicCountReduced ? `v2.8.1 BUDGET-TIER-ALLOCATOR+TRADER-CONSENSUS: ${adaptiveMarketPolicy.promoMarketRegime}. Kandidatenpool und echte 100-Slot-Allokation sind getrennt; Rating ist nur ein Sekundärsignal, Karten-Version und Live-Nachfrage entscheiden stärker.` : `v2.8.1 BUDGET-TIER-ALLOCATOR+TRADER-CONSENSUS: ${count} Karten sind im Budget machbar. ${tierProfile?.name || 'Budget-Profil'} formt nur weiche Preis-Tiers; FUT.GG Livepreise/Nachfrage, PostgreSQL-Stabilität, Netto-Profit und Safety-Gates entscheiden. Niedrig geratete Specials werden nicht mit normalen Low-Golds verwechselt.`) + ' Externe FutStarz-Beobachtungen dienen nur als weiche Portfolio-Form, niemals als Live-Preisquelle oder kopierte Kartenliste.' + (live.requiresLiveRecheck === true ? ' Die Liste wurde während der FUT.GG-Recovery aus dem letzten höchstens 5 Minuten alten sicheren Trader-Snapshot erzeugt. Vor jedem Kauf ist der Live-Recheck Pflicht.' : ' Vor jedem Kauf bleibt der Live-Recheck Pflicht.'),
+      dataNotice: (dynamicCountReduced ? `v2.8.1 BUDGET-TIER-ALLOCATOR+TRADER-CONSENSUS: ${adaptiveMarketPolicy.promoMarketRegime}. Kandidatenpool und echte 100-Slot-Allokation sind getrennt; Rating ist nur ein Sekundärsignal, Karten-Version und Live-Nachfrage entscheiden stärker.` : `v2.8.1 BUDGET-TIER-ALLOCATOR+TRADER-CONSENSUS: ${count} Karten sind im Budget machbar. ${tierProfile?.name || 'Budget-Profil'} formt nur weiche Preis-Tiers; FUT.GG Livepreise/Nachfrage, PostgreSQL-Stabilität, Netto-Profit und Safety-Gates entscheiden. Niedrig geratete Specials werden nicht mit normalen Low-Golds verwechselt.`) + ' Externe FutStarz-Beobachtungen dienen nur als weiche Portfolio-Form, niemals als Live-Preisquelle oder kopierte Kartenliste.' + (marketTradeability.diagnostics?.verificationSourceDown ? ' FUT.GG Zusatz-Verifizierung war nicht erreichbar; verwendet wurde nur der sichere Metadaten/R2-Fallback. Unklare Specials wurden verworfen.' : '') + (live.requiresLiveRecheck === true ? ' Die Liste wurde während der FUT.GG-Recovery aus dem letzten höchstens 5 Minuten alten sicheren Trader-Snapshot erzeugt. Vor jedem Kauf ist der Live-Recheck Pflicht.' : ' Vor jedem Kauf bleibt der Live-Recheck Pflicht.'),
       cards: selected
     };
 
