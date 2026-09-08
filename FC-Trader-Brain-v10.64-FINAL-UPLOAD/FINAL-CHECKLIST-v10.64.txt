@@ -1,0 +1,30 @@
+FC Trader Brain v10.64 FINAL CHECKLIST
+======================================
+
+Build/Syntax
+[OK] futbinMarketV1064.js node --check
+[OK] adaptiveBrainV1064.js node --check
+[OK] v1064Loader.mjs node --check
+[OK] v1064Register.mjs node --check
+[OK] register() Startmechanik lokal getestet
+[OK] 6/6 v10.64 Final-Tests bestanden
+
+Runtime-Ziele nach Deploy
+[ ] Hostless Status Running
+[ ] fc-trading-intelligence@10.64.0
+[ ] v10.64 In-Memory Patch geladen
+[ ] Hostless LEADER
+[ ] Discord verbunden
+[ ] FUT.GG Source Health stabil
+[ ] /api/final-project/status ok:true
+[ ] /api/futbin-public/status ok:true
+[ ] /api/fc26-memory/status ok:true
+[ ] /api/market/source-health ok:true
+[ ] /api/market/overview liefert Daten oder sauber null bei nicht verfuegbarer Quelle
+[ ] ÜV /api/uv/status ok
+[ ] 100-Karten-ÜV-Test erfolgreich
+[ ] Discord sendet nur KAUFEN / VERKAUFEN
+
+Hinweis
+Historische 12-Monats-Abdeckung ist datengetrieben: genutzt wird alles, was tatsaechlich vorhanden ist.
+Keine fehlenden Alt-Daten werden erfunden.

@@ -1,0 +1,20 @@
+{
+  "name": "fc-trading-intelligence",
+  "version": "10.64.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "node --import ./v1064Register.mjs server.js",
+    "test": "node --test test/*.test.mjs uv/test/*.test.js",
+    "test:final": "node --test test/futbinMarketV1064.test.mjs test/loaderV1064.test.mjs"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "express": "^4.21.2",
+    "pg": "^8.13.1",
+    "@google/genai": "^1.0.0",
+    "discord.js": "^14.22.1"
+  }
+}
