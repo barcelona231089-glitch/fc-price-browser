@@ -1,7 +1,7 @@
 import { patchServer as patchServerV1064 } from './v1064Loader.mjs';
 import { patchRatingOnly } from './v1065Loader.mjs';
 
-export const V1066_BOOTSTRAP_VERSION = '10.66.4-monitor-busy-grace';
+export const V1066_BOOTSTRAP_VERSION = '10.66.5-uv-allocator-consistency';
 
 export function patchFutbinBridgeV1066(source) {
   const original = String(source || '');
@@ -49,7 +49,7 @@ export function patchFutbinBridgeV1066(source) {
     'futbinPublicStatus({ pool: dbEnabled ? pool : null, gameYear: String(GAME_YEAR) === "27" ? "26" : GAME_YEAR }),\n      futbinBridgeV1066Status({ pool: dbEnabled ? pool : null, gameYear: String(GAME_YEAR) === "27" ? "26" : GAME_YEAR })\n    ]);'
   );
 
-  out = out.replaceAll('version: "10.64-final"', 'version: "10.66.4-final"');
+  out = out.replaceAll('version: "10.64-final"', 'version: "10.66.5-final"');
   out = out.replaceAll('outputMode: "BUY_SELL_ONLY"', 'outputMode: "RATING_ONLY_BUY_SELL"');
 
   out = out.replace(
@@ -132,11 +132,55 @@ export function patchFutbinBridgeV1066(source) {
 
 function patchUvAppV2105(source) {
   let out = String(source || '');
-  out = out.replace("const UV_VERSION = '2.10.4';", "const UV_VERSION = '2.10.5';");
+  out = out.replace("const UV_VERSION = '2.10.4';", "const UV_VERSION = '2.10.6';");
   out = out.replace(
     'generationCpuSafeBatches: true,',
-    'generationCpuSafeBatches: true, generationAsyncProxyJob: true,'
+    'generationCpuSafeBatches: true, generationAsyncProxyJob: true, allocatorConsistentHard100Fallback: true,'
   );
+
+  // v2.10.6: when a fallback has already proven 100/100 with the REAL allocator,
+  // do not merge unrelated expensive candidates back in before the second
+  // affordability check. That merge can recompute a stricter supply-aware
+  // Endgame mix and invalidate the exact pool that was already proven feasible.
+  const adaptiveOld = `      pool = [...merged.values()];
+      affordability = maxAffordablePortfolioCount(pool, budget, count);
+    }
+    if (Number(affordability.count || 0) < count) {
+      // v2.4.2: final reserve separates hard safety from ranking.`;
+
+  const adaptiveNew = `      const mergedBudgetAdaptivePool = [...merged.values()];
+      const adaptiveAllocatorProved =
+        budgetAdaptiveFallback?.budgetFeasible === true &&
+        Number(budgetAdaptiveFallback?.allocatorSlots || 0) >= count;
+      pool = adaptiveAllocatorProved ? budgetAdaptiveFallback.pool : mergedBudgetAdaptivePool;
+      affordability = maxAffordablePortfolioCount(pool, budget, count);
+    }
+    if (Number(affordability.count || 0) < count) {
+      // v2.4.2: final reserve separates hard safety from ranking.`;
+
+  out = out.replace(adaptiveOld, adaptiveNew);
+
+  const reserveOld = `      pool = [...merged.values()];
+      affordability = maxAffordablePortfolioCount(pool, budget, count);
+    }
+    if (Number(affordability.count || 0) < count) {
+      const fallbackText = hard100SellabilityFallback`;
+
+  const reserveNew = `      const mergedSafetyReservePool = [...merged.values()];
+      const reserveAllocatorProved =
+        budgetSafetyReserveFallback?.budgetFeasible === true &&
+        Number(budgetSafetyReserveFallback?.allocatorSlots || 0) >= count;
+      pool = reserveAllocatorProved ? budgetSafetyReserveFallback.pool : mergedSafetyReservePool;
+      affordability = maxAffordablePortfolioCount(pool, budget, count);
+    }
+    if (Number(affordability.count || 0) < count) {
+      const fallbackText = hard100SellabilityFallback`;
+
+  out = out.replace(reserveOld, reserveNew);
+
+  if (!out.includes('adaptiveAllocatorProved') || !out.includes('reserveAllocatorProved')) {
+    throw new Error('[ÜV v2.10.6] allocator-consistency patch failed.');
+  }
   return out;
 }
 
@@ -189,42 +233,43 @@ export async function load(url, context, defaultLoad) {
 
   if (url.endsWith('/uv/uvApp.js')) {
     const patched = patchUvAppV2105(raw);
-    console.log('[ÜV] v2.10.5 runtime patch active: async generation status + hard-100 compatibility.');
+    console.log('[ÜV] v2.10.6 runtime patch active: async generation + allocator-consistent hard-100 fallback.');
     return { format: result.format, source: patched, shortCircuit: true };
   }
 
   if (url.endsWith('/uv/src/uvEngine.js')) {
     const patched = patchUvEngineV2105(raw);
-    if (!patched.includes('supplyAwareHard100')) throw new Error('[ÜV v2.10.5] supply-aware hard-100 patch failed.');
+    if (!patched.includes('supplyAwareHard100')) throw new Error('[ÜV v2.10.6] supply-aware hard-100 patch failed.');
     return { format: result.format, source: patched, shortCircuit: true };
   }
 
   if (!url.endsWith('/server.js')) return result;
 
   const base64 = patchServerV1064(raw);
-  if (!base64?.source) throw new Error('[v10.66.4] v10.64 base patch failed.');
+  if (!base64?.source) throw new Error('[v10.66.5] v10.64 base patch failed.');
 
   const rating = patchRatingOnly(base64.source);
-  if (!rating?.source) throw new Error('[v10.66.4] v10.65 rating patch failed.');
+  if (!rating?.source) throw new Error('[v10.66.5] v10.65 rating patch failed.');
 
   const final = patchFutbinBridgeV1066(rating.source);
-  if (!final?.source) throw new Error('[v10.66.4] FUTBIN bridge patch failed.');
+  if (!final?.source) throw new Error('[v10.66.5] FUTBIN bridge patch failed.');
 
   const required = [
     './futbinBridgeV1066.js',
     'enrichRowsWithFutbinSafeV1066',
     'v10.66 FUTBIN bridge router',
     'RATING_ONLY_BUY_SELL',
-    '10.66.4-final',
+    '10.66.5-final',
     'adaptiveV1062Status({ pool: null, gameYear: GAME_YEAR })',
     './uvGenerateAsyncV2105.js',
     'createUvGenerateAsyncRouterV2105',
     'sourceBusyGrace',
-    'busySafeAllowed'
+    'busySafeAllowed',
+    'allocatorConsistentHard100Fallback'
   ];
   const missing = required.filter(marker => !final.source.includes(marker));
-  if (missing.length) throw new Error('[v10.66.4] patch incomplete: ' + missing.join(', '));
+  if (missing.length) throw new Error('[v10.66.5] patch incomplete: ' + missing.join(', '));
 
-  console.log('[v10.66.4] FINAL patch active: Rating-only + FUTBIN bridge + ÜV 2.10.5 async hard-100 + monitor busy grace.');
+  console.log('[v10.66.5] FINAL patch active: Rating-only + FUTBIN bridge + monitor busy grace + ÜV 2.10.6 allocator-consistent hard-100.');
   return { format: result.format, source: final.source, shortCircuit: true };
 }
