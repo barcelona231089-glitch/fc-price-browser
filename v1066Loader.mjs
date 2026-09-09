@@ -1,7 +1,7 @@
 import { patchServer as patchServerV1064 } from './v1064Loader.mjs';
 import { patchRatingOnly } from './v1065Loader.mjs';
 
-export const V1066_BOOTSTRAP_VERSION = '10.67.3-trader-brain-futbin-extended';
+export const V1066_BOOTSTRAP_VERSION = '10.67.4-trader-brain-futbin-warmup';
 
 export function patchFutbinBridgeV1066(source) {
   const original = String(source || '');
@@ -49,7 +49,7 @@ export function patchFutbinBridgeV1066(source) {
     'futbinPublicStatus({ pool: dbEnabled ? pool : null, gameYear: String(GAME_YEAR) === "27" ? "26" : GAME_YEAR }),\n      futbinBridgeV1066Status({ pool: dbEnabled ? pool : null, gameYear: String(GAME_YEAR) === "27" ? "26" : GAME_YEAR })\n    ]);'
   );
 
-  out = out.replaceAll('version: "10.64-final"', 'version: "10.67.3-final"');
+  out = out.replaceAll('version: "10.64-final"', 'version: "10.67.4-final"');
   out = out.replaceAll('outputMode: "BUY_SELL_ONLY"', 'outputMode: "RATING_ONLY_BUY_SELL"');
 
   out = out.replace(
@@ -178,6 +178,12 @@ function patchTraderBrainFutbinV10673(source) {
     '      discordSignals: signals,\n      futbinCrossCheck: Number.isFinite(Number(row.futbinPrice)) ? {\n        provider: row.futbinProvider || null,\n        price: Number(row.futbinPrice),\n        diffPct: Number.isFinite(Number(row.futbinDiffPct)) ? Number(row.futbinDiffPct) : null,\n        status: row.futbinCrossCheck || "NO_DATA",\n        matchConfidence: Number.isFinite(Number(row.futbinMatchConfidence)) ? Number(row.futbinMatchConfidence) : null,\n        games: row.futbinGames ?? null,\n        gamesConsole: row.futbinGamesConsole ?? null,\n        gamesPc: row.futbinGamesPc ?? null,\n        popularRank: row.futbinPopularRank ?? null,\n        popularityCount: row.futbinPopularityCount ?? null,\n        salesHistory: Array.isArray(row.futbinSalesHistory) ? row.futbinSalesHistory : [],\n        observedSalesPerDay: row.futbinObservedSalesPerDay ?? null\n      } : null\n    };'
   );
 
+  // Guaranteed sparse sampling in the real Trader Brain market loop.
+  out = out.replace(
+    "      await evaluateTraderSignalReliability(latestTradingRows);\n      await evaluateTraderMarketImpact(latestTradingRows);\n      await evaluateMarketKnowledge(latestTradingRows);\n      await enrichImportantRowsWithFutbinParse(latestTradingRows, built.brainWork);\n      await automaticTraderBrain(latestTradingRows, built.brainWork);",
+    "      await evaluateTraderSignalReliability(latestTradingRows);\n      await evaluateTraderMarketImpact(latestTradingRows);\n      await evaluateMarketKnowledge(latestTradingRows);\n\n      // v10.67.4: guaranteed sparse FUTBIN sample for the TRADER BRAIN.\n      // Do not wait forever for an 84%-confidence AI candidate. The existing\n      // daily budget + global minimum interval still cap Parse usage.\n      if (FUTBIN_PARSE_API_KEY) {\n        const budget = refreshFutbinParseDailyBudget();\n        const intervalReady = !futbinParseLastCallAt || Date.now() - futbinParseLastCallAt >= FUTBIN_PARSE_MIN_INTERVAL_MS;\n        if (budget.remaining > 0 && intervalReady) {\n          const warmupRow = latestTradingRows\n            .filter(row => Number(row?.overall || 0) >= 82 && Number(row?.price || 0) > 0 && row?.name)\n            .filter(row => {\n              const last = futbinParseCardLastCheck.get(String(row.eaId)) || 0;\n              return !last || Date.now() - last >= FUTBIN_PARSE_CARD_COOLDOWN_MS;\n            })\n            .sort((a, b) => Number(b.overall || 0) - Number(a.overall || 0) || Number(b.price || 0) - Number(a.price || 0))[0] || null;\n\n          if (warmupRow) {\n            const warmupMatch = await fetchFutbinParseCrossCheck(warmupRow);\n            if (warmupMatch) applyFutbinParseCrossCheck(warmupRow, warmupMatch, built.brainWork);\n          }\n        }\n      }\n\n      await enrichImportantRowsWithFutbinParse(latestTradingRows, built.brainWork);\n      await automaticTraderBrain(latestTradingRows, built.brainWork);"
+  );
+
   // Expose the real Trader Brain FUTBIN extended state in both status endpoints.
   const futbinStatusStart = out.indexOf('app.get("/api/futbin/status"');
   if (futbinStatusStart >= 0) {
@@ -205,11 +211,14 @@ function patchTraderBrainFutbinV10673(source) {
     'futbinGames',
     'futbinPopularRank',
     'futbinSalesHistory',
+    'guaranteed sparse FUTBIN sample for the TRADER BRAIN',
+    'const warmupMatch = await fetchFutbinParseCrossCheck(warmupRow)',
+    'const extendedEvidence = match.futbinId',
     'extendedEvidence: traderFutbinExtendedStatusV10673()',
     'futbin: { publicApi: latestFutbinParseStatus, extendedEvidence: traderFutbinExtendedStatusV10673() }'
   ];
   const missing = required.filter(marker => !out.includes(marker));
-  if (missing.length) throw new Error('[v10.67.3] Trader Brain FUTBIN extended patch failed: ' + missing.join(', '));
+  if (missing.length) throw new Error('[v10.67.4] Trader Brain FUTBIN extended patch failed: ' + missing.join(', '));
   return { source: out, changed: out !== source };
 }
 
@@ -1050,23 +1059,23 @@ export async function load(url, context, defaultLoad) {
   if (!url.endsWith('/server.js')) return result;
 
   const base64 = patchServerV1064(raw);
-  if (!base64?.source) throw new Error('[v10.67.3] v10.64 base patch failed.');
+  if (!base64?.source) throw new Error('[v10.67.4] v10.64 base patch failed.');
 
   const rating = patchRatingOnly(base64.source);
-  if (!rating?.source) throw new Error('[v10.67.3] v10.65 rating patch failed.');
+  if (!rating?.source) throw new Error('[v10.67.4] v10.65 rating patch failed.');
 
   const bridge = patchFutbinBridgeV1066(rating.source);
-  if (!bridge?.source) throw new Error('[v10.67.3] FUTBIN bridge patch failed.');
+  if (!bridge?.source) throw new Error('[v10.67.4] FUTBIN bridge patch failed.');
 
   const final = patchTraderBrainFutbinV10673(bridge.source);
-  if (!final?.source) throw new Error('[v10.67.3] Trader Brain FUTBIN extended patch failed.');
+  if (!final?.source) throw new Error('[v10.67.4] Trader Brain FUTBIN extended patch failed.');
 
   const required = [
     './futbinBridgeV1066.js',
     'enrichRowsWithFutbinSafeV1066',
     'v10.66 FUTBIN bridge router',
     'RATING_ONLY_BUY_SELL',
-    '10.67.3-final',
+    '10.67.4-final',
     'adaptiveV1062Status({ pool: null, gameYear: GAME_YEAR })',
     './uvGenerateAsyncV2105.js',
     'createUvGenerateAsyncRouterV2105',
@@ -1079,8 +1088,8 @@ export async function load(url, context, defaultLoad) {
     'futbinSalesHistory'
   ];
   const missing = required.filter(marker => !final.source.includes(marker));
-  if (missing.length) throw new Error('[v10.67.3] patch incomplete: ' + missing.join(', '));
+  if (missing.length) throw new Error('[v10.67.4] patch incomplete: ' + missing.join(', '));
 
-  console.log('[v10.67.3] FINAL patch active: Trader Brain FUTBIN Prices + Games + Sales + Popular-Rank.');
+  console.log('[v10.67.4] FINAL patch active: Trader Brain FUTBIN guaranteed sampling + Games + Sales + Popular-Rank.');
   return { format: result.format, source: final.source, shortCircuit: true };
 }
