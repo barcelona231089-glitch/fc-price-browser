@@ -1,7 +1,7 @@
 import { patchServer as patchServerV1064 } from './v1064Loader.mjs';
 import { patchRatingOnly } from './v1065Loader.mjs';
 
-export const V1066_BOOTSTRAP_VERSION = '10.66-futbin-authorized-bridge-final';
+export const V1066_BOOTSTRAP_VERSION = '10.66.1-futbin-fast-status-final';
 
 export function patchFutbinBridgeV1066(source) {
   const original = String(source || '');
@@ -51,7 +51,7 @@ export function patchFutbinBridgeV1066(source) {
     'futbinPublicStatus({ pool: dbEnabled ? pool : null, gameYear: String(GAME_YEAR) === "27" ? "26" : GAME_YEAR })\n    ]);',
     'futbinPublicStatus({ pool: dbEnabled ? pool : null, gameYear: String(GAME_YEAR) === "27" ? "26" : GAME_YEAR }),\n      futbinBridgeV1066Status({ pool: dbEnabled ? pool : null, gameYear: String(GAME_YEAR) === "27" ? "26" : GAME_YEAR })\n    ]);'
   );
-  out = out.replaceAll('version: "10.64-final"', 'version: "10.66-final"');
+  out = out.replaceAll('version: "10.64-final"', 'version: "10.66.1-final"');
   out = out.replaceAll('outputMode: "BUY_SELL_ONLY"', 'outputMode: "RATING_ONLY_BUY_SELL"');
   out = out.replace(
     '      futbin,\n      checklist:',
@@ -63,6 +63,13 @@ export function patchFutbinBridgeV1066(source) {
   );
 
   out = out.replaceAll('FC Trading Intelligence v10.65 FINAL Rating-Only + FUTBIN Complete + FC26 Season Brain', 'FC Trading Intelligence v10.66 FINAL Rating-Only + Authorized FUTBIN Bridge + FC26 Season Brain');
+
+  // v10.66.1: final-project status must stay cheap. The direct FUTBIN layer is disabled
+  // on Hostless anyway, so do not make its status endpoint count PostgreSQL rows.
+  out = out.replace(
+    'futbinPublicStatus({ pool: dbEnabled ? pool : null, gameYear: String(GAME_YEAR) === "27" ? "26" : GAME_YEAR }),\n      futbinBridgeV1066Status({ pool: dbEnabled ? pool : null, gameYear: String(GAME_YEAR) === "27" ? "26" : GAME_YEAR })\n    ]);',
+    'futbinPublicStatus({ pool: null, gameYear: String(GAME_YEAR) === "27" ? "26" : GAME_YEAR }),\n      futbinBridgeV1066Status({ pool: dbEnabled ? pool : null, gameYear: String(GAME_YEAR) === "27" ? "26" : GAME_YEAR })\n    ]);'
+  );
 
   return { source: out, changed: out !== original };
 }
@@ -84,11 +91,11 @@ export async function load(url, context, defaultLoad) {
     'enrichRowsWithFutbinSafeV1066',
     'v10.66 FUTBIN bridge router',
     'RATING_ONLY_BUY_SELL',
-    '10.66-final'
+    '10.66.1-final'
   ];
   const missing = required.filter(marker => !final.source.includes(marker));
   if (missing.length) throw new Error('[v10.66] patch incomplete: ' + missing.join(', '));
 
-  console.log('[v10.66] FINAL patch active: Rating-only + authorized FUTBIN bridge + FC26 memory. Direct FUTBIN is opt-in only.');
+  console.log('[v10.66.1] FINAL patch active: Rating-only + authorized FUTBIN bridge + fast non-blocking status + FC26 memory.');
   return { format: result.format, source: final.source, shortCircuit: true };
 }

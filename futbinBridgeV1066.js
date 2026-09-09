@@ -4,7 +4,7 @@ import {
   futbinPublicStatus
 } from './futbinMarketV1064.js';
 
-export const FUTBIN_BRIDGE_VERSION = '10.66-authorized-futbin-bridge';
+export const FUTBIN_BRIDGE_VERSION = '10.66.1-authorized-futbin-bridge-fast-status';
 
 const AUTHORIZED_FEED_URL = String(process.env.FUTBIN_AUTHORIZED_FEED_URL || process.env.FUTBIN_BRIDGE_FEED_URL || '').trim();
 const AUTHORIZED_FEED_TOKEN = String(process.env.FUTBIN_AUTHORIZED_FEED_TOKEN || process.env.FUTBIN_BRIDGE_FEED_TOKEN || '').trim();
@@ -418,6 +418,18 @@ export async function startFutbinBridgeBootstrapV1066({ pool = null, gameYear = 
   return { ok: true, version: FUTBIN_BRIDGE_VERSION, refresh, seasonDaily };
 }
 
+let dbCountCache = {
+  status: 'NOT_LOADED',
+  cards: null,
+  sales: null,
+  history: null,
+  updatedAt: null,
+  error: null
+};
+let dbCountRefreshInflight = null;
+let lastDbCountRefreshAt = 0;
+const DB_COUNT_REFRESH_MS = 60_000;
+
 async function dbCounts(pool, gameYear='26') {
   if (!pool) return null;
   await ensureSchema(pool);
@@ -429,7 +441,40 @@ async function dbCounts(pool, gameYear='26') {
   return r.rows?.[0] || null;
 }
 
+function scheduleDbCountRefresh(pool, gameYear='26') {
+  if (!pool) {
+    dbCountCache = { status:'NO_DATABASE', cards:null, sales:null, history:null, updatedAt:new Date().toISOString(), error:null };
+    return;
+  }
+  const now = Date.now();
+  if (dbCountRefreshInflight) return;
+  if (lastDbCountRefreshAt && now - lastDbCountRefreshAt < DB_COUNT_REFRESH_MS) return;
+  lastDbCountRefreshAt = now;
+  dbCountRefreshInflight = dbCounts(pool, gameYear)
+    .then(counts => {
+      dbCountCache = {
+        status: 'OK',
+        cards: Number(counts?.cards || 0),
+        sales: Number(counts?.sales || 0),
+        history: Number(counts?.history || 0),
+        updatedAt: new Date().toISOString(),
+        error: null
+      };
+    })
+    .catch(error => {
+      dbCountCache = {
+        ...dbCountCache,
+        status: 'ERROR',
+        updatedAt: new Date().toISOString(),
+        error: String(error?.message || error)
+      };
+    })
+    .finally(() => { dbCountRefreshInflight = null; });
+}
+
 export async function futbinBridgeV1066Status({ pool = null, gameYear = '26' } = {}) {
+  // Status endpoints must never wait on PostgreSQL. Refresh counts in the background.
+  scheduleDbCountRefresh(pool, gameYear);
   return {
     ok: true,
     version: FUTBIN_BRIDGE_VERSION,
@@ -444,7 +489,8 @@ export async function futbinBridgeV1066Status({ pool = null, gameYear = '26' } =
     lastError,
     lastSource,
     counters: { importedCards, importedSales, importedHistory, attachedRows, directAttempts, directSkips },
-    db: await dbCounts(pool, gameYear).catch(error => ({ error: String(error?.message || error) })),
+    db: dbCountCache,
+    dbCountsRefreshing: Boolean(dbCountRefreshInflight),
     note: AUTHORIZED_FEED_URL
       ? 'Authorized FUTBIN feed bridge is configured. FUT.GG remains the live primary source.'
       : 'Direct Hostless requests are disabled by default after HTTP 403. Configure FUTBIN_AUTHORIZED_FEED_URL or import authorized/publicly obtained normalized data through the bridge endpoint.'
