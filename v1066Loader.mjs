@@ -1,7 +1,7 @@
 import { patchServer as patchServerV1064 } from './v1064Loader.mjs';
 import { patchRatingOnly } from './v1065Loader.mjs';
 
-export const V1066_BOOTSTRAP_VERSION = '10.66.9-futbin-real-data-memory';
+export const V1066_BOOTSTRAP_VERSION = '10.67.1-futbin-auto-parse-revision';
 
 export function patchFutbinBridgeV1066(source) {
   const original = String(source || '');
@@ -49,7 +49,7 @@ export function patchFutbinBridgeV1066(source) {
     'futbinPublicStatus({ pool: dbEnabled ? pool : null, gameYear: String(GAME_YEAR) === "27" ? "26" : GAME_YEAR }),\n      futbinBridgeV1066Status({ pool: dbEnabled ? pool : null, gameYear: String(GAME_YEAR) === "27" ? "26" : GAME_YEAR })\n    ]);'
   );
 
-  out = out.replaceAll('version: "10.64-final"', 'version: "10.66.9-final"');
+  out = out.replaceAll('version: "10.64-final"', 'version: "10.67.1-final"');
   out = out.replaceAll('outputMode: "BUY_SELL_ONLY"', 'outputMode: "RATING_ONLY_BUY_SELL"');
 
   out = out.replace(
@@ -132,13 +132,13 @@ export function patchFutbinBridgeV1066(source) {
 
 function patchUvAppV2105(source) {
   let out = String(source || '');
-  out = out.replace("const UV_VERSION = '2.10.4';", "const UV_VERSION = '2.10.9';");
+  out = out.replace("const UV_VERSION = '2.10.4';", "const UV_VERSION = '2.10.11';");
   out = out.replace(
     'generationCpuSafeBatches: true,',
-    'generationCpuSafeBatches: true, generationAsyncProxyJob: true, allocatorConsistentHard100Fallback: true, playerCapAwareHard100Mix: true, unsavedLiveRecheck: true, transientRecheckState: true, saveRequiredForLiveCheck: false, futbinParseLivePriceMemory: true, futbinBasicDataStatusAccurate: true,'
+    'generationCpuSafeBatches: true, generationAsyncProxyJob: true, allocatorConsistentHard100Fallback: true, playerCapAwareHard100Mix: true, unsavedLiveRecheck: true, transientRecheckState: true, saveRequiredForLiveCheck: false, futbinParseLivePriceMemory: true, futbinBasicDataStatusAccurate: true, futbinExtendedEvidenceAdapter: true, futbinGamesEvidenceReady: true, futbinSalesEvidenceReady: true, futbinPopularRankEvidenceReady: true, futbinParseAutoRevision: true,'
   );
 
-  // v2.10.9: saving is optional. Unsaved lists get a hidden short-lived
+  // v2.10.11: saving is optional. Unsaved lists get a hidden short-lived
   // PostgreSQL backing row only so the existing CPU-safe live-recheck/rebalance
   // pipeline can address the exact 100 cards. It is excluded from saved-list
   // history and automatically removed later.
@@ -229,10 +229,10 @@ async function cleanupExpiredTransientRechecks() {
   );
 
   if (!out.includes('recheckListId = persistedListId') || !out.includes('persistedNewListId')) {
-    throw new Error('[ÜV v2.10.9] unsaved live-recheck persistence patch failed.');
+    throw new Error('[ÜV v2.10.11] unsaved live-recheck persistence patch failed.');
   }
 
-  // v2.10.9: when a fallback has already proven 100/100 with the REAL allocator,
+  // v2.10.11: when a fallback has already proven 100/100 with the REAL allocator,
   // do not merge unrelated expensive candidates back in before the second
   // affordability check. That merge can recompute a stricter supply-aware
   // Endgame mix and invalidate the exact pool that was already proven feasible.
@@ -273,7 +273,7 @@ async function cleanupExpiredTransientRechecks() {
   out = out.replace(reserveOld, reserveNew);
 
   if (!out.includes('adaptiveAllocatorProved') || !out.includes('reserveAllocatorProved')) {
-    throw new Error('[ÜV v2.10.9] allocator-consistency patch failed.');
+    throw new Error('[ÜV v2.10.11] allocator-consistency patch failed.');
   }
   return out;
 }
@@ -282,7 +282,7 @@ async function cleanupExpiredTransientRechecks() {
 function patchUvDbV2108(source) {
   let out = String(source || '');
 
-  // v2.10.9: keep FUTBIN Parse observations in a dedicated table. Never mix
+  // v2.10.11: keep FUTBIN Parse observations in a dedicated table. Never mix
   // them into the FUT.GG primary history used by existing safety learning.
   if (!out.includes('uv_futbin_price_history')) {
     out = out.replace(
@@ -418,8 +418,299 @@ function patchUvFutbinV2109(source) {
   parseFailures: 0,
   lastCallAt: null,
   lastSuccessAt: null,
-  lastError: null
+  lastError: null,
+  extendedEvidenceEndpoint: String(process.env.FUTBIN_EXTENDED_EVIDENCE_ENDPOINT || 'get_trading_evidence_fc26').trim(),
+  extendedEvidenceStatus: 'IDLE',
+  extendedEvidenceCalls: 0,
+  extendedEvidenceSuccesses: 0,
+  extendedEvidenceFailures: 0,
+  extendedEvidenceLastAt: null,
+  extendedEvidenceLastError: null,
+  extendedEvidenceUnavailableUntil: null
 };
+
+const FUTBIN_EXTENDED_EVIDENCE_CACHE_MS = Math.max(5, Math.min(180, Number(process.env.FUTBIN_EXTENDED_EVIDENCE_CACHE_MIN || 30))) * 60_000;
+const FUTBIN_EXTENDED_EVIDENCE_BACKOFF_MS = Math.max(5, Math.min(180, Number(process.env.FUTBIN_EXTENDED_EVIDENCE_BACKOFF_MIN || 30))) * 60_000;
+const futbinExtendedEvidenceCache = new Map();
+let futbinExtendedEvidenceBlockedUntil = 0;
+
+const FUTBIN_EXTENDED_AUTO_PROVISION = String(process.env.FUTBIN_EXTENDED_AUTO_PROVISION || 'true').trim().toLowerCase() !== 'false';
+const FUTBIN_EXTENDED_PROVIDER_BASE_URL = String(process.env.FUTBIN_EXTENDED_EVIDENCE_BASE_URL || '').replace(/\/+$/, '');
+const PARSE_API_ROOT = 'https://api.parse.bot';
+const PARSE_PROVIDER_DISCOVERY_TTL_MS = 10 * 60_000;
+const PARSE_PROVIDER_PROVISION_COOLDOWN_MS = 12 * 60 * 60_000;
+let sameScraperExtendedEndpointMissing = false;
+let parseExtendedProvider = null;
+let parseProviderDiscoveryAt = 0;
+let parseProviderDiscoveryPromise = null;
+let parseProviderProvisionPromise = null;
+let parseProviderLastProvisionAt = 0;
+
+function parseScraperIdFromBase(baseUrl) {
+  const m = String(baseUrl || '').match(/\/scraper\/([^/]+)/i);
+  return m ? m[1] : null;
+}
+
+function normalizeParseProvider(task) {
+  const generated = task?.generated_api || null;
+  const endpoints = Array.isArray(generated?.endpoints) ? generated.endpoints : [];
+  const exact = endpoints.find(e => String(e?.endpoint_name || '').toLowerCase() === 'get_trading_evidence_fc26');
+  if (!generated?.execution_base_url || !exact) return null;
+  return {
+    taskId: String(task?.id || ''),
+    scraperId: String(generated?.scraper_id || task?.result_scraper_id || ''),
+    baseUrl: String(generated.execution_base_url).replace(/\/+$/, ''),
+    endpoint: String(exact.endpoint_name),
+    method: String(exact.method || 'GET').toUpperCase()
+  };
+}
+
+async function listParseTasks(apiKey) {
+  return await fetchJson(PARSE_API_ROOT + '/dispatch/tasks?limit=100', {
+    headers: { 'X-API-Key': apiKey }
+  });
+}
+
+async function discoverParseExtendedProvider(apiKey, force = false) {
+  if (FUTBIN_EXTENDED_PROVIDER_BASE_URL) {
+    return {
+      taskId: null,
+      scraperId: parseScraperIdFromBase(FUTBIN_EXTENDED_PROVIDER_BASE_URL),
+      baseUrl: FUTBIN_EXTENDED_PROVIDER_BASE_URL,
+      endpoint: extendedDataState.extendedEvidenceEndpoint,
+      method: String(process.env.FUTBIN_EXTENDED_EVIDENCE_METHOD || 'GET').toUpperCase()
+    };
+  }
+
+  const now = Date.now();
+  if (!force && parseExtendedProvider) return parseExtendedProvider;
+  if (!force && parseProviderDiscoveryAt && now - parseProviderDiscoveryAt < PARSE_PROVIDER_DISCOVERY_TTL_MS) return null;
+  if (parseProviderDiscoveryPromise) return parseProviderDiscoveryPromise;
+
+  parseProviderDiscoveryPromise = (async () => {
+    parseProviderDiscoveryAt = Date.now();
+    try {
+      const data = await listParseTasks(apiKey);
+      const tasks = Array.isArray(data?.tasks) ? data.tasks : [];
+      for (const task of tasks) {
+        const provider = normalizeParseProvider(task);
+        if (provider) {
+          parseExtendedProvider = provider;
+          extendedDataState.extendedEvidenceStatus = 'PROVIDER_DISCOVERED';
+          return provider;
+        }
+      }
+      return null;
+    } finally {
+      parseProviderDiscoveryPromise = null;
+    }
+  })();
+
+  return parseProviderDiscoveryPromise;
+}
+
+async function pollParseRevisionTask(taskId, apiKey) {
+  const deadline = Date.now() + 2 * 60_000;
+  while (Date.now() < deadline) {
+    await new Promise(resolve => setTimeout(resolve, 5000));
+    const task = await fetchJson(PARSE_API_ROOT + '/dispatch/tasks/' + encodeURIComponent(taskId), {
+      headers: { 'X-API-Key': apiKey }
+    });
+    const status = String(task?.status || '').toLowerCase();
+    const provider = normalizeParseProvider(task);
+    if (provider) return provider;
+    if (status === 'needs_input') throw new Error('PARSE_REVISION_NEEDS_INPUT');
+    if (status === 'failed') throw new Error('PARSE_REVISION_FAILED: ' + String(task?.error || 'unknown'));
+  }
+  throw new Error('PARSE_REVISION_TIMEOUT');
+}
+
+async function provisionParseExtendedProvider(seedPlayerId, apiKey) {
+  if (!FUTBIN_EXTENDED_AUTO_PROVISION) return null;
+  if (parseProviderProvisionPromise) return parseProviderProvisionPromise;
+  const now = Date.now();
+  if (parseProviderLastProvisionAt && now - parseProviderLastProvisionAt < PARSE_PROVIDER_PROVISION_COOLDOWN_MS) return null;
+
+  parseProviderLastProvisionAt = now;
+  parseProviderProvisionPromise = (async () => {
+    extendedDataState.extendedEvidenceStatus = 'PROVISIONING_PARSE_ENDPOINT';
+    try {
+      const existing = await discoverParseExtendedProvider(apiKey, true);
+      if (existing) return existing;
+
+      const tasksData = await listParseTasks(apiKey);
+      const tasks = Array.isArray(tasksData?.tasks) ? tasksData.tasks : [];
+      const baseScraperId = parseScraperIdFromBase(FUTBIN_PARSE_API_BASE);
+      const baseTask = tasks.find(task => {
+        const generatedId = String(task?.generated_api?.scraper_id || task?.result_scraper_id || '');
+        return baseScraperId && generatedId === baseScraperId;
+      });
+
+      const revisionText =
+        'FC_TRADER_FUTBIN_EXTENDED_EVIDENCE_V1. Add an endpoint named get_trading_evidence_fc26 with input player_id. ' +
+        'Use only publicly accessible EA FC 26 FUTBIN pages and exact card/version matching. ' +
+        'Return real PGP Games values from /26/pgp?pid={player_id}; real Player Sales History rows for the exact card from its public market/sales page; ' +
+        'and the exact card popular_rank from the public /popular list when present. ' +
+        'Return structured fields: player_id, games, games_console, games_pc, popular_rank, popularity_count, sales_history[]. ' +
+        'Each sales_history row may contain date, listed_for, sold_for, ea_tax, net_price, status. ' +
+        'Missing evidence must be null or empty array. Never infer or invent Games, rank, sales, dates, or prices. ' +
+        'Do not log in and do not bypass CAPTCHA, paywalls, anti-bot protections, rate limits, or access controls.';
+
+      let created;
+      if (baseTask?.id) {
+        created = await fetchJson(
+          PARSE_API_ROOT + '/dispatch/tasks/' + encodeURIComponent(String(baseTask.id)) + '/revise',
+          {
+            method: 'POST',
+            headers: { 'X-API-Key': apiKey, 'Content-Type': 'application/json' },
+            body: JSON.stringify({ revision: revisionText })
+          }
+        );
+      } else {
+        const seed = String(seedPlayerId || '').replace(/\D/g, '') || '2560';
+        created = await fetchJson(PARSE_API_ROOT + '/dispatch', {
+          method: 'POST',
+          headers: { 'X-API-Key': apiKey, 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            url: 'https://www.futbin.com/26/pgp?pid=' + seed,
+            task: revisionText,
+            force_new: true
+          })
+        });
+      }
+
+      const taskId = String(created?.task_id || '');
+      if (!taskId) throw new Error('PARSE_REVISION_NO_TASK_ID');
+      const provider = await pollParseRevisionTask(taskId, apiKey);
+      parseExtendedProvider = provider;
+      parseProviderDiscoveryAt = Date.now();
+      extendedDataState.extendedEvidenceStatus = 'ACTIVE';
+      extendedDataState.extendedEvidenceLastError = null;
+      return provider;
+    } catch (error) {
+      extendedDataState.extendedEvidenceStatus = 'PROVISION_FAILED';
+      extendedDataState.extendedEvidenceLastError = String(error?.message || error);
+      return null;
+    } finally {
+      parseProviderProvisionPromise = null;
+    }
+  })();
+
+  return parseProviderProvisionPromise;
+}
+
+function scheduleParseExtendedProvision(seedPlayerId, apiKey) {
+  if (!FUTBIN_EXTENDED_AUTO_PROVISION || parseProviderProvisionPromise) return;
+  void provisionParseExtendedProvider(seedPlayerId, apiKey);
+}
+
+async function callParseExtendedProvider(provider, playerId, apiKey) {
+  if (!provider?.baseUrl || !provider?.endpoint) return null;
+  const method = String(provider.method || 'GET').toUpperCase();
+  const base = String(provider.baseUrl).replace(/\/+$/, '') + '/' + encodeURIComponent(provider.endpoint);
+  if (method === 'POST') {
+    return await fetchJson(base, {
+      method: 'POST',
+      headers: { 'X-API-Key': apiKey, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ player_id: String(playerId) })
+    });
+  }
+  return await fetchJson(base + '?player_id=' + encodeURIComponent(String(playerId)), {
+    headers: { 'X-API-Key': apiKey }
+  });
+}
+
+function mergeStructuredEvidence(primary = {}, secondary = {}) {
+  const merged = { ...primary };
+  for (const [key, value] of Object.entries(secondary || {})) {
+    if (value === null || value === undefined) continue;
+    if (typeof value === 'boolean') {
+      merged[key] = Boolean(merged[key]) || value;
+      continue;
+    }
+    if (Number.isFinite(Number(value))) {
+      const n = Number(value);
+      if (!Number.isFinite(Number(merged[key])) || Number(merged[key]) <= 0 || n > 0) merged[key] = n;
+      continue;
+    }
+    if (Array.isArray(value) && value.length) merged[key] = value;
+    else if (typeof value === 'string' && value.trim()) merged[key] = value;
+  }
+  merged.gamesAvailable = Boolean(merged.gamesAvailable || Number(merged.futbinGamesCount) > 0);
+  merged.salesHistoryAvailable = Boolean(merged.salesHistoryAvailable || Number(merged.futbinSoldSampleCount) > 0);
+  return merged;
+}
+
+async function fetchFutbinExtendedEvidence(playerId, livePrice = null) {
+  const endpoint = String(extendedDataState.extendedEvidenceEndpoint || '').trim();
+  const apiKey = String(process.env.FUTBIN_PARSE_API_KEY || '').trim();
+  const id = String(playerId || '').trim();
+  if (!endpoint || !apiKey || !/^\d+$/.test(id)) return null;
+
+  const now = Date.now();
+  const cached = futbinExtendedEvidenceCache.get(id);
+  if (cached && now - cached.at < FUTBIN_EXTENDED_EVIDENCE_CACHE_MS) return cached.value;
+
+  extendedDataState.extendedEvidenceCalls += 1;
+  extendedDataState.extendedEvidenceLastAt = new Date().toISOString();
+  extendedDataState.extendedEvidenceStatus = 'FETCHING';
+
+  try {
+    let json = null;
+
+    if (!sameScraperExtendedEndpointMissing) {
+      try {
+        const url = FUTBIN_PARSE_API_BASE + '/' + encodeURIComponent(endpoint) + '?player_id=' + encodeURIComponent(id);
+        json = await fetchJson(url, { headers: { 'X-API-Key': apiKey } });
+      } catch (primaryError) {
+        const primaryMessage = String(primaryError?.message || primaryError);
+        if (/HTTP 404|not found|unknown endpoint|endpoint.*exist/i.test(primaryMessage)) {
+          sameScraperExtendedEndpointMissing = true;
+        } else {
+          throw primaryError;
+        }
+      }
+    }
+
+    if (!json) {
+      const provider = parseExtendedProvider || await discoverParseExtendedProvider(apiKey).catch(() => null);
+      if (provider) {
+        json = await callParseExtendedProvider(provider, id, apiKey);
+      } else {
+        extendedDataState.extendedEvidenceStatus = FUTBIN_EXTENDED_AUTO_PROVISION ? 'PROVISIONING_PARSE_ENDPOINT' : 'ENDPOINT_NOT_INSTALLED';
+        scheduleParseExtendedProvision(id, apiKey);
+        return null;
+      }
+    }
+
+    const payload = json?.data && typeof json.data === 'object' ? json.data : json;
+    const evidence = extractFutbinStructuredEvidence(payload, livePrice);
+    observeExtendedEvidence(evidence);
+    extendedDataState.extendedEvidenceSuccesses += 1;
+    extendedDataState.extendedEvidenceStatus = 'ACTIVE';
+    extendedDataState.extendedEvidenceLastError = null;
+    extendedDataState.extendedEvidenceUnavailableUntil = null;
+    futbinExtendedEvidenceCache.set(id, { at: now, value: evidence });
+    return evidence;
+  } catch (error) {
+    const message = String(error?.message || error);
+    extendedDataState.extendedEvidenceFailures += 1;
+    extendedDataState.extendedEvidenceLastError = message;
+    if (/HTTP 404|not found|unknown endpoint|endpoint.*exist/i.test(message)) {
+      parseExtendedProvider = null;
+      parseProviderDiscoveryAt = 0;
+      extendedDataState.extendedEvidenceStatus = FUTBIN_EXTENDED_AUTO_PROVISION ? 'PROVISIONING_PARSE_ENDPOINT' : 'ENDPOINT_NOT_INSTALLED';
+      scheduleParseExtendedProvision(id, apiKey);
+    } else if (/HTTP 429|rate limit/i.test(message)) {
+      extendedDataState.extendedEvidenceStatus = 'RATE_LIMITED';
+    } else if (/blocked|captcha|datadome|anti.?bot/i.test(message)) {
+      extendedDataState.extendedEvidenceStatus = 'SOURCE_BLOCKED_NO_BYPASS';
+    } else {
+      extendedDataState.extendedEvidenceStatus = 'ERROR';
+    }
+    return null;
+  }
+}
 
 function markParseCall({ ok = false, price = null, marketTrend = false, error = null } = {}) {
   extendedDataState.parseCalls += 1;
@@ -459,7 +750,22 @@ function markParseCall({ ok = false, price = null, marketTrend = false, error = 
       salesHistory: extendedDataState.salesHistoryObserved,
       popularRank: extendedDataState.popularRankObserved,
       observedSalesPerDay: extendedDataState.observedSalesPerDayObserved
-    }
+    },
+    extendedEvidenceEndpoint: extendedDataState.extendedEvidenceEndpoint || null,
+    extendedEvidenceStatus: extendedDataState.extendedEvidenceStatus,
+    extendedEvidenceCalls: extendedDataState.extendedEvidenceCalls,
+    extendedEvidenceSuccesses: extendedDataState.extendedEvidenceSuccesses,
+    extendedEvidenceFailures: extendedDataState.extendedEvidenceFailures,
+    extendedEvidenceLastAt: extendedDataState.extendedEvidenceLastAt,
+    extendedEvidenceLastError: extendedDataState.extendedEvidenceLastError,
+    extendedEvidenceUnavailableUntil: extendedDataState.extendedEvidenceUnavailableUntil,
+    extendedEvidencePolicy: 'PUBLIC_OR_AUTHORIZED_STRUCTURED_DATA_ONLY',
+    extendedAutoProvision: FUTBIN_EXTENDED_AUTO_PROVISION,
+    extendedProviderActive: Boolean(parseExtendedProvider?.baseUrl),
+    extendedProviderBaseUrl: parseExtendedProvider?.baseUrl || FUTBIN_EXTENDED_PROVIDER_BASE_URL || null,
+    extendedProviderEndpoint: parseExtendedProvider?.endpoint || null,
+    extendedProviderTaskId: parseExtendedProvider?.taskId || null,
+    sameScraperExtendedEndpointMissing
   };`
   );
 
@@ -485,7 +791,9 @@ function markParseCall({ ok = false, price = null, marketTrend = false, error = 
   out = out.replace(
     `    const evidence = best ? extractFutbinStructuredEvidence(best, price || card.price) : { gamesAvailable: false, salesHistoryAvailable: false };
     observeExtendedEvidence(evidence);`,
-    `    const evidence = best ? extractFutbinStructuredEvidence(best, price || card.price) : { gamesAvailable: false, salesHistoryAvailable: false };
+    `    const searchEvidence = best ? extractFutbinStructuredEvidence(best, price || card.price) : { gamesAvailable: false, salesHistoryAvailable: false };
+    const extendedEvidence = best?.id ? await fetchFutbinExtendedEvidence(best.id, price || card.price) : null;
+    const evidence = mergeStructuredEvidence(searchEvidence, extendedEvidence || {});
     observeExtendedEvidence(evidence);
     markParseCall({ ok: true, price });`
   );
@@ -505,7 +813,7 @@ function markParseCall({ ok = false, price = null, marketTrend = false, error = 
   return cards.map(card => {`,
     `  for (const item of results) if (item?.card) byId.set(String(item.card.eaId), item.result);
 
-  // v2.10.9: persist only actual Parse/FUTBIN current-price observations in a
+  // v2.10.11: persist only actual Parse/FUTBIN current-price observations in a
   // dedicated table, then derive our own 24h trend memory without touching the
   // FUT.GG primary history or adding any extra Parse API calls.
   const futbinObservations = results
@@ -540,7 +848,24 @@ function markParseCall({ ok = false, price = null, marketTrend = false, error = 
 
   const required = ['markParseCall', 'currentPriceObserved', 'marketTrendObserved', 'recordFutbinPriceObservations', 'futbinOwnTrendPct24h'];
   const missing = required.filter(marker => !out.includes(marker));
-  if (missing.length) throw new Error('[ÜV v2.10.9] FUTBIN Parse real-data patch failed: ' + missing.join(', '));
+  if (missing.length) throw new Error('[ÜV v2.10.11] FUTBIN Parse real-data patch failed: ' + missing.join(', '));
+  return out;
+}
+
+
+function patchUvFutbinEvidenceV21010(source) {
+  let out = String(source || '');
+  out = out.replace(
+    "'pgp_games', 'pgpgames', 'matches_played', 'matchesplayed'",
+    "'pgp_games', 'pgpgames', 'matches_played', 'matchesplayed', 'games_console', 'console_games', 'games_ps', 'ps_games', 'games_playstation'"
+  );
+  out = out.replace(
+    "'usage_rank', 'usagerank', 'games_rank', 'gamesrank'",
+    "'usage_rank', 'usagerank', 'games_rank', 'gamesrank', 'popular_position', 'popularposition', 'popularity_position', 'popularityposition'"
+  );
+  if (!out.includes("'games_console'") || !out.includes("'popular_position'")) {
+    throw new Error('[ÜV v2.10.11] FUTBIN extended evidence parser patch failed.');
+  }
   return out;
 }
 
@@ -548,7 +873,7 @@ function patchUvEngineV2105(source) {
   let out = String(source || '');
 
   const supplyAwareBlock = (threshold, min82, min83, preferred) => `if (ideal >= ${threshold}) {
-    // v2.10.9: count HIGH-tier capacity with the SAME per-player cap used by
+    // v2.10.11: count HIGH-tier capacity with the SAME per-player cap used by
     // maxAffordablePortfolioCount(). Raw row counts can overstate supply when
     // several versions belong to the same footballer, which previously caused
     // "100 structural / 98 after Endgame-Mix" false negatives.
@@ -612,45 +937,50 @@ export async function load(url, context, defaultLoad) {
 
   if (url.endsWith('/uv/uvApp.js')) {
     const patched = patchUvAppV2105(raw);
-    console.log('[ÜV] v2.10.9 runtime patch active: hard-100 + unsaved live-recheck + FUTBIN Parse memory/status.');
+    console.log('[ÜV] v2.10.11 runtime patch active: hard-100 + unsaved live-recheck + FUTBIN Parse memory/status.');
     return { format: result.format, source: patched, shortCircuit: true };
   }
 
   if (url.endsWith('/uv/src/db.js')) {
     const patched = patchUvDbV2108(raw);
-    if (!patched.includes("transientRecheckOnly") || !patched.includes('uv_futbin_price_history') || !patched.includes('recordFutbinPriceObservations')) throw new Error('[ÜV v2.10.9] transient DB/FUTBIN history patch failed.');
+    if (!patched.includes("transientRecheckOnly") || !patched.includes('uv_futbin_price_history') || !patched.includes('recordFutbinPriceObservations')) throw new Error('[ÜV v2.10.11] transient DB/FUTBIN history patch failed.');
     return { format: result.format, source: patched, shortCircuit: true };
   }
 
   if (url.endsWith('/uv/src/futbin.js')) {
     const patched = patchUvFutbinV2109(raw);
-    console.log('[ÜV] v2.10.9 FUTBIN Parse active: real current prices/trends + dedicated 24h price memory.');
+    console.log('[ÜV] v2.10.11 FUTBIN active: prices/trends + auto Parse revision for real Games/Sales/Popular-Rank.');
+    return { format: result.format, source: patched, shortCircuit: true };
+  }
+
+  if (url.endsWith('/uv/src/futbinEvidence.js')) {
+    const patched = patchUvFutbinEvidenceV21010(raw);
     return { format: result.format, source: patched, shortCircuit: true };
   }
 
   if (url.endsWith('/uv/src/uvEngine.js')) {
     const patched = patchUvEngineV2105(raw);
-    if (!patched.includes('supplyAwareHard100') || !patched.includes('playerCapAwareHard100')) throw new Error('[ÜV v2.10.9] player-cap-aware hard-100 patch failed.');
+    if (!patched.includes('supplyAwareHard100') || !patched.includes('playerCapAwareHard100')) throw new Error('[ÜV v2.10.11] player-cap-aware hard-100 patch failed.');
     return { format: result.format, source: patched, shortCircuit: true };
   }
 
   if (!url.endsWith('/server.js')) return result;
 
   const base64 = patchServerV1064(raw);
-  if (!base64?.source) throw new Error('[v10.66.9] v10.64 base patch failed.');
+  if (!base64?.source) throw new Error('[v10.67.1] v10.64 base patch failed.');
 
   const rating = patchRatingOnly(base64.source);
-  if (!rating?.source) throw new Error('[v10.66.9] v10.65 rating patch failed.');
+  if (!rating?.source) throw new Error('[v10.67.1] v10.65 rating patch failed.');
 
   const final = patchFutbinBridgeV1066(rating.source);
-  if (!final?.source) throw new Error('[v10.66.9] FUTBIN bridge patch failed.');
+  if (!final?.source) throw new Error('[v10.67.1] FUTBIN bridge patch failed.');
 
   const required = [
     './futbinBridgeV1066.js',
     'enrichRowsWithFutbinSafeV1066',
     'v10.66 FUTBIN bridge router',
     'RATING_ONLY_BUY_SELL',
-    '10.66.9-final',
+    '10.67.1-final',
     'adaptiveV1062Status({ pool: null, gameYear: GAME_YEAR })',
     './uvGenerateAsyncV2105.js',
     'createUvGenerateAsyncRouterV2105',
@@ -658,8 +988,8 @@ export async function load(url, context, defaultLoad) {
     'busySafeAllowed'
   ];
   const missing = required.filter(marker => !final.source.includes(marker));
-  if (missing.length) throw new Error('[v10.66.9] patch incomplete: ' + missing.join(', '));
+  if (missing.length) throw new Error('[v10.67.1] patch incomplete: ' + missing.join(', '));
 
-  console.log('[v10.66.9] FINAL patch active: Rating-only + FUTBIN bridge + monitor busy grace + ÜV 2.10.7 player-cap-aware hard-100.');
+  console.log('[v10.67.1] FINAL patch active: Rating-only + FUTBIN bridge + ÜV 2.10.11 + Parse auto-revision for Games/Sales/Popular-Rank.');
   return { format: result.format, source: final.source, shortCircuit: true };
 }
