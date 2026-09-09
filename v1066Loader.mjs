@@ -1,7 +1,7 @@
 import { patchServer as patchServerV1064 } from './v1064Loader.mjs';
 import { patchRatingOnly } from './v1065Loader.mjs';
 
-export const V1066_BOOTSTRAP_VERSION = '10.66.3-uv-async-hard100-supply-aware';
+export const V1066_BOOTSTRAP_VERSION = '10.66.4-monitor-busy-grace';
 
 export function patchFutbinBridgeV1066(source) {
   const original = String(source || '');
@@ -49,7 +49,7 @@ export function patchFutbinBridgeV1066(source) {
     'futbinPublicStatus({ pool: dbEnabled ? pool : null, gameYear: String(GAME_YEAR) === "27" ? "26" : GAME_YEAR }),\n      futbinBridgeV1066Status({ pool: dbEnabled ? pool : null, gameYear: String(GAME_YEAR) === "27" ? "26" : GAME_YEAR })\n    ]);'
   );
 
-  out = out.replaceAll('version: "10.64-final"', 'version: "10.66.3-final"');
+  out = out.replaceAll('version: "10.64-final"', 'version: "10.66.4-final"');
   out = out.replaceAll('outputMode: "BUY_SELL_ONLY"', 'outputMode: "RATING_ONLY_BUY_SELL"');
 
   out = out.replace(
@@ -93,6 +93,39 @@ export function patchFutbinBridgeV1066(source) {
       '// v2.10.5 async generation router\napp.use(createUvGenerateAsyncRouterV2105({ port }));\napp.use(uvRouter);'
     );
   }
+
+  // v10.66.4: a long full-market processing pass must not poison FUT.GG
+  // source health merely because the 3-minute freshness clock expires while
+  // monitoringBusy is still true. Processing health remains the separate guard.
+  out = out.replace(
+    'if (lastSuccessMs && staleForMs > SOURCE_HEALTH_STALE_MS) {',
+    `const sourceBusyGrace = monitoringBusy === true && staleForMs != null && staleForMs <= 10 * 60_000;
+  if (lastSuccessMs && staleForMs > SOURCE_HEALTH_STALE_MS && !sourceBusyGrace) {`
+  );
+
+  // v10.66.4: manual ÜV generation may use the last successful shared snapshot
+  // for up to 10 minutes while the Trader Brain is actively processing a long
+  // cycle. Such a snapshot is explicitly RECENT_SAFE and requires live recheck.
+  out = out.replace(
+    `const recentSafeAllowed = options?.allowRecentSafeSnapshot === true &&
+    source?.status === "RECOVERING" &&
+    processing?.healthy === true &&
+    snapshotAgeMs <= UV_SHARED_SAFE_SNAPSHOT_MAX_AGE_MS;
+
+  if (!liveAllowed && !recentSafeAllowed) return null;`,
+    `const recentSafeAllowed = options?.allowRecentSafeSnapshot === true &&
+    source?.status === "RECOVERING" &&
+    processing?.healthy === true &&
+    snapshotAgeMs <= UV_SHARED_SAFE_SNAPSHOT_MAX_AGE_MS;
+  const busySafeAllowed = options?.allowRecentSafeSnapshot === true &&
+    monitoringBusy === true &&
+    Array.isArray(latestTradingRows) &&
+    latestTradingRows.length >= 100 &&
+    snapshotAgeMs <= 10 * 60_000 &&
+    !source?.lastError;
+
+  if (!liveAllowed && !recentSafeAllowed && !busySafeAllowed) return null;`
+  );
 
   return { source: out, changed: out !== original };
 }
@@ -169,27 +202,29 @@ export async function load(url, context, defaultLoad) {
   if (!url.endsWith('/server.js')) return result;
 
   const base64 = patchServerV1064(raw);
-  if (!base64?.source) throw new Error('[v10.66.3] v10.64 base patch failed.');
+  if (!base64?.source) throw new Error('[v10.66.4] v10.64 base patch failed.');
 
   const rating = patchRatingOnly(base64.source);
-  if (!rating?.source) throw new Error('[v10.66.3] v10.65 rating patch failed.');
+  if (!rating?.source) throw new Error('[v10.66.4] v10.65 rating patch failed.');
 
   const final = patchFutbinBridgeV1066(rating.source);
-  if (!final?.source) throw new Error('[v10.66.3] FUTBIN bridge patch failed.');
+  if (!final?.source) throw new Error('[v10.66.4] FUTBIN bridge patch failed.');
 
   const required = [
     './futbinBridgeV1066.js',
     'enrichRowsWithFutbinSafeV1066',
     'v10.66 FUTBIN bridge router',
     'RATING_ONLY_BUY_SELL',
-    '10.66.3-final',
+    '10.66.4-final',
     'adaptiveV1062Status({ pool: null, gameYear: GAME_YEAR })',
     './uvGenerateAsyncV2105.js',
-    'createUvGenerateAsyncRouterV2105'
+    'createUvGenerateAsyncRouterV2105',
+    'sourceBusyGrace',
+    'busySafeAllowed'
   ];
   const missing = required.filter(marker => !final.source.includes(marker));
-  if (missing.length) throw new Error('[v10.66.3] patch incomplete: ' + missing.join(', '));
+  if (missing.length) throw new Error('[v10.66.4] patch incomplete: ' + missing.join(', '));
 
-  console.log('[v10.66.3] FINAL patch active: Rating-only + FUTBIN bridge + fast status + ÜV 2.10.5 async generation + supply-aware hard-100 mix.');
+  console.log('[v10.66.4] FINAL patch active: Rating-only + FUTBIN bridge + ÜV 2.10.5 async hard-100 + monitor busy grace.');
   return { format: result.format, source: final.source, shortCircuit: true };
 }
