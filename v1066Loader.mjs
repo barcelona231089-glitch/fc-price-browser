@@ -1,7 +1,7 @@
 import { patchServer as patchServerV1064 } from './v1064Loader.mjs';
 import { patchRatingOnly } from './v1065Loader.mjs';
 
-export const V1066_BOOTSTRAP_VERSION = '10.68.0-own-market-api';
+export const V1066_BOOTSTRAP_VERSION = '10.69.0-market-evidence-api';
 
 export function patchFutbinBridgeV1066(source) {
   const original = String(source || '');
@@ -49,7 +49,7 @@ export function patchFutbinBridgeV1066(source) {
     'futbinPublicStatus({ pool: dbEnabled ? pool : null, gameYear: String(GAME_YEAR) === "27" ? "26" : GAME_YEAR }),\n      futbinBridgeV1066Status({ pool: dbEnabled ? pool : null, gameYear: String(GAME_YEAR) === "27" ? "26" : GAME_YEAR })\n    ]);'
   );
 
-  out = out.replaceAll('version: "10.64-final"', 'version: "10.68.0-final"');
+  out = out.replaceAll('version: "10.64-final"', 'version: "10.69.0-final"');
   out = out.replaceAll('outputMode: "BUY_SELL_ONLY"', 'outputMode: "RATING_ONLY_BUY_SELL"');
 
   out = out.replace(
@@ -251,6 +251,70 @@ function patchTraderBrainFutbinV10673(source) {
 }
 
 
+
+function patchMarketEvidenceV1069(source) {
+  let out = String(source || '');
+
+  if (!out.includes('./marketEvidenceV1069.js')) {
+    out = out.replace(
+      'import { createHaCoordinator } from "./haCoordinator.js";',
+      'import { createHaCoordinator } from "./haCoordinator.js";\nimport { createMarketEvidenceRouterV1069, attachMarketEvidenceToRowsV1069 } from "./marketEvidenceV1069.js";'
+    );
+  }
+
+  if (!out.includes('v10.69 market evidence router')) {
+    const anchor = 'app.use("/api/futbin-bridge", createFutbinBridgeRouterV1066({ pool: dbEnabled ? pool : null, gameYear: GAME_YEAR }));';
+    if (!out.includes(anchor)) throw new Error('[v10.69.0] market evidence route anchor missing');
+    out = out.replace(
+      anchor,
+      anchor + '\n// v10.69 market evidence router\napp.use("/api/market/v1/evidence", createMarketEvidenceRouterV1069({ pool: dbEnabled ? pool : null, gameYear: GAME_YEAR }));'
+    );
+  }
+
+  if (!out.includes('v10.69 attach supplemental evidence')) {
+    const anchor = '      await evaluateMarketKnowledge(latestTradingRows);';
+    if (!out.includes(anchor)) throw new Error('[v10.69.0] evidence attach anchor missing');
+    out = out.replace(
+      anchor,
+      anchor + '\n      // v10.69 attach supplemental evidence: Games + Sales History + Popular Rank.\n      await attachMarketEvidenceToRowsV1069({\n        rows: latestTradingRows,\n        brainWork: built.brainWork,\n        pool: dbEnabled ? pool : null,\n        gameYear: GAME_YEAR\n      });'
+    );
+  }
+
+  // Parse returned HTTP 402 in production. Keep its status endpoint for diagnostics,
+  // but stop spending calls. The new evidence API is the supplement path.
+  if (out.includes('v10.67.5: guaranteed sparse FUTBIN sample for the TRADER BRAIN')) {
+    const start = out.indexOf('      // v10.67.5: guaranteed sparse FUTBIN sample for the TRADER BRAIN.');
+    const endAnchor = '      // v10.64 public FUTBIN gap fill';
+    const end = out.indexOf(endAnchor, start);
+    if (start >= 0 && end > start) {
+      out = out.slice(0, start) +
+        '      // v10.69: Parse 402 path disabled; supplemental evidence comes through our own evidence API.\n' +
+        out.slice(end);
+    }
+  }
+
+  const rootEndpointsAnchor = 'ownMarketApi: "GET /api/market/v1/status",';
+  if (out.includes(rootEndpointsAnchor) && !out.includes('marketEvidenceApi: "GET /api/market/v1/evidence/status"')) {
+    out = out.replace(
+      rootEndpointsAnchor,
+      rootEndpointsAnchor + '\n      marketEvidenceApi: "GET /api/market/v1/evidence/status",'
+    );
+  }
+
+  const required = [
+    './marketEvidenceV1069.js',
+    'createMarketEvidenceRouterV1069',
+    'attachMarketEvidenceToRowsV1069',
+    'app.use("/api/market/v1/evidence"',
+    'v10.69 attach supplemental evidence',
+    'Parse 402 path disabled'
+  ];
+  const missing = required.filter(marker => !out.includes(marker));
+  if (missing.length) throw new Error('[v10.69.0] market evidence patch incomplete: ' + missing.join(', '));
+
+  return { source: out, changed: out !== source };
+}
+
 function patchOwnMarketApiV1068(source) {
   let out = String(source || '');
 
@@ -289,7 +353,12 @@ function patchOwnMarketApiV1068(source) {
     'observeOwnMarketRowsV1068',
     'v10.68 own market API router',
     'v10.68 own market API observation',
-    'app.use("/api/market/v1"'
+    'app.use("/api/market/v1"',
+    './marketEvidenceV1069.js',
+    'createMarketEvidenceRouterV1069',
+    'attachMarketEvidenceToRowsV1069',
+    'app.use("/api/market/v1/evidence"',
+    'Parse 402 path disabled'
   ];
   const missing = required.filter(marker => !out.includes(marker));
   if (missing.length) throw new Error('[v10.68.0] own market API patch incomplete: ' + missing.join(', '));
@@ -1134,26 +1203,29 @@ export async function load(url, context, defaultLoad) {
   if (!url.endsWith('/server.js')) return result;
 
   const base64 = patchServerV1064(raw);
-  if (!base64?.source) throw new Error('[v10.68.0] v10.64 base patch failed.');
+  if (!base64?.source) throw new Error('[v10.69.0] v10.64 base patch failed.');
 
   const rating = patchRatingOnly(base64.source);
-  if (!rating?.source) throw new Error('[v10.68.0] v10.65 rating patch failed.');
+  if (!rating?.source) throw new Error('[v10.69.0] v10.65 rating patch failed.');
 
   const bridge = patchFutbinBridgeV1066(rating.source);
-  if (!bridge?.source) throw new Error('[v10.68.0] FUTBIN bridge patch failed.');
+  if (!bridge?.source) throw new Error('[v10.69.0] FUTBIN bridge patch failed.');
 
   const traderFutbin = patchTraderBrainFutbinV10673(bridge.source);
-  if (!traderFutbin?.source) throw new Error('[v10.68.0] Trader Brain FUTBIN extended patch failed.');
+  if (!traderFutbin?.source) throw new Error('[v10.69.0] Trader Brain FUTBIN extended patch failed.');
 
-  const final = patchOwnMarketApiV1068(traderFutbin.source);
-  if (!final?.source) throw new Error('[v10.68.0] own market API patch failed.');
+  const evidence = patchMarketEvidenceV1069(traderFutbin.source);
+  if (!evidence?.source) throw new Error('[v10.69.0] market evidence patch failed.');
+
+  const final = patchOwnMarketApiV1068(evidence.source);
+  if (!final?.source) throw new Error('[v10.69.0] own market API patch failed.');
 
   const required = [
     './futbinBridgeV1066.js',
     'enrichRowsWithFutbinSafeV1066',
     'v10.66 FUTBIN bridge router',
     'RATING_ONLY_BUY_SELL',
-    '10.68.0-final',
+    '10.69.0-final',
     'adaptiveV1062Status({ pool: null, gameYear: GAME_YEAR })',
     './uvGenerateAsyncV2105.js',
     'createUvGenerateAsyncRouterV2105',
@@ -1170,8 +1242,8 @@ export async function load(url, context, defaultLoad) {
     'app.use("/api/market/v1"'
   ];
   const missing = required.filter(marker => !final.source.includes(marker));
-  if (missing.length) throw new Error('[v10.68.0] patch incomplete: ' + missing.join(', '));
+  if (missing.length) throw new Error('[v10.69.0] patch incomplete: ' + missing.join(', '));
 
-  console.log('[v10.68.0] FINAL patch active: FC Market API v1 + Trader Brain + normalized own history.');
+  console.log('[v10.69.0] FINAL patch active: FUT.GG main + own Games/Sales/Popular evidence API.');
   return { format: result.format, source: final.source, shortCircuit: true };
 }
