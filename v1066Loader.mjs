@@ -1,7 +1,7 @@
 import { patchServer as patchServerV1064 } from './v1064Loader.mjs';
 import { patchRatingOnly } from './v1065Loader.mjs';
 
-export const V1066_BOOTSTRAP_VERSION = '10.66.7-player-cap-aware-hard100';
+export const V1066_BOOTSTRAP_VERSION = '10.66.8-unsaved-live-recheck';
 
 export function patchFutbinBridgeV1066(source) {
   const original = String(source || '');
@@ -49,7 +49,7 @@ export function patchFutbinBridgeV1066(source) {
     'futbinPublicStatus({ pool: dbEnabled ? pool : null, gameYear: String(GAME_YEAR) === "27" ? "26" : GAME_YEAR }),\n      futbinBridgeV1066Status({ pool: dbEnabled ? pool : null, gameYear: String(GAME_YEAR) === "27" ? "26" : GAME_YEAR })\n    ]);'
   );
 
-  out = out.replaceAll('version: "10.64-final"', 'version: "10.66.7-final"');
+  out = out.replaceAll('version: "10.64-final"', 'version: "10.66.8-final"');
   out = out.replaceAll('outputMode: "BUY_SELL_ONLY"', 'outputMode: "RATING_ONLY_BUY_SELL"');
 
   out = out.replace(
@@ -135,10 +135,104 @@ function patchUvAppV2105(source) {
   out = out.replace("const UV_VERSION = '2.10.4';", "const UV_VERSION = '2.10.7';");
   out = out.replace(
     'generationCpuSafeBatches: true,',
-    'generationCpuSafeBatches: true, generationAsyncProxyJob: true, allocatorConsistentHard100Fallback: true, playerCapAwareHard100Mix: true,'
+    'generationCpuSafeBatches: true, generationAsyncProxyJob: true, allocatorConsistentHard100Fallback: true, playerCapAwareHard100Mix: true, unsavedLiveRecheck: true, transientRecheckState: true, saveRequiredForLiveCheck: false,'
   );
 
-  // v2.10.7: when a fallback has already proven 100/100 with the REAL allocator,
+  // v2.10.8: saving is optional. Unsaved lists get a hidden short-lived
+  // PostgreSQL backing row only so the existing CPU-safe live-recheck/rebalance
+  // pipeline can address the exact 100 cards. It is excluded from saved-list
+  // history and automatically removed later.
+  out = out.replace(
+    "loadGeneratedList, listGeneratedLists } from './src/db.js';",
+    "loadGeneratedList, listGeneratedLists, pool as uvDbPool } from './src/db.js';"
+  );
+
+  if (!out.includes('scheduleTransientRecheckCleanup')) {
+    out = out.replace(
+      'let sharedRuntimeProvider = null;',
+      `let sharedRuntimeProvider = null;
+const UV_TRANSIENT_RECHECK_TTL_MS = 45 * 60_000;
+
+function scheduleTransientRecheckCleanup(listId) {
+  const id = Number(listId);
+  if (!Number.isInteger(id) || id <= 0) return;
+  const timer = setTimeout(() => {
+    Promise.resolve(
+      uvDbPool?.query(
+        "DELETE FROM uv_generated_lists WHERE id=$1 AND COALESCE((summary_payload->>'transientRecheckOnly')::boolean, false)=true",
+        [id]
+      )
+    ).catch(() => {});
+  }, UV_TRANSIENT_RECHECK_TTL_MS);
+  timer.unref?.();
+}
+
+async function cleanupExpiredTransientRechecks() {
+  try {
+    await uvDbPool?.query(
+      "DELETE FROM uv_generated_lists WHERE COALESCE((summary_payload->>'transientRecheckOnly')::boolean, false)=true AND created_at < NOW() - INTERVAL '2 hours'"
+    );
+  } catch {}
+}`
+    );
+  }
+
+  const generationPersistOld = `    const listId = saveListRequested ? await saveGeneratedList(result).catch(() => null) : null;
+    result.listId = listId;
+    result.saved = Boolean(listId);
+    result.saveRequested = saveListRequested;`;
+
+  const generationPersistNew = `    await cleanupExpiredTransientRechecks();
+    const transientRecheckOnly = !saveListRequested && isDbEnabled();
+    const persistencePayload = transientRecheckOnly
+      ? { ...result, transientRecheckOnly: true }
+      : result;
+    const persistedListId = (saveListRequested || transientRecheckOnly)
+      ? await saveGeneratedList(persistencePayload).catch(() => null)
+      : null;
+    if (transientRecheckOnly && persistedListId) scheduleTransientRecheckCleanup(persistedListId);
+    const listId = saveListRequested ? persistedListId : null;
+    result.listId = listId;
+    result.recheckListId = persistedListId;
+    result.saved = Boolean(listId);
+    result.transientRecheckOnly = Boolean(transientRecheckOnly && persistedListId);
+    result.saveRequested = saveListRequested;`;
+
+  out = out.replace(generationPersistOld, generationPersistNew);
+
+  const rebalancePersistOld = `    const newListId = saveListRequested ? await saveGeneratedList(savePayload) : null;
+    const recheckCounts = recheckRows.reduce((acc, row) => { acc[row.status] = (acc[row.status] || 0) + 1; return acc; }, {});`;
+
+  const rebalancePersistNew = `    await cleanupExpiredTransientRechecks();
+    const transientRecheckOnly = !saveListRequested && isDbEnabled();
+    const persistedSavePayload = transientRecheckOnly
+      ? { ...savePayload, transientRecheckOnly: true }
+      : savePayload;
+    const persistedNewListId = (saveListRequested || transientRecheckOnly)
+      ? await saveGeneratedList(persistedSavePayload)
+      : null;
+    if (transientRecheckOnly && persistedNewListId) scheduleTransientRecheckCleanup(persistedNewListId);
+    const newListId = saveListRequested ? persistedNewListId : null;
+    const recheckCounts = recheckRows.reduce((acc, row) => { acc[row.status] = (acc[row.status] || 0) + 1; return acc; }, {});`;
+
+  out = out.replace(rebalancePersistOld, rebalancePersistNew);
+
+  out = out.replace(
+    `      listId: newListId,
+      saved: Boolean(newListId),
+      saveRequested: saveListRequested,`,
+    `      listId: newListId,
+      recheckListId: persistedNewListId,
+      saved: Boolean(newListId),
+      transientRecheckOnly: Boolean(transientRecheckOnly && persistedNewListId),
+      saveRequested: saveListRequested,`
+  );
+
+  if (!out.includes('recheckListId = persistedListId') || !out.includes('persistedNewListId')) {
+    throw new Error('[ÜV v2.10.8] unsaved live-recheck persistence patch failed.');
+  }
+
+  // v2.10.8: when a fallback has already proven 100/100 with the REAL allocator,
   // do not merge unrelated expensive candidates back in before the second
   // affordability check. That merge can recompute a stricter supply-aware
   // Endgame mix and invalidate the exact pool that was already proven feasible.
@@ -179,8 +273,36 @@ function patchUvAppV2105(source) {
   out = out.replace(reserveOld, reserveNew);
 
   if (!out.includes('adaptiveAllocatorProved') || !out.includes('reserveAllocatorProved')) {
-    throw new Error('[ÜV v2.10.7] allocator-consistency patch failed.');
+    throw new Error('[ÜV v2.10.8] allocator-consistency patch failed.');
   }
+  return out;
+}
+
+
+function patchUvDbV2108(source) {
+  let out = String(source || '');
+
+  out = out.replace(
+    `  let where = '';
+  if (platform) { values.push(platform); where = 'WHERE gl.platform=$1'; }`,
+    `  let where = "WHERE COALESCE((gl.summary_payload->>'transientRecheckOnly')::boolean, false) = false";
+  if (platform) { values.push(platform); where += ' AND gl.platform=$1'; }`
+  );
+
+  out = out.replace(
+    `    FROM uv_generated_lists
+    WHERE created_at > NOW() - INTERVAL '14 days'`,
+    `    FROM uv_generated_lists
+    WHERE COALESCE((summary_payload->>'transientRecheckOnly')::boolean, false) = false
+      AND created_at > NOW() - INTERVAL '14 days'`
+  );
+
+  out = out.replace(
+    `      WHERE gl.platform=$1 AND gl.created_at > NOW() - INTERVAL '14 days'`,
+    `      WHERE COALESCE((gl.summary_payload->>'transientRecheckOnly')::boolean, false) = false
+        AND gl.platform=$1 AND gl.created_at > NOW() - INTERVAL '14 days'`
+  );
+
   return out;
 }
 
@@ -188,7 +310,7 @@ function patchUvEngineV2105(source) {
   let out = String(source || '');
 
   const supplyAwareBlock = (threshold, min82, min83, preferred) => `if (ideal >= ${threshold}) {
-    // v2.10.7: count HIGH-tier capacity with the SAME per-player cap used by
+    // v2.10.8: count HIGH-tier capacity with the SAME per-player cap used by
     // maxAffordablePortfolioCount(). Raw row counts can overstate supply when
     // several versions belong to the same footballer, which previously caused
     // "100 structural / 98 after Endgame-Mix" false negatives.
@@ -252,33 +374,39 @@ export async function load(url, context, defaultLoad) {
 
   if (url.endsWith('/uv/uvApp.js')) {
     const patched = patchUvAppV2105(raw);
-    console.log('[ÜV] v2.10.7 runtime patch active: async generation + allocator-consistent hard-100 fallback.');
+    console.log('[ÜV] v2.10.8 runtime patch active: hard-100 + unsaved live-recheck/rebalance.');
+    return { format: result.format, source: patched, shortCircuit: true };
+  }
+
+  if (url.endsWith('/uv/src/db.js')) {
+    const patched = patchUvDbV2108(raw);
+    if (!patched.includes("transientRecheckOnly")) throw new Error('[ÜV v2.10.8] transient DB filter patch failed.');
     return { format: result.format, source: patched, shortCircuit: true };
   }
 
   if (url.endsWith('/uv/src/uvEngine.js')) {
     const patched = patchUvEngineV2105(raw);
-    if (!patched.includes('supplyAwareHard100') || !patched.includes('playerCapAwareHard100')) throw new Error('[ÜV v2.10.7] player-cap-aware hard-100 patch failed.');
+    if (!patched.includes('supplyAwareHard100') || !patched.includes('playerCapAwareHard100')) throw new Error('[ÜV v2.10.8] player-cap-aware hard-100 patch failed.');
     return { format: result.format, source: patched, shortCircuit: true };
   }
 
   if (!url.endsWith('/server.js')) return result;
 
   const base64 = patchServerV1064(raw);
-  if (!base64?.source) throw new Error('[v10.66.7] v10.64 base patch failed.');
+  if (!base64?.source) throw new Error('[v10.66.8] v10.64 base patch failed.');
 
   const rating = patchRatingOnly(base64.source);
-  if (!rating?.source) throw new Error('[v10.66.7] v10.65 rating patch failed.');
+  if (!rating?.source) throw new Error('[v10.66.8] v10.65 rating patch failed.');
 
   const final = patchFutbinBridgeV1066(rating.source);
-  if (!final?.source) throw new Error('[v10.66.7] FUTBIN bridge patch failed.');
+  if (!final?.source) throw new Error('[v10.66.8] FUTBIN bridge patch failed.');
 
   const required = [
     './futbinBridgeV1066.js',
     'enrichRowsWithFutbinSafeV1066',
     'v10.66 FUTBIN bridge router',
     'RATING_ONLY_BUY_SELL',
-    '10.66.7-final',
+    '10.66.8-final',
     'adaptiveV1062Status({ pool: null, gameYear: GAME_YEAR })',
     './uvGenerateAsyncV2105.js',
     'createUvGenerateAsyncRouterV2105',
@@ -286,8 +414,8 @@ export async function load(url, context, defaultLoad) {
     'busySafeAllowed'
   ];
   const missing = required.filter(marker => !final.source.includes(marker));
-  if (missing.length) throw new Error('[v10.66.7] patch incomplete: ' + missing.join(', '));
+  if (missing.length) throw new Error('[v10.66.8] patch incomplete: ' + missing.join(', '));
 
-  console.log('[v10.66.7] FINAL patch active: Rating-only + FUTBIN bridge + monitor busy grace + ÜV 2.10.7 player-cap-aware hard-100.');
+  console.log('[v10.66.8] FINAL patch active: Rating-only + FUTBIN bridge + monitor busy grace + ÜV 2.10.7 player-cap-aware hard-100.');
   return { format: result.format, source: final.source, shortCircuit: true };
 }
