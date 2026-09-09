@@ -1,5 +1,5 @@
 const state = {
-  version: '10.67.3',
+  version: '10.67.5',
   configured: false,
   status: 'IDLE',
   provider: 'Parse FUTBIN API',
@@ -115,7 +115,7 @@ async function requestJson(url, { apiKey, method = 'GET', body = null, timeoutMs
     const headers = {
       accept: 'application/json',
       'X-API-Key': apiKey,
-      'user-agent': 'FC-Trader-Brain/10.67.3'
+      'user-agent': 'FC-Trader-Brain/10.67.5'
     };
     const opts = { method, signal: controller.signal, headers };
     if (body != null) {
