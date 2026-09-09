@@ -1,7 +1,7 @@
 import { patchServer as patchServerV1064 } from './v1064Loader.mjs';
 import { patchRatingOnly } from './v1065Loader.mjs';
 
-export const V1066_BOOTSTRAP_VERSION = '10.66.1-futbin-fast-status-final';
+export const V1066_BOOTSTRAP_VERSION = '10.66.2-final-project-fast-status';
 
 export function patchFutbinBridgeV1066(source) {
   const original = String(source || '');
@@ -14,14 +14,12 @@ export function patchFutbinBridgeV1066(source) {
     );
   }
 
-  // Replace the direct Hostless scraper in the live cycle. The v10.66 wrapper uses
-  // an authorized feed/import cache first and only uses direct FUTBIN when explicitly enabled.
+  // Authorized FUTBIN bridge replaces the direct blocked Hostless path.
   out = out.replace(
     'await enrichRowsWithFutbinPublicGapFill({',
-    'await enrichRowsWithFutbinSafeV1066({' 
+    'await enrichRowsWithFutbinSafeV1066({'
   );
 
-  // Disable the automatic direct FUTBIN backfill that repeatedly hit 403 on Hostless.
   out = out.replace(
     /startFc26Backfill\(\{ rows: latestTradingRows, pool, gameYear: "26", limit: 500 \}\)/g,
     'startFutbinBridgeBootstrapV1066({ pool, gameYear: "26" })'
@@ -29,7 +27,6 @@ export function patchFutbinBridgeV1066(source) {
   out = out.replaceAll('[v10.64] FC26 FUTBIN backfill gestartet:', '[v10.66] FUTBIN authorized bridge bootstrap:');
   out = out.replaceAll('[v10.64] FC26 FUTBIN backfill start error:', '[v10.66] FUTBIN bridge bootstrap error:');
 
-  // Manual backfill endpoint now refreshes the authorized bridge instead of hammering a blocked origin.
   out = out.replace(
     /const result = await startFc26Backfill\(\{\s*rows: latestTradingRows,\s*pool,\s*gameYear: "26",\s*limit: Number\(req\.body\?\.limit \|\| 500\)\s*\}\);\s*res\.status\(result\.ok \? 202 : 409\)\.json\(result\);/m,
     'const result = await startFutbinBridgeBootstrapV1066({ pool, gameYear: "26" });\n    res.status(result.ok ? 202 : 409).json(result);'
@@ -42,7 +39,7 @@ export function patchFutbinBridgeV1066(source) {
     );
   }
 
-  // Final status now reports the actual runtime patch and both FUTBIN layers.
+  // Add bridge status to the final project endpoint.
   out = out.replace(
     'const [adaptive, futbin] = await Promise.all([',
     'const [adaptive, futbin, futbinBridge] = await Promise.all(['
@@ -51,8 +48,10 @@ export function patchFutbinBridgeV1066(source) {
     'futbinPublicStatus({ pool: dbEnabled ? pool : null, gameYear: String(GAME_YEAR) === "27" ? "26" : GAME_YEAR })\n    ]);',
     'futbinPublicStatus({ pool: dbEnabled ? pool : null, gameYear: String(GAME_YEAR) === "27" ? "26" : GAME_YEAR }),\n      futbinBridgeV1066Status({ pool: dbEnabled ? pool : null, gameYear: String(GAME_YEAR) === "27" ? "26" : GAME_YEAR })\n    ]);'
   );
-  out = out.replaceAll('version: "10.64-final"', 'version: "10.66.1-final"');
+
+  out = out.replaceAll('version: "10.64-final"', 'version: "10.66.2-final"');
   out = out.replaceAll('outputMode: "BUY_SELL_ONLY"', 'outputMode: "RATING_ONLY_BUY_SELL"');
+
   out = out.replace(
     '      futbin,\n      checklist:',
     '      futbin: { direct: futbin, bridge: futbinBridge, effectiveMode: futbinBridge?.authorizedFeedConfigured || Number(futbinBridge?.db?.cards || 0) > 0 ? "AUTHORIZED_BRIDGE_ACTIVE" : "FUTGG_ONLY_UNTIL_FUTBIN_FEED" },\n      checklist:'
@@ -62,13 +61,23 @@ export function patchFutbinBridgeV1066(source) {
     '        futbinGapFill: true,\n        futbinAuthorizedBridge: true,\n        futbinDirect403LoopRemoved: true,'
   );
 
-  out = out.replaceAll('FC Trading Intelligence v10.65 FINAL Rating-Only + FUTBIN Complete + FC26 Season Brain', 'FC Trading Intelligence v10.66 FINAL Rating-Only + Authorized FUTBIN Bridge + FC26 Season Brain');
+  out = out.replaceAll(
+    'FC Trading Intelligence v10.65 FINAL Rating-Only + FUTBIN Complete + FC26 Season Brain',
+    'FC Trading Intelligence v10.66 FINAL Rating-Only + Authorized FUTBIN Bridge + FC26 Season Brain'
+  );
 
-  // v10.66.1: final-project status must stay cheap. The direct FUTBIN layer is disabled
-  // on Hostless anyway, so do not make its status endpoint count PostgreSQL rows.
+  // v10.66.1: FUTBIN status must not block the final status on DB counts.
   out = out.replace(
     'futbinPublicStatus({ pool: dbEnabled ? pool : null, gameYear: String(GAME_YEAR) === "27" ? "26" : GAME_YEAR }),\n      futbinBridgeV1066Status({ pool: dbEnabled ? pool : null, gameYear: String(GAME_YEAR) === "27" ? "26" : GAME_YEAR })\n    ]);',
     'futbinPublicStatus({ pool: null, gameYear: String(GAME_YEAR) === "27" ? "26" : GAME_YEAR }),\n      futbinBridgeV1066Status({ pool: dbEnabled ? pool : null, gameYear: String(GAME_YEAR) === "27" ? "26" : GAME_YEAR })\n    ]);'
+  );
+
+  // v10.66.2: the remaining 524 was adaptiveV1062Status doing schema/learning/COUNT
+  // queries on PostgreSQL. Final-project status is diagnostic only, so use its
+  // in-memory snapshot and never block Cloudflare waiting for DB status work.
+  out = out.replace(
+    'const [adaptive, futbin, futbinBridge] = await Promise.all([\n      adaptiveV1062Status({ pool: dbEnabled ? pool : null, gameYear: GAME_YEAR }),\n      futbinPublicStatus({ pool: null, gameYear: String(GAME_YEAR) === "27" ? "26" : GAME_YEAR }),',
+    'const [adaptive, futbin, futbinBridge] = await Promise.all([\n      adaptiveV1062Status({ pool: null, gameYear: GAME_YEAR }),\n      futbinPublicStatus({ pool: null, gameYear: String(GAME_YEAR) === "27" ? "26" : GAME_YEAR }),'
   );
 
   return { source: out, changed: out !== original };
@@ -80,22 +89,25 @@ export async function load(url, context, defaultLoad) {
 
   const raw = typeof result.source === 'string' ? result.source : Buffer.from(result.source).toString('utf8');
   const base64 = patchServerV1064(raw);
-  if (!base64?.source) throw new Error('[v10.66] v10.64 base patch failed.');
+  if (!base64?.source) throw new Error('[v10.66.2] v10.64 base patch failed.');
+
   const rating = patchRatingOnly(base64.source);
-  if (!rating?.source) throw new Error('[v10.66] v10.65 rating patch failed.');
+  if (!rating?.source) throw new Error('[v10.66.2] v10.65 rating patch failed.');
+
   const final = patchFutbinBridgeV1066(rating.source);
-  if (!final?.source) throw new Error('[v10.66] FUTBIN bridge patch failed.');
+  if (!final?.source) throw new Error('[v10.66.2] FUTBIN bridge patch failed.');
 
   const required = [
     './futbinBridgeV1066.js',
     'enrichRowsWithFutbinSafeV1066',
     'v10.66 FUTBIN bridge router',
     'RATING_ONLY_BUY_SELL',
-    '10.66.1-final'
+    '10.66.2-final',
+    'adaptiveV1062Status({ pool: null, gameYear: GAME_YEAR })'
   ];
   const missing = required.filter(marker => !final.source.includes(marker));
-  if (missing.length) throw new Error('[v10.66] patch incomplete: ' + missing.join(', '));
+  if (missing.length) throw new Error('[v10.66.2] patch incomplete: ' + missing.join(', '));
 
-  console.log('[v10.66.1] FINAL patch active: Rating-only + authorized FUTBIN bridge + fast non-blocking status + FC26 memory.');
+  console.log('[v10.66.2] FINAL patch active: Rating-only + authorized FUTBIN bridge + fast final-project status + FC26 memory.');
   return { format: result.format, source: final.source, shortCircuit: true };
 }
