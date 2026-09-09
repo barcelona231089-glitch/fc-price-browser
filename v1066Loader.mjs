@@ -1,7 +1,7 @@
 import { patchServer as patchServerV1064 } from './v1064Loader.mjs';
 import { patchRatingOnly } from './v1065Loader.mjs';
 
-export const V1066_BOOTSTRAP_VERSION = '10.66.8-unsaved-live-recheck';
+export const V1066_BOOTSTRAP_VERSION = '10.66.9-futbin-real-data-memory';
 
 export function patchFutbinBridgeV1066(source) {
   const original = String(source || '');
@@ -49,7 +49,7 @@ export function patchFutbinBridgeV1066(source) {
     'futbinPublicStatus({ pool: dbEnabled ? pool : null, gameYear: String(GAME_YEAR) === "27" ? "26" : GAME_YEAR }),\n      futbinBridgeV1066Status({ pool: dbEnabled ? pool : null, gameYear: String(GAME_YEAR) === "27" ? "26" : GAME_YEAR })\n    ]);'
   );
 
-  out = out.replaceAll('version: "10.64-final"', 'version: "10.66.8-final"');
+  out = out.replaceAll('version: "10.64-final"', 'version: "10.66.9-final"');
   out = out.replaceAll('outputMode: "BUY_SELL_ONLY"', 'outputMode: "RATING_ONLY_BUY_SELL"');
 
   out = out.replace(
@@ -132,13 +132,13 @@ export function patchFutbinBridgeV1066(source) {
 
 function patchUvAppV2105(source) {
   let out = String(source || '');
-  out = out.replace("const UV_VERSION = '2.10.4';", "const UV_VERSION = '2.10.7';");
+  out = out.replace("const UV_VERSION = '2.10.4';", "const UV_VERSION = '2.10.9';");
   out = out.replace(
     'generationCpuSafeBatches: true,',
-    'generationCpuSafeBatches: true, generationAsyncProxyJob: true, allocatorConsistentHard100Fallback: true, playerCapAwareHard100Mix: true, unsavedLiveRecheck: true, transientRecheckState: true, saveRequiredForLiveCheck: false,'
+    'generationCpuSafeBatches: true, generationAsyncProxyJob: true, allocatorConsistentHard100Fallback: true, playerCapAwareHard100Mix: true, unsavedLiveRecheck: true, transientRecheckState: true, saveRequiredForLiveCheck: false, futbinParseLivePriceMemory: true, futbinBasicDataStatusAccurate: true,'
   );
 
-  // v2.10.8: saving is optional. Unsaved lists get a hidden short-lived
+  // v2.10.9: saving is optional. Unsaved lists get a hidden short-lived
   // PostgreSQL backing row only so the existing CPU-safe live-recheck/rebalance
   // pipeline can address the exact 100 cards. It is excluded from saved-list
   // history and automatically removed later.
@@ -229,10 +229,10 @@ async function cleanupExpiredTransientRechecks() {
   );
 
   if (!out.includes('recheckListId = persistedListId') || !out.includes('persistedNewListId')) {
-    throw new Error('[ÜV v2.10.8] unsaved live-recheck persistence patch failed.');
+    throw new Error('[ÜV v2.10.9] unsaved live-recheck persistence patch failed.');
   }
 
-  // v2.10.8: when a fallback has already proven 100/100 with the REAL allocator,
+  // v2.10.9: when a fallback has already proven 100/100 with the REAL allocator,
   // do not merge unrelated expensive candidates back in before the second
   // affordability check. That merge can recompute a stricter supply-aware
   // Endgame mix and invalidate the exact pool that was already proven feasible.
@@ -273,7 +273,7 @@ async function cleanupExpiredTransientRechecks() {
   out = out.replace(reserveOld, reserveNew);
 
   if (!out.includes('adaptiveAllocatorProved') || !out.includes('reserveAllocatorProved')) {
-    throw new Error('[ÜV v2.10.8] allocator-consistency patch failed.');
+    throw new Error('[ÜV v2.10.9] allocator-consistency patch failed.');
   }
   return out;
 }
@@ -281,6 +281,87 @@ async function cleanupExpiredTransientRechecks() {
 
 function patchUvDbV2108(source) {
   let out = String(source || '');
+
+  // v2.10.9: keep FUTBIN Parse observations in a dedicated table. Never mix
+  // them into the FUT.GG primary history used by existing safety learning.
+  if (!out.includes('uv_futbin_price_history')) {
+    out = out.replace(
+      `  await pool.query(` + "`" + `CREATE INDEX IF NOT EXISTS idx_uv_price_history_card_time ON uv_price_history (ea_id, platform, recorded_at DESC)` + "`" + `);`,
+      `  await pool.query(` + "`" + `CREATE INDEX IF NOT EXISTS idx_uv_price_history_card_time ON uv_price_history (ea_id, platform, recorded_at DESC)` + "`" + `);
+  await pool.query(` + "`" + `
+    CREATE TABLE IF NOT EXISTS uv_futbin_price_history (
+      ea_id BIGINT NOT NULL,
+      platform VARCHAR(20) NOT NULL,
+      price INTEGER NOT NULL,
+      source VARCHAR(40) NOT NULL DEFAULT 'FUTBIN_PARSE',
+      recorded_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+  ` + "`" + `);
+  await pool.query(` + "`" + `CREATE INDEX IF NOT EXISTS idx_uv_futbin_price_history_card_time ON uv_futbin_price_history (ea_id, platform, recorded_at DESC)` + "`" + `);`
+    );
+  }
+
+  if (!out.includes('export async function recordFutbinPriceObservations')) {
+    out += `
+
+export async function recordFutbinPriceObservations(rows = [], platform = 'console') {
+  if (!pool || !Array.isArray(rows) || !rows.length) return { inserted: 0 };
+  const safePlatform = platform === 'pc' ? 'pc' : 'console';
+  const clean = rows
+    .map(row => ({ eaId: Number(row?.eaId), price: Math.round(Number(row?.price || 0)) }))
+    .filter(row => Number.isFinite(row.eaId) && row.eaId > 0 && Number.isFinite(row.price) && row.price > 0)
+    .slice(0, 100);
+  if (!clean.length) return { inserted: 0 };
+  const values = [];
+  const placeholders = [];
+  let i = 1;
+  for (const row of clean) {
+    placeholders.push(\`($\${i++}, $\${i++}, $\${i++}, 'FUTBIN_PARSE', NOW())\`);
+    values.push(row.eaId, safePlatform, row.price);
+  }
+  await pool.query(\`INSERT INTO uv_futbin_price_history (ea_id, platform, price, source, recorded_at) VALUES \${placeholders.join(',')}\`, values);
+  return { inserted: clean.length };
+}
+
+export async function loadFutbinPriceFeatures(eaIds = [], platform = 'console') {
+  const map = new Map();
+  if (!pool || !Array.isArray(eaIds) || !eaIds.length) return map;
+  const ids = [...new Set(eaIds.map(Number).filter(Number.isFinite))].slice(0, 100);
+  if (!ids.length) return map;
+  const safePlatform = platform === 'pc' ? 'pc' : 'console';
+  const result = await pool.query(\`
+    SELECT ea_id,
+      COUNT(*)::int AS samples,
+      AVG(price)::numeric AS avg_price,
+      MIN(price)::int AS min_price,
+      MAX(price)::int AS max_price,
+      (array_agg(price ORDER BY recorded_at ASC))[1]::int AS first_price,
+      (array_agg(price ORDER BY recorded_at DESC))[1]::int AS last_price,
+      MIN(recorded_at) AS first_at,
+      MAX(recorded_at) AS last_at
+    FROM uv_futbin_price_history
+    WHERE platform=$1 AND ea_id = ANY($2::bigint[]) AND recorded_at > NOW() - INTERVAL '24 hours'
+    GROUP BY ea_id
+  \`, [safePlatform, ids]);
+  for (const row of result.rows || []) {
+    const first = Number(row.first_price || 0);
+    const last = Number(row.last_price || 0);
+    map.set(String(row.ea_id), {
+      samples: Number(row.samples || 0),
+      avg24h: Number(row.avg_price || 0) || null,
+      min24h: Number(row.min_price || 0) || null,
+      max24h: Number(row.max_price || 0) || null,
+      firstPrice: first || null,
+      lastPrice: last || null,
+      trendPct24h: first > 0 && last > 0 ? ((last - first) / first) * 100 : null,
+      firstAt: row.first_at || null,
+      lastAt: row.last_at || null
+    });
+  }
+  return map;
+}
+`;
+  }
 
   out = out.replace(
     `  let where = '';
@@ -306,11 +387,168 @@ function patchUvDbV2108(source) {
   return out;
 }
 
+
+function patchUvFutbinV2109(source) {
+  let out = String(source || '');
+
+  out = out.replace(
+    "import { extractFutbinStructuredEvidence } from './futbinEvidence.js';",
+    "import { extractFutbinStructuredEvidence } from './futbinEvidence.js';\nimport { recordFutbinPriceObservations, loadFutbinPriceFeatures } from './db.js';"
+  );
+
+  out = out.replace(
+    `const extendedDataState = {
+  gamesObserved: false,
+  salesHistoryObserved: false,
+  popularRankObserved: false,
+  observedSalesPerDayObserved: false,
+  lastObservedAt: null
+};`,
+    `const extendedDataState = {
+  gamesObserved: false,
+  salesHistoryObserved: false,
+  popularRankObserved: false,
+  observedSalesPerDayObserved: false,
+  lastObservedAt: null,
+  currentPriceObserved: false,
+  marketTrendObserved: false,
+  priceObservationCount: 0,
+  parseCalls: 0,
+  parseSuccesses: 0,
+  parseFailures: 0,
+  lastCallAt: null,
+  lastSuccessAt: null,
+  lastError: null
+};
+
+function markParseCall({ ok = false, price = null, marketTrend = false, error = null } = {}) {
+  extendedDataState.parseCalls += 1;
+  extendedDataState.lastCallAt = new Date().toISOString();
+  if (ok) {
+    extendedDataState.parseSuccesses += 1;
+    extendedDataState.lastSuccessAt = extendedDataState.lastCallAt;
+    extendedDataState.lastError = null;
+    if (Number.isFinite(Number(price)) && Number(price) > 0) {
+      extendedDataState.currentPriceObserved = true;
+      extendedDataState.priceObservationCount += 1;
+    }
+    if (marketTrend) extendedDataState.marketTrendObserved = true;
+  } else {
+    extendedDataState.parseFailures += 1;
+    extendedDataState.lastError = String(error || 'PARSE_API_ERROR');
+  }
+}`
+  );
+
+  out = out.replace(
+    `    directFutbinScrape: false
+  };`,
+    `    directFutbinScrape: false,
+    currentPriceObserved: extendedDataState.currentPriceObserved,
+    marketTrendObserved: extendedDataState.marketTrendObserved,
+    priceObservationCount: extendedDataState.priceObservationCount,
+    parseCalls: extendedDataState.parseCalls,
+    parseSuccesses: extendedDataState.parseSuccesses,
+    parseFailures: extendedDataState.parseFailures,
+    lastCallAt: extendedDataState.lastCallAt,
+    lastSuccessAt: extendedDataState.lastSuccessAt,
+    lastError: extendedDataState.lastError,
+    basicDataActive: extendedDataState.currentPriceObserved || extendedDataState.marketTrendObserved,
+    extendedFieldsAvailable: {
+      games: extendedDataState.gamesObserved,
+      salesHistory: extendedDataState.salesHistoryObserved,
+      popularRank: extendedDataState.popularRankObserved,
+      observedSalesPerDay: extendedDataState.observedSalesPerDayObserved
+    }
+  };`
+  );
+
+  out = out.replace(
+    `    const json = await fetchJson(url, { headers: { 'X-API-Key': apiKey } });
+    const value = buildMarketContext(json, platform);
+    marketCache = { at: Date.now(), platform, value };`,
+    `    const json = await fetchJson(url, { headers: { 'X-API-Key': apiKey } });
+    const value = buildMarketContext(json, platform);
+    markParseCall({ ok: true, marketTrend: true });
+    marketCache = { at: Date.now(), platform, value };`
+  );
+  out = out.replace(
+    `  } catch (error) {
+    const value = { ok: false, reason: String(error), direction: 'unknown', changePct: null, stabilityScore: 55, movers: [] };
+    marketCache = { at: Date.now(), platform, value };`,
+    `  } catch (error) {
+    markParseCall({ ok: false, error });
+    const value = { ok: false, reason: String(error), direction: 'unknown', changePct: null, stabilityScore: 55, movers: [] };
+    marketCache = { at: Date.now(), platform, value };`
+  );
+
+  out = out.replace(
+    `    const evidence = best ? extractFutbinStructuredEvidence(best, price || card.price) : { gamesAvailable: false, salesHistoryAvailable: false };
+    observeExtendedEvidence(evidence);`,
+    `    const evidence = best ? extractFutbinStructuredEvidence(best, price || card.price) : { gamesAvailable: false, salesHistoryAvailable: false };
+    observeExtendedEvidence(evidence);
+    markParseCall({ ok: true, price });`
+  );
+  out = out.replace(
+    `  } catch (error) {
+    const value = { ok: false, reason: String(error) };
+    cache.set(cacheKey, { at: Date.now(), value });`,
+    `  } catch (error) {
+    markParseCall({ ok: false, error });
+    const value = { ok: false, reason: String(error) };
+    cache.set(cacheKey, { at: Date.now(), value });`
+  );
+
+  out = out.replace(
+    `  for (const item of results) if (item?.card) byId.set(String(item.card.eaId), item.result);
+
+  return cards.map(card => {`,
+    `  for (const item of results) if (item?.card) byId.set(String(item.card.eaId), item.result);
+
+  // v2.10.9: persist only actual Parse/FUTBIN current-price observations in a
+  // dedicated table, then derive our own 24h trend memory without touching the
+  // FUT.GG primary history or adding any extra Parse API calls.
+  const futbinObservations = results
+    .filter(item => item?.card && Number.isFinite(Number(item?.result?.price)) && Number(item.result.price) > 0)
+    .map(item => ({ eaId: Number(item.card.eaId), price: Number(item.result.price) }));
+  await recordFutbinPriceObservations(futbinObservations, platform).catch(() => ({ inserted: 0 }));
+  const futbinHistory = await loadFutbinPriceFeatures(futbinObservations.map(x => x.eaId), platform).catch(() => new Map());
+
+  return cards.map(card => {`
+  );
+
+  out = out.replace(
+    `    const evidence = result?.evidence || {};
+
+    let popularityScore`,
+    `    const evidence = result?.evidence || {};
+    const futbinOwnHistory = futbinHistory.get(String(card.eaId)) || null;
+
+    let popularityScore`
+  );
+
+  out = out.replace(
+    `      expectedSalesPerDay: Number.isFinite(evidence.futbinObservedSalesPerDay) ? Number(evidence.futbinObservedSalesPerDay) : card.expectedSalesPerDay ?? null
+    };`,
+    `      expectedSalesPerDay: Number.isFinite(evidence.futbinObservedSalesPerDay) ? Number(evidence.futbinObservedSalesPerDay) : card.expectedSalesPerDay ?? null,
+      futbinOwnHistorySamples: Number(futbinOwnHistory?.samples || 0),
+      futbinOwnAvg24h: Number.isFinite(Number(futbinOwnHistory?.avg24h)) ? Number(futbinOwnHistory.avg24h) : null,
+      futbinOwnTrendPct24h: Number.isFinite(Number(futbinOwnHistory?.trendPct24h)) ? Number(futbinOwnHistory.trendPct24h) : null,
+      futbinOwnHistoryLastAt: futbinOwnHistory?.lastAt || null
+    };`
+  );
+
+  const required = ['markParseCall', 'currentPriceObserved', 'marketTrendObserved', 'recordFutbinPriceObservations', 'futbinOwnTrendPct24h'];
+  const missing = required.filter(marker => !out.includes(marker));
+  if (missing.length) throw new Error('[ÜV v2.10.9] FUTBIN Parse real-data patch failed: ' + missing.join(', '));
+  return out;
+}
+
 function patchUvEngineV2105(source) {
   let out = String(source || '');
 
   const supplyAwareBlock = (threshold, min82, min83, preferred) => `if (ideal >= ${threshold}) {
-    // v2.10.8: count HIGH-tier capacity with the SAME per-player cap used by
+    // v2.10.9: count HIGH-tier capacity with the SAME per-player cap used by
     // maxAffordablePortfolioCount(). Raw row counts can overstate supply when
     // several versions belong to the same footballer, which previously caused
     // "100 structural / 98 after Endgame-Mix" false negatives.
@@ -374,39 +612,45 @@ export async function load(url, context, defaultLoad) {
 
   if (url.endsWith('/uv/uvApp.js')) {
     const patched = patchUvAppV2105(raw);
-    console.log('[ÜV] v2.10.8 runtime patch active: hard-100 + unsaved live-recheck/rebalance.');
+    console.log('[ÜV] v2.10.9 runtime patch active: hard-100 + unsaved live-recheck + FUTBIN Parse memory/status.');
     return { format: result.format, source: patched, shortCircuit: true };
   }
 
   if (url.endsWith('/uv/src/db.js')) {
     const patched = patchUvDbV2108(raw);
-    if (!patched.includes("transientRecheckOnly")) throw new Error('[ÜV v2.10.8] transient DB filter patch failed.');
+    if (!patched.includes("transientRecheckOnly") || !patched.includes('uv_futbin_price_history') || !patched.includes('recordFutbinPriceObservations')) throw new Error('[ÜV v2.10.9] transient DB/FUTBIN history patch failed.');
+    return { format: result.format, source: patched, shortCircuit: true };
+  }
+
+  if (url.endsWith('/uv/src/futbin.js')) {
+    const patched = patchUvFutbinV2109(raw);
+    console.log('[ÜV] v2.10.9 FUTBIN Parse active: real current prices/trends + dedicated 24h price memory.');
     return { format: result.format, source: patched, shortCircuit: true };
   }
 
   if (url.endsWith('/uv/src/uvEngine.js')) {
     const patched = patchUvEngineV2105(raw);
-    if (!patched.includes('supplyAwareHard100') || !patched.includes('playerCapAwareHard100')) throw new Error('[ÜV v2.10.8] player-cap-aware hard-100 patch failed.');
+    if (!patched.includes('supplyAwareHard100') || !patched.includes('playerCapAwareHard100')) throw new Error('[ÜV v2.10.9] player-cap-aware hard-100 patch failed.');
     return { format: result.format, source: patched, shortCircuit: true };
   }
 
   if (!url.endsWith('/server.js')) return result;
 
   const base64 = patchServerV1064(raw);
-  if (!base64?.source) throw new Error('[v10.66.8] v10.64 base patch failed.');
+  if (!base64?.source) throw new Error('[v10.66.9] v10.64 base patch failed.');
 
   const rating = patchRatingOnly(base64.source);
-  if (!rating?.source) throw new Error('[v10.66.8] v10.65 rating patch failed.');
+  if (!rating?.source) throw new Error('[v10.66.9] v10.65 rating patch failed.');
 
   const final = patchFutbinBridgeV1066(rating.source);
-  if (!final?.source) throw new Error('[v10.66.8] FUTBIN bridge patch failed.');
+  if (!final?.source) throw new Error('[v10.66.9] FUTBIN bridge patch failed.');
 
   const required = [
     './futbinBridgeV1066.js',
     'enrichRowsWithFutbinSafeV1066',
     'v10.66 FUTBIN bridge router',
     'RATING_ONLY_BUY_SELL',
-    '10.66.8-final',
+    '10.66.9-final',
     'adaptiveV1062Status({ pool: null, gameYear: GAME_YEAR })',
     './uvGenerateAsyncV2105.js',
     'createUvGenerateAsyncRouterV2105',
@@ -414,8 +658,8 @@ export async function load(url, context, defaultLoad) {
     'busySafeAllowed'
   ];
   const missing = required.filter(marker => !final.source.includes(marker));
-  if (missing.length) throw new Error('[v10.66.8] patch incomplete: ' + missing.join(', '));
+  if (missing.length) throw new Error('[v10.66.9] patch incomplete: ' + missing.join(', '));
 
-  console.log('[v10.66.8] FINAL patch active: Rating-only + FUTBIN bridge + monitor busy grace + ÜV 2.10.7 player-cap-aware hard-100.');
+  console.log('[v10.66.9] FINAL patch active: Rating-only + FUTBIN bridge + monitor busy grace + ÜV 2.10.7 player-cap-aware hard-100.');
   return { format: result.format, source: final.source, shortCircuit: true };
 }
