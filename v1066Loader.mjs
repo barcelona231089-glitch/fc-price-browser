@@ -1,7 +1,7 @@
 import { patchServer as patchServerV1064 } from './v1064Loader.mjs';
 import { patchRatingOnly } from './v1065Loader.mjs';
 
-export const V1066_BOOTSTRAP_VERSION = '10.67.2-futbin-regex-startup-hotfix';
+export const V1066_BOOTSTRAP_VERSION = '10.67.3-trader-brain-futbin-extended';
 
 export function patchFutbinBridgeV1066(source) {
   const original = String(source || '');
@@ -49,7 +49,7 @@ export function patchFutbinBridgeV1066(source) {
     'futbinPublicStatus({ pool: dbEnabled ? pool : null, gameYear: String(GAME_YEAR) === "27" ? "26" : GAME_YEAR }),\n      futbinBridgeV1066Status({ pool: dbEnabled ? pool : null, gameYear: String(GAME_YEAR) === "27" ? "26" : GAME_YEAR })\n    ]);'
   );
 
-  out = out.replaceAll('version: "10.64-final"', 'version: "10.67.2-final"');
+  out = out.replaceAll('version: "10.64-final"', 'version: "10.67.3-final"');
   out = out.replaceAll('outputMode: "BUY_SELL_ONLY"', 'outputMode: "RATING_ONLY_BUY_SELL"');
 
   out = out.replace(
@@ -128,6 +128,89 @@ export function patchFutbinBridgeV1066(source) {
   );
 
   return { source: out, changed: out !== original };
+}
+
+
+function patchTraderBrainFutbinV10673(source) {
+  let out = String(source || '');
+
+  if (!out.includes('./traderFutbinExtendedV10673.js')) {
+    out = out.replace(
+      'import { createHaCoordinator } from "./haCoordinator.js";',
+      'import { createHaCoordinator } from "./haCoordinator.js";\nimport { enrichTraderFutbinMatchV10673, traderFutbinExtendedStatusV10673 } from "./traderFutbinExtendedV10673.js";'
+    );
+  }
+
+  // The Trader Brain must not wait for an 84%-confidence AI event before FUTBIN
+  // ever gets sampled. Passive 82+ market rows are eligible, while the existing
+  // 4-hour interval and 6/day budget still cap public price checks.
+  out = out.replace(
+    '  if (row.aiAction === "NOCH WARTEN" && confidence >= 90 && movement >= 10) return true;\n  return false;\n}',
+    '  if (row.aiAction === "NOCH WARTEN" && confidence >= 90 && movement >= 10) return true;\n  if (Number(row.overall || 0) >= 82 && Number(row.price || 0) > 0) return true;\n  return false;\n}'
+  );
+
+  // Pull Games / Sales / Popular Rank for the exact FUTBIN card id returned by
+  // the normal search endpoint. This is Parse-only and never direct FUTBIN scraping.
+  out = out.replace(
+    '    const match = futbinParseMatchForRow(row, futbinParseRows(payload));\n    if (!match) throw new Error("Kein eindeutig passender FUTBIN-Kartentreffer gefunden");\n\n    const value = {\n      ...match,\n      provider: "PARSE_PUBLIC_API",',
+    '    const match = futbinParseMatchForRow(row, futbinParseRows(payload));\n    if (!match) throw new Error("Kein eindeutig passender FUTBIN-Kartentreffer gefunden");\n    const extendedEvidence = match.futbinId\n      ? await enrichTraderFutbinMatchV10673({ apiKey: FUTBIN_PARSE_API_KEY, parseBaseUrl: FUTBIN_PARSE_BASE_URL, gameYear: GAME_YEAR, playerId: match.futbinId, timeoutMs: FETCH_TIMEOUT_MS }).catch(() => null)\n      : null;\n\n    const value = {\n      ...match,\n      extendedEvidence,\n      provider: "PARSE_PUBLIC_API",'
+  );
+
+  out = out.replace(
+    '  row.futbinVersion = match.version;\n  row.futbinCheckedAt = match.checkedAt;',
+    '  row.futbinVersion = match.version;\n  row.futbinCheckedAt = match.checkedAt;\n  const extended = match.extendedEvidence || null;\n  row.futbinGames = Number.isFinite(Number(extended?.games)) ? Number(extended.games) : (Number.isFinite(Number(extended?.gamesConsole)) ? Number(extended.gamesConsole) : null);\n  row.futbinGamesConsole = Number.isFinite(Number(extended?.gamesConsole)) ? Number(extended.gamesConsole) : null;\n  row.futbinGamesPc = Number.isFinite(Number(extended?.gamesPc)) ? Number(extended.gamesPc) : null;\n  row.futbinPopularRank = Number.isFinite(Number(extended?.popularRank)) ? Number(extended.popularRank) : null;\n  row.futbinPopularityCount = Number.isFinite(Number(extended?.popularityCount)) ? Number(extended.popularityCount) : null;\n  row.futbinSalesHistory = Array.isArray(extended?.salesHistory) ? extended.salesHistory : [];\n  row.futbinObservedSalesPerDay = Number.isFinite(Number(extended?.observedSalesPerDay)) ? Number(extended.observedSalesPerDay) : null;'
+  );
+
+  out = out.replace(
+    '      matchConfidence: match.matchConfidence,\n      checkedAt: match.checkedAt\n    };',
+    '      matchConfidence: match.matchConfidence,\n      checkedAt: match.checkedAt,\n      games: row.futbinGames,\n      gamesConsole: row.futbinGamesConsole,\n      gamesPc: row.futbinGamesPc,\n      popularRank: row.futbinPopularRank,\n      popularityCount: row.futbinPopularityCount,\n      salesHistory: row.futbinSalesHistory,\n      observedSalesPerDay: row.futbinObservedSalesPerDay\n    };'
+  );
+
+  // Reuse cached Parse data BEFORE the quantitative/Gemini input is constructed,
+  // so FUTBIN evidence belongs to the Trader Brain itself instead of only the UI.
+  out = out.replace(
+    '    Object.assign(row, futbinCrossCheckFields(card.eaId, card.price, futbinFeed));\n    row.dataSource = "FUT.GG";',
+    '    Object.assign(row, futbinCrossCheckFields(card.eaId, card.price, futbinFeed));\n    const cachedParse = futbinParseCardCache.get(String(card.eaId));\n    if (cachedParse && Date.now() - cachedParse.savedAt < FUTBIN_PARSE_CARD_COOLDOWN_MS) {\n      applyFutbinParseCrossCheck(row, cachedParse.value, null);\n    }\n    row.dataSource = "FUT.GG";'
+  );
+
+  out = out.replace(
+    '      discordSignals: signals\n    };',
+    '      discordSignals: signals,\n      futbinCrossCheck: Number.isFinite(Number(row.futbinPrice)) ? {\n        provider: row.futbinProvider || null,\n        price: Number(row.futbinPrice),\n        diffPct: Number.isFinite(Number(row.futbinDiffPct)) ? Number(row.futbinDiffPct) : null,\n        status: row.futbinCrossCheck || "NO_DATA",\n        matchConfidence: Number.isFinite(Number(row.futbinMatchConfidence)) ? Number(row.futbinMatchConfidence) : null,\n        games: row.futbinGames ?? null,\n        gamesConsole: row.futbinGamesConsole ?? null,\n        gamesPc: row.futbinGamesPc ?? null,\n        popularRank: row.futbinPopularRank ?? null,\n        popularityCount: row.futbinPopularityCount ?? null,\n        salesHistory: Array.isArray(row.futbinSalesHistory) ? row.futbinSalesHistory : [],\n        observedSalesPerDay: row.futbinObservedSalesPerDay ?? null\n      } : null\n    };'
+  );
+
+  // Expose the real Trader Brain FUTBIN extended state in both status endpoints.
+  const futbinStatusStart = out.indexOf('app.get("/api/futbin/status"');
+  if (futbinStatusStart >= 0) {
+    const policyAt = out.indexOf('    policy: {', futbinStatusStart);
+    if (policyAt >= 0) {
+      out = out.slice(0, policyAt) +
+        '    extendedEvidence: traderFutbinExtendedStatusV10673(),\n' +
+        out.slice(policyAt);
+    }
+  }
+
+  const brainStatusStart = out.indexOf('app.get("/api/trader-brain/status"');
+  if (brainStatusStart >= 0) {
+    const ratingAt = out.indexOf('    ratingStats: latestRatingStats', brainStatusStart);
+    if (ratingAt >= 0) {
+      out = out.slice(0, ratingAt) +
+        '    futbin: { publicApi: latestFutbinParseStatus, extendedEvidence: traderFutbinExtendedStatusV10673() },\n' +
+        out.slice(ratingAt);
+    }
+  }
+
+  const required = [
+    './traderFutbinExtendedV10673.js',
+    'enrichTraderFutbinMatchV10673',
+    'futbinGames',
+    'futbinPopularRank',
+    'futbinSalesHistory',
+    'extendedEvidence: traderFutbinExtendedStatusV10673()',
+    'futbin: { publicApi: latestFutbinParseStatus, extendedEvidence: traderFutbinExtendedStatusV10673() }'
+  ];
+  const missing = required.filter(marker => !out.includes(marker));
+  if (missing.length) throw new Error('[v10.67.3] Trader Brain FUTBIN extended patch failed: ' + missing.join(', '));
+  return { source: out, changed: out !== source };
 }
 
 function patchUvAppV2105(source) {
@@ -967,29 +1050,37 @@ export async function load(url, context, defaultLoad) {
   if (!url.endsWith('/server.js')) return result;
 
   const base64 = patchServerV1064(raw);
-  if (!base64?.source) throw new Error('[v10.67.2] v10.64 base patch failed.');
+  if (!base64?.source) throw new Error('[v10.67.3] v10.64 base patch failed.');
 
   const rating = patchRatingOnly(base64.source);
-  if (!rating?.source) throw new Error('[v10.67.2] v10.65 rating patch failed.');
+  if (!rating?.source) throw new Error('[v10.67.3] v10.65 rating patch failed.');
 
-  const final = patchFutbinBridgeV1066(rating.source);
-  if (!final?.source) throw new Error('[v10.67.2] FUTBIN bridge patch failed.');
+  const bridge = patchFutbinBridgeV1066(rating.source);
+  if (!bridge?.source) throw new Error('[v10.67.3] FUTBIN bridge patch failed.');
+
+  const final = patchTraderBrainFutbinV10673(bridge.source);
+  if (!final?.source) throw new Error('[v10.67.3] Trader Brain FUTBIN extended patch failed.');
 
   const required = [
     './futbinBridgeV1066.js',
     'enrichRowsWithFutbinSafeV1066',
     'v10.66 FUTBIN bridge router',
     'RATING_ONLY_BUY_SELL',
-    '10.67.2-final',
+    '10.67.3-final',
     'adaptiveV1062Status({ pool: null, gameYear: GAME_YEAR })',
     './uvGenerateAsyncV2105.js',
     'createUvGenerateAsyncRouterV2105',
     'sourceBusyGrace',
-    'busySafeAllowed'
+    'busySafeAllowed',
+    './traderFutbinExtendedV10673.js',
+    'traderFutbinExtendedStatusV10673',
+    'futbinGames',
+    'futbinPopularRank',
+    'futbinSalesHistory'
   ];
   const missing = required.filter(marker => !final.source.includes(marker));
-  if (missing.length) throw new Error('[v10.67.2] patch incomplete: ' + missing.join(', '));
+  if (missing.length) throw new Error('[v10.67.3] patch incomplete: ' + missing.join(', '));
 
-  console.log('[v10.67.2] FINAL patch active: FUTBIN Games/Sales/Popular-Rank + regex template startup hotfix.');
+  console.log('[v10.67.3] FINAL patch active: Trader Brain FUTBIN Prices + Games + Sales + Popular-Rank.');
   return { format: result.format, source: final.source, shortCircuit: true };
 }
