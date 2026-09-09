@@ -1,7 +1,7 @@
 import { patchServer as patchServerV1064 } from './v1064Loader.mjs';
 import { patchRatingOnly } from './v1065Loader.mjs';
 
-export const V1066_BOOTSTRAP_VERSION = '10.66.6-uv-allocator-startup-fix';
+export const V1066_BOOTSTRAP_VERSION = '10.66.7-player-cap-aware-hard100';
 
 export function patchFutbinBridgeV1066(source) {
   const original = String(source || '');
@@ -49,7 +49,7 @@ export function patchFutbinBridgeV1066(source) {
     'futbinPublicStatus({ pool: dbEnabled ? pool : null, gameYear: String(GAME_YEAR) === "27" ? "26" : GAME_YEAR }),\n      futbinBridgeV1066Status({ pool: dbEnabled ? pool : null, gameYear: String(GAME_YEAR) === "27" ? "26" : GAME_YEAR })\n    ]);'
   );
 
-  out = out.replaceAll('version: "10.64-final"', 'version: "10.66.6-final"');
+  out = out.replaceAll('version: "10.64-final"', 'version: "10.66.7-final"');
   out = out.replaceAll('outputMode: "BUY_SELL_ONLY"', 'outputMode: "RATING_ONLY_BUY_SELL"');
 
   out = out.replace(
@@ -132,13 +132,13 @@ export function patchFutbinBridgeV1066(source) {
 
 function patchUvAppV2105(source) {
   let out = String(source || '');
-  out = out.replace("const UV_VERSION = '2.10.4';", "const UV_VERSION = '2.10.6';");
+  out = out.replace("const UV_VERSION = '2.10.4';", "const UV_VERSION = '2.10.7';");
   out = out.replace(
     'generationCpuSafeBatches: true,',
-    'generationCpuSafeBatches: true, generationAsyncProxyJob: true, allocatorConsistentHard100Fallback: true,'
+    'generationCpuSafeBatches: true, generationAsyncProxyJob: true, allocatorConsistentHard100Fallback: true, playerCapAwareHard100Mix: true,'
   );
 
-  // v2.10.6: when a fallback has already proven 100/100 with the REAL allocator,
+  // v2.10.7: when a fallback has already proven 100/100 with the REAL allocator,
   // do not merge unrelated expensive candidates back in before the second
   // affordability check. That merge can recompute a stricter supply-aware
   // Endgame mix and invalidate the exact pool that was already proven feasible.
@@ -179,7 +179,7 @@ function patchUvAppV2105(source) {
   out = out.replace(reserveOld, reserveNew);
 
   if (!out.includes('adaptiveAllocatorProved') || !out.includes('reserveAllocatorProved')) {
-    throw new Error('[ÜV v2.10.6] allocator-consistency patch failed.');
+    throw new Error('[ÜV v2.10.7] allocator-consistency patch failed.');
   }
   return out;
 }
@@ -188,22 +188,41 @@ function patchUvEngineV2105(source) {
   let out = String(source || '');
 
   const supplyAwareBlock = (threshold, min82, min83, preferred) => `if (ideal >= ${threshold}) {
-    const high83PlusOrSpecial = rows.filter(card =>
-      isPublicTraderSpecial(card) || Number(card?.overall || 0) >= 83
-    ).length;
-    const high84PlusOrSpecial = rows.filter(card =>
-      isPublicTraderSpecial(card) || Number(card?.overall || 0) >= 84
-    ).length;
+    // v2.10.7: count HIGH-tier capacity with the SAME per-player cap used by
+    // maxAffordablePortfolioCount(). Raw row counts can overstate supply when
+    // several versions belong to the same footballer, which previously caused
+    // "100 structural / 98 after Endgame-Mix" false negatives.
+    const usableHighSlots = minOverall => {
+      const playerCounts = new Map();
+      let usable = 0;
+      for (const card of rows) {
+        if (!isPublicTraderSpecial(card) && Number(card?.overall || 0) < minOverall) continue;
+        const playerKey = optimizerPlayerKey(card);
+        if ((playerCounts.get(playerKey) || 0) >= 3) continue;
+        playerCounts.set(playerKey, (playerCounts.get(playerKey) || 0) + 1);
+        usable += 1;
+        if (usable >= targetCount) break;
+      }
+      return usable;
+    };
+    const high83PlusOrSpecial = usableHighSlots(83);
+    const high84PlusOrSpecial = usableHighSlots(84);
     const required82OrLess = Math.max(0, targetCount - high83PlusOrSpecial);
     const required83OrLess = Math.max(0, targetCount - high84PlusOrSpecial);
+    // Small feasibility slack prevents cheap lower-tier versions from consuming
+    // player-cap slots needed by higher versions during the cheapest-first pass.
+    // These are MAXIMUMS, not targets. Ranking still prefers stronger cards.
+    const mixSlack = Math.max(2, Math.ceil(targetCount * 0.04));
     return {
       active: true,
-      maxBase82: Math.max(${min82}, required82OrLess),
-      maxBase83OrLess: Math.max(${min83}, required83OrLess),
+      maxBase82: Math.min(targetCount, Math.max(${min82}, required82OrLess + mixSlack)),
+      maxBase83OrLess: Math.min(targetCount, Math.max(${min83}, required83OrLess + mixSlack)),
       maxBase84OrLess: Infinity,
       maxBase86OrLess: Infinity,
       preferredBaseMin: ${preferred},
-      supplyAwareHard100: true
+      supplyAwareHard100: true,
+      playerCapAwareHard100: true,
+      mixSlack
     };
   }`;
 
@@ -233,33 +252,33 @@ export async function load(url, context, defaultLoad) {
 
   if (url.endsWith('/uv/uvApp.js')) {
     const patched = patchUvAppV2105(raw);
-    console.log('[ÜV] v2.10.6 runtime patch active: async generation + allocator-consistent hard-100 fallback.');
+    console.log('[ÜV] v2.10.7 runtime patch active: async generation + allocator-consistent hard-100 fallback.');
     return { format: result.format, source: patched, shortCircuit: true };
   }
 
   if (url.endsWith('/uv/src/uvEngine.js')) {
     const patched = patchUvEngineV2105(raw);
-    if (!patched.includes('supplyAwareHard100')) throw new Error('[ÜV v2.10.6] supply-aware hard-100 patch failed.');
+    if (!patched.includes('supplyAwareHard100') || !patched.includes('playerCapAwareHard100')) throw new Error('[ÜV v2.10.7] player-cap-aware hard-100 patch failed.');
     return { format: result.format, source: patched, shortCircuit: true };
   }
 
   if (!url.endsWith('/server.js')) return result;
 
   const base64 = patchServerV1064(raw);
-  if (!base64?.source) throw new Error('[v10.66.6] v10.64 base patch failed.');
+  if (!base64?.source) throw new Error('[v10.66.7] v10.64 base patch failed.');
 
   const rating = patchRatingOnly(base64.source);
-  if (!rating?.source) throw new Error('[v10.66.6] v10.65 rating patch failed.');
+  if (!rating?.source) throw new Error('[v10.66.7] v10.65 rating patch failed.');
 
   const final = patchFutbinBridgeV1066(rating.source);
-  if (!final?.source) throw new Error('[v10.66.6] FUTBIN bridge patch failed.');
+  if (!final?.source) throw new Error('[v10.66.7] FUTBIN bridge patch failed.');
 
   const required = [
     './futbinBridgeV1066.js',
     'enrichRowsWithFutbinSafeV1066',
     'v10.66 FUTBIN bridge router',
     'RATING_ONLY_BUY_SELL',
-    '10.66.6-final',
+    '10.66.7-final',
     'adaptiveV1062Status({ pool: null, gameYear: GAME_YEAR })',
     './uvGenerateAsyncV2105.js',
     'createUvGenerateAsyncRouterV2105',
@@ -267,8 +286,8 @@ export async function load(url, context, defaultLoad) {
     'busySafeAllowed'
   ];
   const missing = required.filter(marker => !final.source.includes(marker));
-  if (missing.length) throw new Error('[v10.66.6] patch incomplete: ' + missing.join(', '));
+  if (missing.length) throw new Error('[v10.66.7] patch incomplete: ' + missing.join(', '));
 
-  console.log('[v10.66.6] FINAL patch active: Rating-only + FUTBIN bridge + monitor busy grace + ÜV 2.10.6 allocator-consistent hard-100 + startup validation fix.');
+  console.log('[v10.66.7] FINAL patch active: Rating-only + FUTBIN bridge + monitor busy grace + ÜV 2.10.7 player-cap-aware hard-100.');
   return { format: result.format, source: final.source, shortCircuit: true };
 }
