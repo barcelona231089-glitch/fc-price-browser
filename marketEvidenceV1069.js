@@ -1,8 +1,9 @@
 import express from "express";
 import crypto from "crypto";
+import { GoogleGenAI } from "@google/genai";
 
 export const MARKET_EVIDENCE_VERSION = "1.0.0";
-const BUILD = "10.69.1";
+const BUILD = "10.69.3";
 
 let schemaReady = false;
 let schemaPromise = null;
@@ -299,6 +300,7 @@ function salesStats(sales) {
 
 const FUTWIZ_POPULAR_URL = "https://www.futwiz.com/popular/";
 const FUTWIZ_BASE = "https://www.futwiz.com";
+// v10.69.3 legacy collector code below is disabled and never called.
 let futwizStatus = {
   status: "IDLE",
   lastAttemptAt: null,
@@ -310,6 +312,285 @@ let futwizStatus = {
   salesRows: 0,
   blocked: false
 };
+
+let groundedStatus = {
+  status: "IDLE",
+  configured: false,
+  model: null,
+  callsToday: 0,
+  dailyBudget: 3,
+  lastBudgetDate: null,
+  lastAttemptAt: null,
+  lastSuccessAt: null,
+  lastFailureAt: null,
+  lastError: null,
+  lastBatch: [],
+  lastGroundingTitles: [],
+  lastGroundingUrls: [],
+  cardsReturned: 0,
+  cardsWithGames: 0,
+  cardsWithSales: 0,
+  cardsWithPopularRank: 0
+};
+const groundedCardCooldown = new Map();
+
+function geminiApiKey() {
+  return clean(
+    process.env.GEMINI_API_KEY ||
+    process.env.GOOGLE_API_KEY ||
+    process.env.GOOGLE_GENAI_API_KEY ||
+    "",
+    2000
+  );
+}
+
+function resetGroundedBudgetIfNeeded() {
+  const date = new Date().toISOString().slice(0, 10);
+  if (groundedStatus.lastBudgetDate !== date) {
+    groundedStatus.lastBudgetDate = date;
+    groundedStatus.callsToday = 0;
+  }
+  groundedStatus.dailyBudget = Math.max(
+    1,
+    Math.min(12, Number(process.env.MARKET_EVIDENCE_GEMINI_DAILY_BUDGET || 3))
+  );
+  return {
+    used: groundedStatus.callsToday,
+    budget: groundedStatus.dailyBudget,
+    remaining: Math.max(0, groundedStatus.dailyBudget - groundedStatus.callsToday)
+  };
+}
+
+function safeJsonFromModel(text) {
+  const raw = String(text || "").trim();
+  if (!raw) return null;
+  try { return JSON.parse(raw); } catch {}
+  const fenced = raw.match(/```(?:json)?\s*([\s\S]*?)```/i);
+  if (fenced) {
+    try { return JSON.parse(fenced[1]); } catch {}
+  }
+  const first = raw.indexOf("{");
+  const last = raw.lastIndexOf("}");
+  if (first >= 0 && last > first) {
+    try { return JSON.parse(raw.slice(first, last + 1)); } catch {}
+  }
+  return null;
+}
+
+function groundingMeta(response) {
+  const meta = response?.candidates?.[0]?.groundingMetadata || {};
+  const chunks = Array.isArray(meta.groundingChunks) ? meta.groundingChunks : [];
+  const web = chunks.map(chunk => chunk?.web).filter(Boolean);
+  const titles = web.map(x => clean(x?.title, 300)).filter(Boolean);
+  const urls = web.map(x => clean(x?.uri, 1000)).filter(Boolean);
+  return { titles, urls };
+}
+
+function trustedGrounding(meta) {
+  const hay = [...(meta?.titles || []), ...(meta?.urls || [])].join(" ").toLowerCase();
+  return hay.includes("futbin");
+}
+
+function candidateRowsForGrounding(liveRows) {
+  const cooldownMs = Math.max(
+    60,
+    Number(process.env.MARKET_EVIDENCE_GEMINI_CARD_COOLDOWN_MIN || 720)
+  ) * 60_000;
+  const now = Date.now();
+
+  return (Array.isArray(liveRows) ? liveRows : [])
+    .filter(row => Number(row?.overall || 0) >= 82 && Number(row?.price || 0) > 0 && row?.name && row?.eaId)
+    .filter(row => {
+      const last = groundedCardCooldown.get(String(row.eaId)) || 0;
+      return !last || now - last >= cooldownMs;
+    })
+    .sort((a, b) =>
+      Number(b?.tracked || false) - Number(a?.tracked || false) ||
+      Number(b?.intensiveWatch || false) - Number(a?.intensiveWatch || false) ||
+      Number(b?.overall || 0) - Number(a?.overall || 0) ||
+      Number(b?.price || 0) - Number(a?.price || 0)
+    );
+}
+
+function normalizedGroundedSale(row) {
+  if (!row || typeof row !== "object") return null;
+  const soldFor = finite(row.soldFor ?? row.sold_for ?? row.price);
+  if (!Number.isFinite(soldFor) || soldFor <= 0) return null;
+  return {
+    date: parseDate(row.date ?? row.soldAt ?? row.sold_at),
+    listedFor: Number.isFinite(finite(row.listedFor ?? row.listed_for))
+      ? Math.round(finite(row.listedFor ?? row.listed_for))
+      : null,
+    soldFor: Math.round(soldFor),
+    eaTax: Math.round(soldFor * 0.05),
+    netPrice: Math.round(soldFor * 0.95),
+    status: clean(row.status || "SOLD", 40) || "SOLD"
+  };
+}
+
+function normalizeGroundedEvidenceItem(item, selectedRows, meta) {
+  if (!item || typeof item !== "object") return null;
+  const eaId = clean(item.eaId ?? item.ea_id, 80);
+  const live = selectedRows.find(row => String(row?.eaId) === eaId);
+  if (!live) return null;
+
+  const trusted = trustedGrounding(meta);
+  if (!trusted) return null;
+
+  const games = finite(item.games);
+  const gamesConsole = finite(item.gamesConsole ?? item.games_console);
+  const gamesPc = finite(item.gamesPc ?? item.games_pc);
+  const popularRank = finite(item.popularRank ?? item.popular_rank);
+  const popularityCount = finite(item.popularityCount ?? item.popularity_count);
+  const sales = (Array.isArray(item.salesHistory) ? item.salesHistory :
+    Array.isArray(item.sales_history) ? item.sales_history :
+    Array.isArray(item.sales) ? item.sales : [])
+    .map(normalizedGroundedSale)
+    .filter(Boolean)
+    .slice(0, 50);
+
+  // Accept only explicitly returned numeric evidence. Missing values stay null.
+  if (![games, gamesConsole, gamesPc, popularRank, popularityCount].some(Number.isFinite) && !sales.length) {
+    return null;
+  }
+
+  const sourceName = clean(item.sourceName ?? item.source ?? "GOOGLE_GROUNDED_SEARCH", 120);
+  return {
+    eaId,
+    name: live.name,
+    rating: Number(live.overall) || finite(item.rating),
+    version: live.cardType || live.rarityName || clean(item.version, 120) || null,
+    games: Number.isFinite(games) ? Math.round(games) : null,
+    gamesConsole: Number.isFinite(gamesConsole) ? Math.round(gamesConsole) : null,
+    gamesPc: Number.isFinite(gamesPc) ? Math.round(gamesPc) : null,
+    popularRank: Number.isFinite(popularRank) ? Math.round(popularRank) : null,
+    popularityCount: Number.isFinite(popularityCount) ? Math.round(popularityCount) : null,
+    sales,
+    source: sourceName,
+    sourceUrl: clean(item.sourceUrl ?? item.source_url ?? meta?.urls?.[0], 1000) || null,
+    observedAt: new Date().toISOString()
+  };
+}
+
+async function collectGoogleGroundedEvidence({ liveRows, gameYear = "26" } = {}) {
+  const key = geminiApiKey();
+  groundedStatus.configured = Boolean(key);
+  const budget = resetGroundedBudgetIfNeeded();
+  groundedStatus.model = clean(process.env.MARKET_EVIDENCE_GEMINI_MODEL || "gemini-2.5-flash", 120);
+
+  if (!key) {
+    groundedStatus.status = "NOT_CONFIGURED";
+    groundedStatus.lastError = "GEMINI_API_KEY/GOOGLE_API_KEY nicht gesetzt.";
+    return [];
+  }
+  if (budget.remaining <= 0) {
+    groundedStatus.status = "BUDGET_EXHAUSTED";
+    return [];
+  }
+
+  const batchSize = Math.max(1, Math.min(5, Number(process.env.MARKET_EVIDENCE_GEMINI_BATCH || 4)));
+  const selected = candidateRowsForGrounding(liveRows).slice(0, batchSize);
+  if (!selected.length) {
+    groundedStatus.status = "NO_CANDIDATES";
+    return [];
+  }
+
+  groundedStatus.status = "SEARCHING";
+  groundedStatus.lastAttemptAt = new Date().toISOString();
+  groundedStatus.callsToday += 1;
+  groundedStatus.lastBatch = selected.map(row => ({
+    eaId: String(row.eaId),
+    name: row.name,
+    rating: Number(row.overall) || null
+  }));
+  for (const row of selected) groundedCardCooldown.set(String(row.eaId), Date.now());
+
+  const requested = selected.map(row => ({
+    eaId: String(row.eaId),
+    name: row.name,
+    rating: Number(row.overall) || null,
+    version: row.cardType || row.rarityName || null
+  }));
+
+  const prompt = `
+You are a strict FC 26 public-web evidence extractor.
+Use Google Search grounding. Look for public indexed FUTBIN pages ONLY for the exact cards below.
+
+Return ONE JSON object, no markdown:
+{
+  "cards": [
+    {
+      "eaId": "echo the supplied eaId",
+      "games": integer|null,
+      "gamesConsole": integer|null,
+      "gamesPc": integer|null,
+      "popularRank": integer|null,
+      "popularityCount": integer|null,
+      "salesHistory": [{"date": ISO-date-or-null, "listedFor": integer|null, "soldFor": integer, "status": "SOLD"}],
+      "sourceName": "FUTBIN"|null,
+      "sourceUrl": "public source URL or null"
+    }
+  ]
+}
+
+Rules:
+- Use only facts directly supported by public indexed search results/pages.
+- Do not estimate, infer, extrapolate, or invent.
+- "Games" means Ultimate Team card usage/games shown by a source, not real-life matches.
+- Popular rank must be an actual public card-popularity rank. Do not invent rank from price or comments.
+- Sales history must contain only explicit sold-price observations. If exact sold observations are unavailable, return [].
+- If a field is unavailable, return null.
+- Match exact player + rating/version. If uncertain, leave fields null.
+- Ignore real-life football statistics.
+- FUT.GG remains the price source; do not return current prices.
+Cards:
+${JSON.stringify(requested)}
+`.trim();
+
+  try {
+    const ai = new GoogleGenAI({ apiKey: key });
+    const response = await ai.models.generateContent({
+      model: groundedStatus.model,
+      contents: prompt,
+      config: {
+        tools: [{ googleSearch: {} }],
+        temperature: 0,
+        maxOutputTokens: 2200
+      }
+    });
+
+    const meta = groundingMeta(response);
+    groundedStatus.lastGroundingTitles = meta.titles.slice(0, 20);
+    groundedStatus.lastGroundingUrls = meta.urls.slice(0, 20);
+
+    if (!trustedGrounding(meta)) {
+      throw new Error("NO_TRUSTED_FUTBIN_GROUNDING");
+    }
+
+    const parsed = safeJsonFromModel(response?.text);
+    const items = Array.isArray(parsed?.cards) ? parsed.cards : [];
+    const cards = items
+      .map(item => normalizeGroundedEvidenceItem(item, selected, meta))
+      .filter(Boolean);
+
+    groundedStatus.cardsReturned = cards.length;
+    groundedStatus.cardsWithGames = cards.filter(x =>
+      Number.isFinite(x.games) || Number.isFinite(x.gamesConsole) || Number.isFinite(x.gamesPc)
+    ).length;
+    groundedStatus.cardsWithSales = cards.filter(x => x.sales?.length).length;
+    groundedStatus.cardsWithPopularRank = cards.filter(x => Number.isFinite(x.popularRank)).length;
+    groundedStatus.lastSuccessAt = new Date().toISOString();
+    groundedStatus.lastError = null;
+    groundedStatus.status = cards.length ? "READY" : "NO_VERIFIED_FIELDS";
+    return cards;
+  } catch (error) {
+    groundedStatus.lastFailureAt = new Date().toISOString();
+    groundedStatus.lastError = String(error?.message || error);
+    groundedStatus.status = "ERROR";
+    return [];
+  }
+}
+
 
 function decodeHtml(value) {
   return String(value || "")
@@ -530,32 +811,29 @@ export async function refreshMarketEvidenceV1069({ pool = null, gameYear = "26",
   lastRefreshAt = new Date().toISOString();
 
   if (!url) {
-    // v10.69.1 automatic public supplement. FUT.GG stays the primary market source.
-    // No login, cookies, CAPTCHA handling, proxying or anti-bot bypass is used.
-    const cards = await collectFutwizPublicEvidence({
-      liveRows,
-      gameYear,
-      maxSalesCards: Math.max(1, Math.min(12, Number(process.env.MARKET_EVIDENCE_PUBLIC_SALES_CARDS || 6)))
-    });
+    // v10.69.3 strict source policy:
+    // FUT.GG remains PRIMARY. Supplemental evidence is FUTBIN-only.
+    // No FUTWIZ or other market site is queried.
+    const cards = await collectGoogleGroundedEvidence({ liveRows, gameYear });
 
     if (cards.length) {
       const saved = await upsertCards(pool, cards, gameYear);
       await rebuildCache(pool, gameYear);
       lastRefreshSuccessAt = new Date().toISOString();
       lastRefreshError = null;
-      lastSource = "FUTWIZ_PUBLIC";
+      lastSource = "FUTBIN_GOOGLE_GROUNDED";
       cardsLoaded += saved.cards;
       salesLoaded += saved.sales;
-      return { ok: true, status: "READY_PUBLIC", ...saved };
+      return { ok: true, status: "READY_FUTBIN_GROUNDED", ...saved };
     }
 
     await rebuildCache(pool, gameYear);
-    lastRefreshError = futwizStatus.lastError || null;
+    lastRefreshError = groundedStatus.lastError || null;
     return {
       ok: cardCache.size > 0,
-      status: futwizStatus.status || (cardCache.size ? "DATABASE_ONLY" : "WAITING_FOR_EVIDENCE_SOURCE"),
+      status: groundedStatus.status || (cardCache.size ? "DATABASE_ONLY" : "WAITING_FOR_FUTBIN_EVIDENCE"),
       cards: cardCache.size,
-      sourceError: futwizStatus.lastError || null
+      sourceError: lastRefreshError
     };
   }
 
@@ -652,18 +930,19 @@ function statusPayload() {
     purpose: "FUT.GG supplement",
     replacesFutgg: false,
     fields: {
-      games: false,
+      games: true,
       salesHistory: true,
       popularRank: true,
       liquidityFromSales: true
     },
-    gamesStatus: "NO_GLOBAL_GAMES_SOURCE",
-    publicSupplement: {
-      provider: "FUTWIZ_PUBLIC",
-      policy: "PUBLIC_HTML_ONLY_NO_BYPASS",
-      ...futwizStatus
+    gamesStatus: groundedStatus.cardsWithGames > 0 ? "OBSERVED_FROM_GROUNDED_PUBLIC_SOURCE" : "WAITING_FOR_VERIFIED_SOURCE",
+    groundedSupplement: {
+      provider: "FUTBIN_VIA_GOOGLE_GROUNDED_SEARCH",
+      policy: "PUBLIC_INDEXED_WEB_ONLY",
+      budget: resetGroundedBudgetIfNeeded(),
+      ...groundedStatus
     },
-    sourceConfigured: Boolean(clean(process.env.MARKET_EVIDENCE_FEED_URL, 1000)) || futwizStatus.status === "READY",
+    sourceConfigured: Boolean(clean(process.env.MARKET_EVIDENCE_FEED_URL, 1000)) || groundedStatus.configured,
     ingestConfigured: Boolean(clean(process.env.MARKET_EVIDENCE_INGEST_TOKEN, 1000)),
     cachedCards: cardCache.size,
     cardsWithGames: withGames,
@@ -675,7 +954,7 @@ function statusPayload() {
     lastSource,
     cardsLoaded,
     salesLoaded,
-    note: "Sales History und Popular Rank werden automatisch aus öffentlichen FUTWIZ-Seiten ergänzt, sofern die Quelle normalen öffentlichen Zugriff erlaubt. Globale Games-Zahlen bleiben null, bis dafür eine echte erlaubte Quelle existiert. Keine Werte werden erfunden."
+    note: "FUT.GG bleibt die Preis- und Marktquelle. Zusatzdaten kommen ausschließlich aus FUTBIN-Evidenz. Wenn direkter FUTBIN-Zugriff nicht verfügbar ist, darf Gemini Google Search nur öffentlich indexierte FUTBIN-Seiten auswerten. Games/Sales/Popular bleiben ohne verifizierte FUTBIN-Evidenz null/leer."
   };
 }
 
