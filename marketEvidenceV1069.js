@@ -2,8 +2,8 @@ import express from "express";
 import crypto from "crypto";
 import { GoogleGenAI } from "@google/genai";
 
-export const MARKET_EVIDENCE_VERSION = "1.0.0";
-const BUILD = "10.69.3";
+export const MARKET_EVIDENCE_VERSION = "1.1.0";
+const BUILD = "10.69.4";
 
 let schemaReady = false;
 let schemaPromise = null;
@@ -146,6 +146,24 @@ async function ensureSchema(pool) {
       ON fc_market_evidence_cards (game_year, popular_rank ASC)
       WHERE popular_rank IS NOT NULL
     `);
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS fc_market_evidence_usage_history (
+        game_year TEXT NOT NULL,
+        ea_id TEXT NOT NULL,
+        games BIGINT,
+        games_console BIGINT,
+        games_pc BIGINT,
+        popular_rank INTEGER,
+        popularity_count BIGINT,
+        source TEXT NOT NULL,
+        observed_at TIMESTAMPTZ NOT NULL,
+        PRIMARY KEY (game_year, ea_id, source, observed_at)
+      )
+    `);
+    await pool.query(`
+      CREATE INDEX IF NOT EXISTS idx_fc_market_evidence_usage_card_time
+      ON fc_market_evidence_usage_history (game_year, ea_id, observed_at DESC)
+    `);
     schemaReady = true;
     return true;
   })().catch(error => {
@@ -196,6 +214,19 @@ async function upsertCards(pool, cards, gameYear) {
       card.version, card.games, card.gamesConsole, card.gamesPc, card.popularRank, card.popularityCount,
       card.source, card.sourceUrl, card.observedAt
     ]);
+    if ([card.games, card.gamesConsole, card.gamesPc, card.popularRank, card.popularityCount].some(Number.isFinite)) {
+      await pool.query(`
+        INSERT INTO fc_market_evidence_usage_history (
+          game_year, ea_id, games, games_console, games_pc, popular_rank,
+          popularity_count, source, observed_at
+        ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+        ON CONFLICT (game_year, ea_id, source, observed_at) DO NOTHING
+      `, [
+        String(gameYear), card.eaId, card.games, card.gamesConsole, card.gamesPc,
+        card.popularRank, card.popularityCount, card.source, card.observedAt
+      ]);
+    }
+
     cardCount += 1;
 
     for (const sale of card.sales) {
@@ -280,20 +311,149 @@ function median(values) {
   return a.length % 2 ? a[mid] : (a[mid - 1] + a[mid]) / 2;
 }
 
+function stddev(values) {
+  const a = values.filter(Number.isFinite);
+  if (a.length < 2) return null;
+  const mean = a.reduce((sum, value) => sum + value, 0) / a.length;
+  const variance = a.reduce((sum, value) => sum + ((value - mean) ** 2), 0) / a.length;
+  return Math.sqrt(variance);
+}
+
+function liquidityFromTimedSales(timedSales, now = Date.now()) {
+  const timed = timedSales
+    .map(sale => ({ ...sale, atMs: sale.date ? new Date(sale.date).getTime() : NaN }))
+    .filter(sale => Number.isFinite(sale.atMs) && sale.atMs <= now)
+    .sort((a, b) => b.atMs - a.atMs);
+
+  if (!timed.length) {
+    return {
+      sales1h: null, sales6h: null, sales24h: null, sales7d: null,
+      salesPerHour24h: null, medianSaleGapMinutes: null, activeHours24h: null,
+      continuityPct24h: null, minutesSinceLastSale: null, volatilityPct24h: null,
+      score: null, trend: "INSUFFICIENT_DATA", confidence: 0
+    };
+  }
+
+  const within = hours => timed.filter(sale => now - sale.atMs <= hours * 3_600_000);
+  const h1 = within(1);
+  const h6 = within(6);
+  const h24 = within(24);
+  const d7 = within(168);
+  const prior18 = timed.filter(sale => {
+    const age = now - sale.atMs;
+    return age > 6 * 3_600_000 && age <= 24 * 3_600_000;
+  });
+
+  const chronological = [...d7].sort((a, b) => a.atMs - b.atMs);
+  const gaps = [];
+  for (let i = 1; i < chronological.length; i += 1) {
+    gaps.push((chronological[i].atMs - chronological[i - 1].atMs) / 60_000);
+  }
+  const gapMedian = median(gaps);
+  const activeHours = new Set(h24.map(sale => new Date(sale.atMs).toISOString().slice(0, 13))).size;
+  const continuityPct = activeHours / 24 * 100;
+  const minutesSinceLastSale = Math.max(0, (now - timed[0].atMs) / 60_000);
+  const sold24 = h24.map(sale => Number(sale.soldFor)).filter(Number.isFinite);
+  const soldMedian24 = median(sold24);
+  const soldStd24 = stddev(sold24);
+  const volatilityPct24h = soldMedian24 && soldStd24 != null ? soldStd24 / soldMedian24 * 100 : null;
+  const salesPerHour24h = h24.length / 24;
+
+  // Independent Trader Brain metric, derived only from observed completed sales.
+  const throughput = Math.min(1, Math.log1p(salesPerHour24h) / Math.log(3));
+  const cadence = gapMedian == null ? 0 : Math.max(0, 1 - Math.min(gapMedian, 360) / 360);
+  const continuity = Math.min(1, activeHours / 12);
+  const freshness = Math.max(0, 1 - Math.min(minutesSinceLastSale, 360) / 360);
+  const score = Math.round(100 * (0.45 * throughput + 0.25 * cadence + 0.20 * continuity + 0.10 * freshness));
+
+  const recentRate = h6.length / 6;
+  const priorRate = prior18.length / 18;
+  let trend = "STABLE";
+  if (h24.length < 4) trend = "INSUFFICIENT_DATA";
+  else if (recentRate > Math.max(0.05, priorRate * 1.30)) trend = "RISING";
+  else if (recentRate < priorRate * 0.70) trend = "FALLING";
+
+  const confidence = Math.round(Math.min(100, (Math.min(h24.length, 20) / 20) * 80 + freshness * 20));
+  return {
+    sales1h: h1.length,
+    sales6h: h6.length,
+    sales24h: h24.length,
+    sales7d: d7.length,
+    salesPerHour24h: Number(salesPerHour24h.toFixed(3)),
+    medianSaleGapMinutes: gapMedian == null ? null : Number(gapMedian.toFixed(2)),
+    activeHours24h: activeHours,
+    continuityPct24h: Number(continuityPct.toFixed(2)),
+    minutesSinceLastSale: Number(minutesSinceLastSale.toFixed(2)),
+    volatilityPct24h: volatilityPct24h == null ? null : Number(volatilityPct24h.toFixed(2)),
+    score,
+    trend,
+    confidence
+  };
+}
+
 function salesStats(sales) {
   const sold = (Array.isArray(sales) ? sales : []).filter(s => Number.isFinite(Number(s.soldFor)));
   const now = Date.now();
-  const last24h = sold.filter(s => {
+  const timed = sold.filter(s => {
     const t = s.date ? new Date(s.date).getTime() : NaN;
-    return Number.isFinite(t) && now - t >= 0 && now - t <= 24 * 60 * 60_000;
+    return Number.isFinite(t) && t <= now;
   });
+  const last24h = timed.filter(s => now - new Date(s.date).getTime() <= 24 * 60 * 60_000);
+  const liquidity = liquidityFromTimedSales(timed, now);
   return {
     samples: sold.length,
-    observedSales24h: last24h.length || null,
+    timedSamples: timed.length,
+    observedSales24h: timed.length ? last24h.length : null,
     medianSold: median(sold.map(s => Number(s.soldFor))),
     minSold: sold.length ? Math.min(...sold.map(s => Number(s.soldFor))) : null,
     maxSold: sold.length ? Math.max(...sold.map(s => Number(s.soldFor))) : null,
-    lastSaleAt: sold.find(s => s.date)?.date || null
+    lastSaleAt: timed[0]?.date || null,
+    liquidity
+  };
+}
+
+async function usageVelocityFor(pool, gameYear, eaId) {
+  if (!pool) return null;
+  const ready = await ensureSchema(pool);
+  if (!ready) return null;
+  const result = await pool.query(`
+    SELECT games, games_console, games_pc, popular_rank, popularity_count, observed_at
+    FROM fc_market_evidence_usage_history
+    WHERE game_year = $1 AND ea_id = $2
+      AND observed_at >= NOW() - INTERVAL '7 days'
+    ORDER BY observed_at DESC
+    LIMIT 200
+  `, [String(gameYear), String(eaId)]);
+  const rows = result.rows || [];
+  if (!rows.length) return null;
+
+  const current = rows[0];
+  const currentAt = new Date(current.observed_at).getTime();
+  const currentGames = finite(current.games_console ?? current.games ?? current.games_pc);
+  if (!Number.isFinite(currentAt) || !Number.isFinite(currentGames)) return null;
+
+  function deltaAtLeast(hours) {
+    const threshold = currentAt - hours * 3_600_000;
+    const prior = rows.find(row => new Date(row.observed_at).getTime() <= threshold);
+    const priorGames = prior ? finite(prior.games_console ?? prior.games ?? prior.games_pc) : null;
+    if (!prior || !Number.isFinite(priorGames) || currentGames < priorGames) return null;
+    const elapsedHours = (currentAt - new Date(prior.observed_at).getTime()) / 3_600_000;
+    return {
+      delta: Math.round(currentGames - priorGames),
+      perHour: elapsedHours > 0 ? Number(((currentGames - priorGames) / elapsedHours).toFixed(2)) : null,
+      elapsedHours: Number(elapsedHours.toFixed(2))
+    };
+  }
+
+  return {
+    currentGames: Math.round(currentGames),
+    observedAt: current.observed_at,
+    h1: deltaAtLeast(1),
+    h6: deltaAtLeast(6),
+    h24: deltaAtLeast(24),
+    d7: deltaAtLeast(168),
+    source: "OBSERVED_GAME_COUNTER_DELTAS",
+    synthetic: false
   };
 }
 
@@ -897,6 +1057,10 @@ export async function attachMarketEvidenceToRowsV1069({
     row.evidenceSalesHistory = sales;
     row.evidenceObservedSales24h = stats.observedSales24h;
     row.evidenceMedianSold = stats.medianSold;
+    row.evidenceLiquidityScore = stats.liquidity?.score ?? null;
+    row.evidenceLiquidityTrend = stats.liquidity?.trend ?? "INSUFFICIENT_DATA";
+    row.evidenceSalesPerHour24h = stats.liquidity?.salesPerHour24h ?? null;
+    row.evidenceMinutesSinceLastSale = stats.liquidity?.minutesSinceLastSale ?? null;
 
     const work = brainWork?.get?.(String(row.eaId));
     if (work?.input) {
@@ -910,6 +1074,11 @@ export async function attachMarketEvidenceToRowsV1069({
         popularityCount: row.evidencePopularityCount,
         observedSales24h: row.evidenceObservedSales24h,
         medianSold: row.evidenceMedianSold,
+        liquidityScore: row.evidenceLiquidityScore,
+        liquidityTrend: row.evidenceLiquidityTrend,
+        salesPerHour24h: row.evidenceSalesPerHour24h,
+        minutesSinceLastSale: row.evidenceMinutesSinceLastSale,
+        liquidityConfidence: stats.liquidity?.confidence ?? 0,
         salesSamples: stats.samples,
         salesHistory: sales.slice(0, 25)
       };
@@ -933,7 +1102,13 @@ function statusPayload() {
       games: true,
       salesHistory: true,
       popularRank: true,
-      liquidityFromSales: true
+      liquidityFromSales: true,
+      gamesVelocityFromSnapshots: true
+    },
+    rightsPolicy: {
+      directFutbinScrape: false,
+      acceptedInputs: ["AUTHORIZED_FEED", "EXPLICIT_INGEST", "PUBLIC_INDEXED_GROUNDED_EVIDENCE"],
+      pricesRemainFutggPrimary: true
     },
     gamesStatus: groundedStatus.cardsWithGames > 0 ? "OBSERVED_FROM_GROUNDED_PUBLIC_SOURCE" : "WAITING_FOR_VERIFIED_SOURCE",
     groundedSupplement: {
@@ -1000,6 +1175,12 @@ export function createMarketEvidenceRouterV1069({ pool = null, gameYear = "26" }
       source: card.source,
       observedAt: card.observedAt
     });
+  });
+
+  router.get("/cards/:eaId/usage", async (req, res) => {
+    const eaId = String(req.params.eaId || "");
+    const velocity = await usageVelocityFor(pool, gameYear, eaId);
+    res.json({ ok: true, eaId, gameYear: String(gameYear), velocity });
   });
 
   router.get("/cards/:eaId/sales", async (req, res) => {

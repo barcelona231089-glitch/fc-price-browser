@@ -1,7 +1,7 @@
 import { patchServer as patchServerV1064 } from './v1064Loader.mjs';
 import { patchRatingOnly } from './v1065Loader.mjs';
 
-export const V1066_BOOTSTRAP_VERSION = '10.69.3-futbin-only-evidence';
+export const V1066_BOOTSTRAP_VERSION = '10.69.4-market365-futbin-liquidity';
 
 export function patchFutbinBridgeV1066(source) {
   const original = String(source || '');
@@ -49,7 +49,7 @@ export function patchFutbinBridgeV1066(source) {
     'futbinPublicStatus({ pool: dbEnabled ? pool : null, gameYear: String(GAME_YEAR) === "27" ? "26" : GAME_YEAR }),\n      futbinBridgeV1066Status({ pool: dbEnabled ? pool : null, gameYear: String(GAME_YEAR) === "27" ? "26" : GAME_YEAR })\n    ]);'
   );
 
-  out = out.replaceAll('version: "10.64-final"', 'version: "10.69.3-final"');
+  out = out.replaceAll('version: "10.64-final"', 'version: "10.69.4-final"');
   out = out.replaceAll('outputMode: "BUY_SELL_ONLY"', 'outputMode: "RATING_ONLY_BUY_SELL"');
 
   out = out.replace(
@@ -1165,6 +1165,152 @@ function patchUvEngineV2105(source) {
   return out;
 }
 
+
+
+function patchLegacyFutbinBridgeSupplementOnlyV10694(source) {
+  let out = String(source || '');
+
+  // v10.69.4 strict source policy: the legacy v10.66 bridge used FUTBIN
+  // prices/history as an authorized fallback. That is no longer allowed.
+  // FUTBIN may supplement only Games, completed Sales History, Popular Rank,
+  // and Brain-derived Liquidity. Existing legacy DB rows are left untouched
+  // for auditability but are never attached to live Trader Brain rows.
+  out = out.replace(
+    "const AUTHORIZED_FEED_URL = String(process.env.FUTBIN_AUTHORIZED_FEED_URL || process.env.FUTBIN_BRIDGE_FEED_URL || '').trim();",
+    "const AUTHORIZED_FEED_URL = ''; // v10.69.4 legacy FUTBIN price feed disabled"
+  );
+  out = out.replace(
+    "const DIRECT_PUBLIC_ENABLED = String(process.env.FUTBIN_PUBLIC_DIRECT_ENABLED || 'false').trim().toLowerCase() === 'true';",
+    "const DIRECT_PUBLIC_ENABLED = false; // v10.69.4 no direct FUTBIN price path"
+  );
+
+  const noLegacy = "return { ok: false, skipped: 'LEGACY_FUTBIN_PRICE_BRIDGE_DISABLED_V10694', policy: 'GAMES_SALES_POPULAR_LIQUIDITY_ONLY' };";
+  out = out.replace(
+    "export async function ingestFutbinBridgeV1066({ pool, payload, gameYear = '26', source = 'AUTHORIZED_IMPORT' } = {}) {",
+    "export async function ingestFutbinBridgeV1066({ pool, payload, gameYear = '26', source = 'AUTHORIZED_IMPORT' } = {}) {\n  " + noLegacy
+  );
+  out = out.replace(
+    "export async function refreshAuthorizedFutbinBridgeV1066({ pool, gameYear = '26', force = false } = {}) {",
+    "export async function refreshAuthorizedFutbinBridgeV1066({ pool, gameYear = '26', force = false } = {}) {\n  " + noLegacy
+  );
+  out = out.replace(
+    "export async function attachFutbinBridgeRowsV1066({ rows = [], pool = null, gameYear = '26' } = {}) {",
+    "export async function attachFutbinBridgeRowsV1066({ rows = [], pool = null, gameYear = '26' } = {}) {\n  return 0; // v10.69.4 legacy FUTBIN price/history attachment disabled"
+  );
+  out = out.replace(
+    "export async function enrichRowsWithFutbinSafeV1066({ rows = [], brainWork = new Map(), gameYear = '26', pool = null } = {}) {",
+    "export async function enrichRowsWithFutbinSafeV1066({ rows = [], brainWork = new Map(), gameYear = '26', pool = null } = {}) {\n  return { bridgeAttached: 0, directEnriched: 0, directStatus: null, directPublicEnabled: false, policy: 'GAMES_SALES_POPULAR_LIQUIDITY_ONLY' };"
+  );
+  out = out.replace(
+    "export async function startFutbinBridgeBootstrapV1066({ pool = null, gameYear = '26' } = {}) {",
+    "export async function startFutbinBridgeBootstrapV1066({ pool = null, gameYear = '26' } = {}) {\n  return { ok: true, skipped: 'LEGACY_FUTBIN_PRICE_BRIDGE_DISABLED_V10694', policy: 'GAMES_SALES_POPULAR_LIQUIDITY_ONLY' };"
+  );
+  out = out.replace("mode: 'FUTGG_PRIMARY_AUTHORIZED_FUTBIN_BRIDGE',", "mode: 'LEGACY_PRICE_BRIDGE_DISABLED_SUPPLEMENTAL_ONLY',");
+  out = out.replace(
+    "note: AUTHORIZED_FEED_URL\n      ? 'Authorized FUTBIN feed bridge is configured. FUT.GG remains the live primary source.'\n      : 'Direct Hostless requests are disabled by default after HTTP 403. Configure FUTBIN_AUTHORIZED_FEED_URL or import authorized/publicly obtained normalized data through the bridge endpoint.'",
+    "note: 'v10.69.4: legacy FUTBIN price/history bridge disabled. FUTBIN is supplemental only: Games, completed Sales History, Popular Rank and Brain-derived Liquidity.'"
+  );
+
+  const required = [
+    "LEGACY_FUTBIN_PRICE_BRIDGE_DISABLED_V10694",
+    "GAMES_SALES_POPULAR_LIQUIDITY_ONLY",
+    "return 0; // v10.69.4 legacy FUTBIN price/history attachment disabled",
+    "const DIRECT_PUBLIC_ENABLED = false"
+  ];
+  const missing = required.filter(marker => !out.includes(marker));
+  if (missing.length) throw new Error('[v10.69.4] legacy FUTBIN source-policy patch incomplete: ' + missing.join(', '));
+  return out;
+}
+
+function patchMarketHistory365V10694(source) {
+  let out = String(source || '');
+
+  // v10.69.4: widen the existing outcome/self-learning windows to the full
+  // FC26 cycle. Recency decay stays unchanged, so recent evidence still wins.
+  // Strict supplemental-only policy: disable legacy FUTBIN price/feed and Parse-price paths in server.js.
+  // The v10.69 evidence module is the only FUTBIN path allowed to affect Trader Brain context.
+  out = out.replace(
+    'const FUTBIN_AUTHORIZED_FEED_URL = String(process.env.FUTBIN_AUTHORIZED_FEED_URL || "").trim();',
+    'const FUTBIN_AUTHORIZED_FEED_URL = ""; // v10.69.4 supplemental-only: no FUTBIN price feed'
+  );
+  out = out.replace(
+    'const FUTBIN_PARSE_API_KEY = String(process.env.FUTBIN_PARSE_API_KEY || "").trim();',
+    'const FUTBIN_PARSE_API_KEY = ""; // v10.69.4 legacy Parse price path disabled'
+  );
+
+  const learning90 = 'const BRAIN_LEARNING_WINDOW_DAYS = Math.max(30, Number(process.env.BRAIN_LEARNING_WINDOW_DAYS || 90));';
+  const learning365 = 'const BRAIN_LEARNING_WINDOW_DAYS = Math.max(365, Number(process.env.BRAIN_LEARNING_WINDOW_DAYS || 365));';
+  if (out.includes(learning90)) out = out.replace(learning90, learning365);
+
+  const performance90 = 'const PERFORMANCE_LAB_WINDOW_DAYS = Math.max(30, Number(process.env.PERFORMANCE_LAB_WINDOW_DAYS || 90));';
+  const performance365 = 'const PERFORMANCE_LAB_WINDOW_DAYS = Math.max(365, Number(process.env.PERFORMANCE_LAB_WINDOW_DAYS || 365));';
+  if (out.includes(performance90)) out = out.replace(performance90, performance365);
+
+  const maxRowsConst = 'const HISTORICAL_LEARNING_MAX_ROWS = Math.max(5000, Math.min(50000, Number(process.env.HISTORICAL_LEARNING_MAX_ROWS || 30000)));';
+  if (!out.includes('HISTORICAL_LEARNING_MAX_ROWS')) {
+    out = out.replace(performance365, performance365 + '\n' + maxRowsConst);
+  }
+
+  // Market-Knowledge and public-leak impact profiles also retain the FC26 cycle.
+  // Active-signal lifetimes stay short; only the historical outcome/profile window grows.
+  out = out.replaceAll("INTERVAL '120 days'", "INTERVAL '365 days'");
+
+  const performanceLimit = "      ORDER BY d.created_at DESC\n      LIMIT 5000\n    `, [PERFORMANCE_LAB_WINDOW_DAYS]);";
+  const performanceLimit365 = "      ORDER BY d.created_at DESC\n      LIMIT $2\n    `, [PERFORMANCE_LAB_WINDOW_DAYS, HISTORICAL_LEARNING_MAX_ROWS]);";
+  if (out.includes(performanceLimit)) out = out.replace(performanceLimit, performanceLimit365);
+
+  const learningLimit = "      ORDER BY d.created_at DESC\n      LIMIT 5000\n    `, [BRAIN_LEARNING_WINDOW_DAYS]);";
+  const learningLimit365 = "      ORDER BY d.created_at DESC\n      LIMIT $2\n    `, [BRAIN_LEARNING_WINDOW_DAYS, HISTORICAL_LEARNING_MAX_ROWS]);";
+  if (out.includes(learningLimit)) out = out.replace(learningLimit, learningLimit365);
+
+  if (!out.includes('./marketHistory365V10694.js')) {
+    out = out.replace(
+      'import { createHaCoordinator } from "./haCoordinator.js";',
+      'import { createHaCoordinator } from "./haCoordinator.js";\nimport { createMarketHistory365RouterV10694 } from "./marketHistory365V10694.js";'
+    );
+  }
+
+  if (!out.includes('v10.69.4 365-day market learning coverage')) {
+    const routeAnchor = 'app.use("/api/market/v1/evidence", createMarketEvidenceRouterV1069({ pool: dbEnabled ? pool : null, gameYear: GAME_YEAR }));';
+    if (!out.includes(routeAnchor)) throw new Error('[v10.69.4] 365-day route anchor missing');
+    out = out.replace(
+      routeAnchor,
+      routeAnchor + '\n// v10.69.4 365-day market learning coverage\napp.use("/api/market/v1/history365", createMarketHistory365RouterV10694({ pool: dbEnabled ? pool : null, gameYear: GAME_YEAR }));'
+    );
+  }
+
+  const endpointAnchor = 'marketEvidenceApi: "GET /api/market/v1/evidence/status",';
+  if (out.includes(endpointAnchor) && !out.includes('marketHistory365Api: "GET /api/market/v1/history365/status"')) {
+    out = out.replace(
+      endpointAnchor,
+      endpointAnchor + '\n      marketHistory365Api: "GET /api/market/v1/history365/status",'
+    );
+  }
+
+  // Marker is intentionally inert. It makes runtime verification explicit
+  // without inventing missing history or changing the live FUT.GG source.
+  if (!out.includes('10.69.4-market365')) {
+    out += '\n// 10.69.4-market365: 365d learning window + truthful coverage endpoint.\n';
+  }
+
+  const required = [
+    learning365,
+    performance365,
+    'HISTORICAL_LEARNING_MAX_ROWS',
+    "INTERVAL '365 days'",
+    './marketHistory365V10694.js',
+    'createMarketHistory365RouterV10694',
+    'app.use("/api/market/v1/history365"',
+    '10.69.4-market365',
+    'supplemental-only: no FUTBIN price feed',
+    'legacy Parse price path disabled'
+  ];
+  const missing = required.filter(marker => !out.includes(marker));
+  if (missing.length) throw new Error('[v10.69.4] market365 patch incomplete: ' + missing.join(', '));
+
+  return { source: out, changed: out !== source };
+}
+
 export async function load(url, context, defaultLoad) {
   const result = await defaultLoad(url, context, defaultLoad);
   if (result.format !== 'module') return result;
@@ -1200,32 +1346,41 @@ export async function load(url, context, defaultLoad) {
     return { format: result.format, source: patched, shortCircuit: true };
   }
 
+  if (url.endsWith('/futbinBridgeV1066.js')) {
+    const patched = patchLegacyFutbinBridgeSupplementOnlyV10694(raw);
+    console.log('[v10.69.4] Legacy FUTBIN price bridge disabled: supplemental evidence only.');
+    return { format: result.format, source: patched, shortCircuit: true };
+  }
+
   if (!url.endsWith('/server.js')) return result;
 
   const base64 = patchServerV1064(raw);
-  if (!base64?.source) throw new Error('[v10.69.3] v10.64 base patch failed.');
+  if (!base64?.source) throw new Error('[v10.69.4] v10.64 base patch failed.');
 
   const rating = patchRatingOnly(base64.source);
-  if (!rating?.source) throw new Error('[v10.69.3] v10.65 rating patch failed.');
+  if (!rating?.source) throw new Error('[v10.69.4] v10.65 rating patch failed.');
 
   const bridge = patchFutbinBridgeV1066(rating.source);
-  if (!bridge?.source) throw new Error('[v10.69.3] FUTBIN bridge patch failed.');
+  if (!bridge?.source) throw new Error('[v10.69.4] FUTBIN bridge patch failed.');
 
   const traderFutbin = patchTraderBrainFutbinV10673(bridge.source);
-  if (!traderFutbin?.source) throw new Error('[v10.69.3] Trader Brain FUTBIN extended patch failed.');
+  if (!traderFutbin?.source) throw new Error('[v10.69.4] Trader Brain FUTBIN extended patch failed.');
 
   const evidence = patchMarketEvidenceV1069(traderFutbin.source);
-  if (!evidence?.source) throw new Error('[v10.69.3] market evidence patch failed.');
+  if (!evidence?.source) throw new Error('[v10.69.4] market evidence patch failed.');
 
-  const final = patchOwnMarketApiV1068(evidence.source);
-  if (!final?.source) throw new Error('[v10.69.3] own market API patch failed.');
+  const ownApi = patchOwnMarketApiV1068(evidence.source);
+  if (!ownApi?.source) throw new Error('[v10.69.4] own market API patch failed.');
+
+  const final = patchMarketHistory365V10694(ownApi.source);
+  if (!final?.source) throw new Error('[v10.69.4] 365-day market learning patch failed.');
 
   const required = [
     './futbinBridgeV1066.js',
     'enrichRowsWithFutbinSafeV1066',
     'v10.66 FUTBIN bridge router',
     'RATING_ONLY_BUY_SELL',
-    '10.69.3-final',
+    '10.69.4-final',
     'adaptiveV1062Status({ pool: null, gameYear: GAME_YEAR })',
     './uvGenerateAsyncV2105.js',
     'createUvGenerateAsyncRouterV2105',
@@ -1239,11 +1394,17 @@ export async function load(url, context, defaultLoad) {
     './ownMarketApiV1068.js',
     'createOwnMarketApiRouterV1068',
     'observeOwnMarketRowsV1068',
-    'app.use("/api/market/v1"'
+    'app.use("/api/market/v1"',
+    './marketHistory365V10694.js',
+    'createMarketHistory365RouterV10694',
+    'app.use("/api/market/v1/history365"',
+    '10.69.4-market365',
+    'supplemental-only: no FUTBIN price feed',
+    'legacy Parse price path disabled'
   ];
   const missing = required.filter(marker => !final.source.includes(marker));
-  if (missing.length) throw new Error('[v10.69.3] patch incomplete: ' + missing.join(', '));
+  if (missing.length) throw new Error('[v10.69.4] patch incomplete: ' + missing.join(', '));
 
-  console.log('[v10.69.3] FINAL patch active: FUT.GG main + own Games/Sales/Popular evidence API.');
+  console.log('[v10.69.4] FINAL patch active: FUT.GG main + 365d learning window + FUTBIN supplemental Games/Sales/Popular/Liquidity.');
   return { format: result.format, source: final.source, shortCircuit: true };
 }

@@ -1,0 +1,37 @@
+FC Trader Brain v10.69.4
+Scope: Trader Brain only. No ÜV logic changed by this revision.
+
+1) FC26 365-day learning window
+- BRAIN_LEARNING_WINDOW_DAYS default: 90 -> 365
+- PERFORMANCE_LAB_WINDOW_DAYS default: 90 -> 365
+- Market-Knowledge/Public-Leak historical profile window: 120 -> 365 days
+- Historical learning row ceiling: configurable HISTORICAL_LEARNING_MAX_ROWS, default 30,000 (max 50,000)
+- Existing recency decay is intentionally unchanged, so recent FC26 evidence retains higher weight.
+- No synthetic historical rows are generated.
+- New read-only endpoint: GET /api/market/v1/history365/status
+  Reports actual stored coverage: earliest/latest, observed days, span, rows and cards.
+  For FC26 it checks both the older fc_price_history store and the newer game-year-scoped own-market history.
+- New read-only endpoint: GET /api/market/v1/history365/cards/:eaId
+  Returns daily aggregates from the available FC26 price-history stores, max 365 days.
+
+2) FUTBIN supplemental evidence
+- FUT.GG remains primary market/price source.
+- Direct FUTBIN scraping remains disabled by policy.
+- Existing verified/authorized/ingested FUTBIN evidence continues to supply Games, Sales History and Popular Rank.
+- New own Liquidity metrics are calculated only from observed completed Sales History:
+  sales 1h/6h/24h/7d, sales/hour 24h, median sale gap, active hours, continuity,
+  minutes since last sale, 24h sold-price volatility, liquidity score 0..100,
+  trend RISING/STABLE/FALLING/INSUFFICIENT_DATA, confidence.
+- Missing timestamped sales remain unavailable; they are never invented as zero activity.
+- Games/Popular snapshots are persisted for future usage-velocity calculations.
+- New read-only endpoint: GET /api/market/v1/evidence/cards/:eaId/usage
+
+3) Important limitation
+A 365-day window does not create a 365-day backfill. The Brain consumes every real FC26 row already present in PostgreSQL up to 365 days old. The coverage endpoint explicitly reports whether a full 365-day span actually exists.
+
+4) Strict source policy hardening
+- Legacy v10.66 FUTBIN price/history bridge is runtime-disabled in v10.69.4.
+- Legacy FUTBIN price fallback is disabled; FUT.GG is the only live price source.
+- Legacy Parse FUTBIN price/cross-check path is disabled.
+- Old bridge DB rows are left untouched for audit/rollback but are not attached to live Trader Brain rows.
+- FUTBIN can enter Trader Brain only through the supplemental evidence layer: Games, completed Sales History, source Popular Rank, and Brain-derived Liquidity.
