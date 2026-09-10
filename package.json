@@ -1,10 +1,10 @@
 {
   "name": "fc-trading-intelligence",
-  "version": "10.69.6",
+  "version": "10.69.8",
   "private": true,
   "type": "module",
   "scripts": {
-    "start": "node --import ./v10696Register.mjs server.js",
+    "start": "node --import ./v10698Register.mjs server.js",
     "test": "node --test test/*.test.mjs uv/test/*.test.js"
   },
   "engines": {
