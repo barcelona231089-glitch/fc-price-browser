@@ -1,0 +1,38 @@
+{
+  "version": "10.69.9.6.1",
+  "runtimeLabel": "10.69.9.6.1-final",
+  "base": "10.69.9.6",
+  "purpose": "Hostless non-blocking Permanent ML startup guard",
+  "learningWindowDays": 730,
+  "historicalSourceYears": [
+    "25",
+    "26"
+  ],
+  "files": [
+    {
+      "path": "v1069961Loader.mjs",
+      "size": 5757,
+      "sha256": "6c0cfc1dc0b7d78fb634bdf593933ffd28ab38f438c11a053eab87d4ab226615"
+    },
+    {
+      "path": "v1069961Register.mjs",
+      "size": 170,
+      "sha256": "ec677c95c4546b535d8a802d7814bd5e056d7b59bb8fca14dfe2979695705a77"
+    },
+    {
+      "path": "package.json",
+      "size": 421,
+      "sha256": "16c2f12f7272a2ecedbee487efe75fbdd8f1cc70df0289c14780890df103f4cf"
+    },
+    {
+      "path": "README-v10.69.9.6.1.md",
+      "size": 944,
+      "sha256": "aef68f471ec6b4a2e3670753d2a0ca9987df766c7701b278574fd47cd1756337"
+    },
+    {
+      "path": "test/v1069961Loader.test.mjs",
+      "size": 2727,
+      "sha256": "2c8a84866196749f15047009589ddfd06c1a17605525904fb6aaca9e4e7bbad5"
+    }
+  ]
+}
