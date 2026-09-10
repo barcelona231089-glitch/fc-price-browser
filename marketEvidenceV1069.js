@@ -2,7 +2,7 @@ import express from "express";
 import crypto from "crypto";
 
 export const MARKET_EVIDENCE_VERSION = "1.0.0";
-const BUILD = "10.69.0";
+const BUILD = "10.69.1";
 
 let schemaReady = false;
 let schemaPromise = null;
@@ -296,6 +296,209 @@ function salesStats(sales) {
   };
 }
 
+
+const FUTWIZ_POPULAR_URL = "https://www.futwiz.com/popular/";
+const FUTWIZ_BASE = "https://www.futwiz.com";
+let futwizStatus = {
+  status: "IDLE",
+  lastAttemptAt: null,
+  lastSuccessAt: null,
+  lastFailureAt: null,
+  lastError: null,
+  popularCards: 0,
+  salesCards: 0,
+  salesRows: 0,
+  blocked: false
+};
+
+function decodeHtml(value) {
+  return String(value || "")
+    .replace(/&amp;/g, "&")
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">");
+}
+
+function stripTags(value) {
+  return decodeHtml(String(value || "").replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim());
+}
+
+async function fetchPublicHtml(url) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 15_000);
+  try {
+    const response = await fetch(url, {
+      headers: {
+        accept: "text/html,application/xhtml+xml",
+        "user-agent": "FC-Trader-Brain/10.69.1 public-data-reader"
+      },
+      redirect: "follow",
+      signal: controller.signal
+    });
+    if (response.status === 401 || response.status === 403 || response.status === 429) {
+      const error = new Error(`PUBLIC_SOURCE_BLOCKED_HTTP_${response.status}`);
+      error.code = "SOURCE_BLOCKED_NO_BYPASS";
+      throw error;
+    }
+    if (!response.ok) throw new Error(`PUBLIC_SOURCE_HTTP_${response.status}`);
+    return response.text();
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+function parseCoin(text) {
+  const raw = String(text || "").replace(/,/g, "").trim().toUpperCase();
+  const m = raw.match(/([0-9]+(?:\.[0-9]+)?)\s*([KMB])?/);
+  if (!m) return null;
+  let n = Number(m[1]);
+  if (!Number.isFinite(n)) return null;
+  if (m[2] === "K") n *= 1_000;
+  if (m[2] === "M") n *= 1_000_000;
+  if (m[2] === "B") n *= 1_000_000_000;
+  return Math.round(n);
+}
+
+function parseFutwizPopular(html) {
+  const out = [];
+  const seen = new Set();
+  const re = /href=["'](\/fc26\/player\/([^/"']+)\/(\d+)\/?)["']/gi;
+  let m;
+  while ((m = re.exec(html))) {
+    const href = m[1];
+    const slug = m[2];
+    const futwizId = m[3];
+    if (seen.has(futwizId)) continue;
+    seen.add(futwizId);
+
+    const around = stripTags(html.slice(Math.max(0, m.index - 500), Math.min(html.length, m.index + 1200)));
+    const ratingMatch = around.match(/\b(6[0-9]|7[0-9]|8[0-9]|9[0-9])\b/);
+    const name = slug.replace(/-/g, " ").replace(/\b\w/g, c => c.toUpperCase());
+
+    out.push({
+      futwizId,
+      href,
+      name,
+      rating: ratingMatch ? Number(ratingMatch[1]) : null
+    });
+    if (out.length >= 120) break;
+  }
+  return out.map((row, index) => ({ ...row, popularRank: index + 1 }));
+}
+
+function parseFutwizSales(html) {
+  const text = stripTags(html);
+  const rows = [];
+  const rowRe = /((?:Today|Yesterday|\d{1,2}\s+[A-Za-z]{3})\s+\d{1,2}:\d{2})\s+([0-9,.]+[KMB]?)\s+([0-9,.]+[KMB]?)\s+(BIN|Auction)/gi;
+  let m;
+  while ((m = rowRe.exec(text))) {
+    const startPrice = parseCoin(m[2]);
+    const finalPrice = parseCoin(m[3]);
+    if (!Number.isFinite(finalPrice) || finalPrice <= 0) continue;
+    rows.push({
+      date: null,
+      listedFor: startPrice,
+      soldFor: finalPrice,
+      eaTax: Math.round(finalPrice * 0.05),
+      netPrice: Math.round(finalPrice * 0.95),
+      status: m[4].toUpperCase(),
+      sourceLabel: m[1]
+    });
+    if (rows.length >= 250) break;
+  }
+  return rows;
+}
+
+function matchLiveRow(popular, liveRows) {
+  const targetName = String(popular.name || "").toLowerCase().replace(/[^a-z0-9]/g, "");
+  const candidates = (Array.isArray(liveRows) ? liveRows : []).filter(row => {
+    const name = String(row?.name || "").toLowerCase().replace(/[^a-z0-9]/g, "");
+    if (!name || !targetName) return false;
+    const nameMatch = name === targetName || name.includes(targetName) || targetName.includes(name);
+    if (!nameMatch) return false;
+    if (Number.isFinite(popular.rating) && Number.isFinite(Number(row?.overall))) {
+      return Number(row.overall) === Number(popular.rating);
+    }
+    return true;
+  });
+  return candidates[0] || null;
+}
+
+async function collectFutwizPublicEvidence({ liveRows, gameYear = "26", maxSalesCards = 8 } = {}) {
+  futwizStatus.lastAttemptAt = new Date().toISOString();
+  futwizStatus.status = "FETCHING";
+  futwizStatus.blocked = false;
+  try {
+    const popularHtml = await fetchPublicHtml(FUTWIZ_POPULAR_URL);
+    const popular = parseFutwizPopular(popularHtml);
+    futwizStatus.popularCards = popular.length;
+
+    const cards = [];
+    const matched = popular
+      .map(item => ({ item, row: matchLiveRow(item, liveRows) }))
+      .filter(x => x.row);
+
+    for (const { item, row } of matched) {
+      cards.push({
+        eaId: String(row.eaId),
+        name: row.name,
+        rating: Number(row.overall) || item.rating || null,
+        version: row.cardType || row.rarityName || null,
+        popularRank: item.popularRank,
+        popularityCount: null,
+        games: null,
+        gamesConsole: null,
+        gamesPc: null,
+        sales: [],
+        source: "FUTWIZ_PUBLIC",
+        sourceUrl: FUTWIZ_BASE + item.href,
+        observedAt: new Date().toISOString(),
+        _futwizId: item.futwizId,
+        _slug: item.href.split("/")[4] || ""
+      });
+    }
+
+    let salesCards = 0;
+    let salesRows = 0;
+    for (const card of cards.slice(0, Math.max(0, Number(maxSalesCards || 0)))) {
+      const slug = card._slug || String(card.name || "").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
+      const url = `${FUTWIZ_BASE}/fc26/player/${slug}/${card._futwizId}/soldprices/console`;
+      try {
+        const salesHtml = await fetchPublicHtml(url);
+        const sales = parseFutwizSales(salesHtml);
+        card.sales = sales;
+        if (sales.length) {
+          salesCards += 1;
+          salesRows += sales.length;
+        }
+      } catch (error) {
+        if (error?.code === "SOURCE_BLOCKED_NO_BYPASS") throw error;
+      }
+      delete card._futwizId;
+      delete card._slug;
+    }
+
+    for (const card of cards) {
+      delete card._futwizId;
+      delete card._slug;
+    }
+
+    futwizStatus.status = cards.length ? "READY" : "NO_MATCHES";
+    futwizStatus.lastSuccessAt = new Date().toISOString();
+    futwizStatus.lastError = null;
+    futwizStatus.salesCards = salesCards;
+    futwizStatus.salesRows = salesRows;
+    return cards;
+  } catch (error) {
+    futwizStatus.lastFailureAt = new Date().toISOString();
+    futwizStatus.lastError = String(error?.message || error);
+    futwizStatus.blocked = error?.code === "SOURCE_BLOCKED_NO_BYPASS";
+    futwizStatus.status = futwizStatus.blocked ? "SOURCE_BLOCKED_NO_BYPASS" : "ERROR";
+    return [];
+  }
+}
+
 async function fetchFeed(url, token) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), 20_000);
@@ -313,7 +516,7 @@ async function fetchFeed(url, token) {
   }
 }
 
-export async function refreshMarketEvidenceV1069({ pool = null, gameYear = "26", force = false } = {}) {
+export async function refreshMarketEvidenceV1069({ pool = null, gameYear = "26", force = false, liveRows = [] } = {}) {
   const url = clean(process.env.MARKET_EVIDENCE_FEED_URL, 1000);
   const token = clean(process.env.MARKET_EVIDENCE_FEED_TOKEN, 1000);
   const refreshMs = Math.max(5, Number(process.env.MARKET_EVIDENCE_REFRESH_MIN || 15)) * 60_000;
@@ -327,12 +530,32 @@ export async function refreshMarketEvidenceV1069({ pool = null, gameYear = "26",
   lastRefreshAt = new Date().toISOString();
 
   if (!url) {
+    // v10.69.1 automatic public supplement. FUT.GG stays the primary market source.
+    // No login, cookies, CAPTCHA handling, proxying or anti-bot bypass is used.
+    const cards = await collectFutwizPublicEvidence({
+      liveRows,
+      gameYear,
+      maxSalesCards: Math.max(1, Math.min(12, Number(process.env.MARKET_EVIDENCE_PUBLIC_SALES_CARDS || 6)))
+    });
+
+    if (cards.length) {
+      const saved = await upsertCards(pool, cards, gameYear);
+      await rebuildCache(pool, gameYear);
+      lastRefreshSuccessAt = new Date().toISOString();
+      lastRefreshError = null;
+      lastSource = "FUTWIZ_PUBLIC";
+      cardsLoaded += saved.cards;
+      salesLoaded += saved.sales;
+      return { ok: true, status: "READY_PUBLIC", ...saved };
+    }
+
     await rebuildCache(pool, gameYear);
-    lastRefreshError = null;
+    lastRefreshError = futwizStatus.lastError || null;
     return {
-      ok: true,
-      status: cardCache.size ? "DATABASE_ONLY" : "WAITING_FOR_EVIDENCE_SOURCE",
-      cards: cardCache.size
+      ok: cardCache.size > 0,
+      status: futwizStatus.status || (cardCache.size ? "DATABASE_ONLY" : "WAITING_FOR_EVIDENCE_SOURCE"),
+      cards: cardCache.size,
+      sourceError: futwizStatus.lastError || null
     };
   }
 
@@ -374,7 +597,7 @@ export async function attachMarketEvidenceToRowsV1069({
   rows, brainWork, pool = null, gameYear = "26"
 } = {}) {
   if (!Array.isArray(rows) || !rows.length) return 0;
-  await refreshMarketEvidenceV1069({ pool, gameYear }).catch(() => null);
+  await refreshMarketEvidenceV1069({ pool, gameYear, liveRows: rows }).catch(() => null);
   let attached = 0;
 
   for (const row of rows) {
@@ -429,12 +652,18 @@ function statusPayload() {
     purpose: "FUT.GG supplement",
     replacesFutgg: false,
     fields: {
-      games: true,
+      games: false,
       salesHistory: true,
       popularRank: true,
       liquidityFromSales: true
     },
-    sourceConfigured: Boolean(clean(process.env.MARKET_EVIDENCE_FEED_URL, 1000)),
+    gamesStatus: "NO_GLOBAL_GAMES_SOURCE",
+    publicSupplement: {
+      provider: "FUTWIZ_PUBLIC",
+      policy: "PUBLIC_HTML_ONLY_NO_BYPASS",
+      ...futwizStatus
+    },
+    sourceConfigured: Boolean(clean(process.env.MARKET_EVIDENCE_FEED_URL, 1000)) || futwizStatus.status === "READY",
     ingestConfigured: Boolean(clean(process.env.MARKET_EVIDENCE_INGEST_TOKEN, 1000)),
     cachedCards: cardCache.size,
     cardsWithGames: withGames,
@@ -446,7 +675,7 @@ function statusPayload() {
     lastSource,
     cardsLoaded,
     salesLoaded,
-    note: "Echte Games/Sales/Popular-Werte werden nur gespeichert, wenn eine erlaubte Quelle sie liefert. Fehlende Werte bleiben null; keine Daten werden erfunden."
+    note: "Sales History und Popular Rank werden automatisch aus öffentlichen FUTWIZ-Seiten ergänzt, sofern die Quelle normalen öffentlichen Zugriff erlaubt. Globale Games-Zahlen bleiben null, bis dafür eine echte erlaubte Quelle existiert. Keine Werte werden erfunden."
   };
 }
 
