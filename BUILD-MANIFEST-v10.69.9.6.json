@@ -1,0 +1,62 @@
+{
+  "version": "10.69.9.6-final",
+  "packageVersion": "10.69.9-6",
+  "baseRuntime": "10.69.9.3-final",
+  "purpose": "24-month FC25+FC26 permanent ML brain",
+  "learningWindowDays": 730,
+  "targetMonths": 24,
+  "historicalSourceYears": [
+    "25",
+    "26"
+  ],
+  "noSyntheticBackfill": true,
+  "rawPricesMergedAcrossGameYears": false,
+  "futbinChanged": false,
+  "files": [
+    {
+      "path": "README-v10.69.9.6.md",
+      "bytes": 4417,
+      "sha256": "52d1627af50aba7ee31cc5475c3bb6e823d374e5dddc3e5715915698617b4465"
+    },
+    {
+      "path": "package.json",
+      "bytes": 418,
+      "sha256": "cf17726e689f06366124c436579a45f1c522abca0a52cc61cd973a6c836d6c49"
+    },
+    {
+      "path": "permanentMlBrainV106996.js",
+      "bytes": 31634,
+      "sha256": "788ee9d1b751c5d9ce0ca6631fd55604a0d0d1a5cbba28dcc7d47fd3e2c49677"
+    },
+    {
+      "path": "test/permanentMlBrainV106996.test.mjs",
+      "bytes": 2347,
+      "sha256": "ca0fc3b62d7a5f04bee33ab459d0f4de545db1531194f33febcf24ad08400c04"
+    },
+    {
+      "path": "test/twoYearAiContextV106996.test.mjs",
+      "bytes": 1686,
+      "sha256": "bdef6b5d19ef2d582993051ffff297c07a5c7b3945c801ce90d4ac0bda340bc8"
+    },
+    {
+      "path": "test/v106996Loader.test.mjs",
+      "bytes": 2743,
+      "sha256": "4b1088a35cd3d35f3d1286a4561c80a8aaa9422fa7bba7e112ecf200f0b0be30"
+    },
+    {
+      "path": "twoYearAiContextV106996.js",
+      "bytes": 14937,
+      "sha256": "32eef52263ba757a3428d0a55351630fefab181dad7c190c6e0066186ea38d53"
+    },
+    {
+      "path": "v106996Loader.mjs",
+      "bytes": 13747,
+      "sha256": "10723702e0e43bc4cf815b731fbeeffc6efed28f9e7473751540809b0c795d72"
+    },
+    {
+      "path": "v106996Register.mjs",
+      "bytes": 169,
+      "sha256": "abc39d29ea04b2f055dc2cc163814d76a815292c58a4e0d680cf6e5493aa8de2"
+    }
+  ]
+}
