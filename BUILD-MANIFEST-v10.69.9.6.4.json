@@ -1,0 +1,16 @@
+{
+  "version": "10.69.9.6.4",
+  "packageVersion": "10.69.9-6.4",
+  "runtimeTarget": "10.69.9.6.4-final",
+  "baseChain": "v10.69.9.3",
+  "targetMonths": 24,
+  "learningWindowDays": 730,
+  "sourceGameYears": ["25", "26"],
+  "realObservedDataOnly": true,
+  "noSyntheticBackfill": true,
+  "fixes": [
+    "brainWindow730 flexible declaration patch",
+    "performanceWindow730 flexible declaration patch",
+    "mlStartup initializeRuntime scoped injection"
+  ]
+}
