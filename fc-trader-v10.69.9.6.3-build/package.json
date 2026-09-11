@@ -1,0 +1,19 @@
+{
+  "name": "fc-trading-intelligence",
+  "version": "10.69.9-6.3",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "node ./v1069963Bootstrap.mjs",
+    "test": "node --test test/*.test.mjs uv/test/*.test.js"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "express": "^4.21.2",
+    "pg": "^8.13.1",
+    "@google/genai": "^1.0.0",
+    "discord.js": "^14.22.1"
+  }
+}
