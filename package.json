@@ -4,7 +4,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "start": "node ./v1069965LeakHotfixL6Bootstrap.mjs",
+    "start": "node ./v1069965LeakHotfixL7Bootstrap.mjs",
     "test": "node --test test/*.test.mjs uv/test/*.test.js"
   },
   "engines": { "node": ">=20" },
