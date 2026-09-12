@@ -1,9 +1,14 @@
-# v10.69.9.6.5 Leak Hotfix L2
+# Leak Hotfix L3
 
-Adds a third public-only fallback when direct X syndication and the existing public mirrors are unavailable or stale.
+Ändert die Leak-/Market-Knowledge-Messpunkte auf:
 
-The fallback reads Bing's public RSS search index to discover public `x.com/<handle>/status/<id>` URLs. Event time is derived from the public X snowflake status id, not from search crawl time. Only posts inside the existing max-age window are accepted.
+2m → 5m → 15m → 1h → 6h → 24h
 
-Existing L1 behavior remains: FutSheriff, FutPoliceLeaks, Criminal__x and Futdonk, plus FC27 prelaunch intake while GAME_YEAR is still 26.
+Die eigentliche Marktreaktionsmessung und das Knowledge-Learning verwenden beide diese Horizonte.
+Der Default für MARKET_KNOWLEDGE_MIN_SAMPLES wird von 12 auf 18 angehoben, damit die zwei
+zusätzlichen kurzen Horizonte nicht allein zu einer zu frühen Reife einer Wissensregel führen.
 
-This does not use login credentials, private channels, CAPTCHA bypass, or synthetic leak data.
+Upload in den GitHub-Hauptordner:
+- v1069965LeakHotfixL3Bootstrap.mjs
+- v1069965LeakHotfixL3Loader.mjs
+- package.json
