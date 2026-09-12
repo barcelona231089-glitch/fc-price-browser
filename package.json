@@ -1,10 +1,10 @@
 {
   "name": "fc-trading-intelligence",
-  "version": "10.69.9-6.4",
+  "version": "10.69.9-6.5",
   "private": true,
   "type": "module",
   "scripts": {
-    "start": "node ./v1069964Bootstrap.mjs",
+    "start": "node ./v1069965Bootstrap.mjs",
     "test": "node --test test/*.test.mjs uv/test/*.test.js"
   },
   "engines": {
