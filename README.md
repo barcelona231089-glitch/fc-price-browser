@@ -1,14 +1,30 @@
-# Leak Hotfix L3
+# Leak Hotfix L4 - Official X API
 
-Ändert die Leak-/Market-Knowledge-Messpunkte auf:
+Prioritaet:
+1. Official X API v2
+2. X public syndication
+3. Public mirrors / search fallback
+4. Telegram fallback
 
-2m → 5m → 15m → 1h → 6h → 24h
+Die vier vorhandenen Handles bleiben:
+FutSheriff, FutPoliceLeaks, Criminal__x, Futdonk.
 
-Die eigentliche Marktreaktionsmessung und das Knowledge-Learning verwenden beide diese Horizonte.
-Der Default für MARKET_KNOWLEDGE_MIN_SAMPLES wird von 12 auf 18 angehoben, damit die zwei
-zusätzlichen kurzen Horizonte nicht allein zu einer zu frühen Reife einer Wissensregel führen.
+Nach dem Upload in Hostless eine geheime Environment Variable setzen:
+
+X_BEARER_TOKEN=<dein X Developer Bearer Token>
+
+Den Token niemals ins Repo oder in Chat-Nachrichten schreiben.
 
 Upload in den GitHub-Hauptordner:
-- v1069965LeakHotfixL3Bootstrap.mjs
-- v1069965LeakHotfixL3Loader.mjs
+- v1069965LeakHotfixL4Bootstrap.mjs
+- v1069965LeakHotfixL4Loader.mjs
 - package.json
+
+Danach pruefen:
+https://fc-trader-brain.hostless.app/api/public-leaks/status
+
+Erwartet:
+xApi.configured = true
+und bei erfolgreicher API-Abfrage sourceStatus.x:<Handle>.provider = "Official X API v2"
+
+Ohne Token oder bei API-Fehlern bleibt die bestehende Leak-Pipeline automatisch aktiv.
