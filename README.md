@@ -1,22 +1,17 @@
-# FC Price Browser
+# FC Trader Brain v10.69.9.6.5 Leak Hotfix L1
 
-Minimal Render backend for testing whether a normal Chromium browser can load a public FUT.GG player page.
+Targeted pre-FC27 public leak intake patch layered on the existing 6.5 archive build.
 
-## Endpoints
+## Direct public sources
+- @FutSheriff
+- @FutPoliceLeaks
+- @Criminal__x
+- @Futdonk
 
-- `/` returns service status.
-- `/price?url=https://www.fut.gg/players/...` loads the supplied FUT.GG URL in headless Chromium and returns basic page information plus a short text preview.
+The existing Telegram preview/fallback sources and source-attribution logic are not removed.
 
-## Render
+## FC27 prelaunch behavior
+When the live runtime is still `GAME_YEAR=26`, posts that explicitly mention `FC27` are now accepted as relevant public leak input. This can be disabled with `PUBLIC_LEAK_ACCEPT_NEXT_GAME_YEAR=false`.
 
-This project includes `render.yaml`.
-
-Build command:
-`npm install && npx playwright install chromium`
-
-Start command:
-`npm start`
-
-## Important
-
-This first version is only a connectivity/page-load test. It does not bypass access controls or reproduce protected FUT.GG verification/signature mechanisms.
+## Safety
+No authentication bypass, private channels, paywalls, CAPTCHA bypass or aggressive retry behavior is added.
