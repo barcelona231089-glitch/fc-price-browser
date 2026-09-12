@@ -4,12 +4,10 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "start": "node ./v1069965LeakHotfixL5Bootstrap.mjs",
+    "start": "node ./v1069965LeakHotfixL6Bootstrap.mjs",
     "test": "node --test test/*.test.mjs uv/test/*.test.js"
   },
-  "engines": {
-    "node": ">=20"
-  },
+  "engines": { "node": ">=20" },
   "dependencies": {
     "express": "^4.21.2",
     "pg": "^8.13.1",
