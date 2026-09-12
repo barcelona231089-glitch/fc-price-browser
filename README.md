@@ -1,17 +1,9 @@
-# FC Trader Brain v10.69.9.6.5 Leak Hotfix L1
+# v10.69.9.6.5 Leak Hotfix L2
 
-Targeted pre-FC27 public leak intake patch layered on the existing 6.5 archive build.
+Adds a third public-only fallback when direct X syndication and the existing public mirrors are unavailable or stale.
 
-## Direct public sources
-- @FutSheriff
-- @FutPoliceLeaks
-- @Criminal__x
-- @Futdonk
+The fallback reads Bing's public RSS search index to discover public `x.com/<handle>/status/<id>` URLs. Event time is derived from the public X snowflake status id, not from search crawl time. Only posts inside the existing max-age window are accepted.
 
-The existing Telegram preview/fallback sources and source-attribution logic are not removed.
+Existing L1 behavior remains: FutSheriff, FutPoliceLeaks, Criminal__x and Futdonk, plus FC27 prelaunch intake while GAME_YEAR is still 26.
 
-## FC27 prelaunch behavior
-When the live runtime is still `GAME_YEAR=26`, posts that explicitly mention `FC27` are now accepted as relevant public leak input. This can be disabled with `PUBLIC_LEAK_ACCEPT_NEXT_GAME_YEAR=false`.
-
-## Safety
-No authentication bypass, private channels, paywalls, CAPTCHA bypass or aggressive retry behavior is added.
+This does not use login credentials, private channels, CAPTCHA bypass, or synthetic leak data.

@@ -1,0 +1,24 @@
+FC Trader Brain v10.69.9.6.5 - Leak Hotfix L2
+
+Upload/replace in the GitHub repository root:
+- v1069965LeakHotfixL2Bootstrap.mjs
+- v1069965LeakHotfixL2Loader.mjs
+- package.json
+
+Keep these existing files:
+- v1069965Bootstrap.mjs
+- v1069965Loader.mjs
+- v1069965LeakHotfixBootstrap.mjs
+- v1069965LeakHotfixLoader.mjs
+
+Hostless should redeploy automatically after the commit/upload.
+Then check:
+https://fc-trader-brain.hostless.app/api/public-leaks/status
+
+L2 transport order:
+1. X public syndication
+2. existing public X mirrors
+3. Bing public RSS search index fallback for x.com status URLs
+4. Telegram public fallback remains unchanged
+
+No login, no private channels, no CAPTCHA bypass, no X credential required.
