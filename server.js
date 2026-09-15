@@ -3625,6 +3625,83 @@ async function initDb() {
       updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     )
   `);
+
+  // FC27 season firewall: operational live state is physically separated by game year.
+  // Legacy fc_price_history remains untouched because Permanent ML reads it as FC26 school data.
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS fc_live_price_history_v2 (
+      game_year SMALLINT NOT NULL,
+      ea_id BIGINT NOT NULL,
+      price INTEGER NOT NULL,
+      recorded_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+  `);
+  await pool.query(`
+    CREATE INDEX IF NOT EXISTS idx_fc_live_price_history_v2_year_ea_time
+    ON fc_live_price_history_v2 (game_year, ea_id, recorded_at DESC)
+  `);
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS fc_live_price_state_v2 (
+      game_year SMALLINT NOT NULL,
+      ea_id BIGINT NOT NULL,
+      price INTEGER NOT NULL,
+      recorded_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      PRIMARY KEY (game_year, ea_id)
+    )
+  `);
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS fc_positions_v2 (
+      game_year SMALLINT NOT NULL,
+      ea_id BIGINT NOT NULL,
+      buy_price INTEGER NOT NULL CHECK (buy_price > 0),
+      quantity INTEGER NOT NULL DEFAULT 1 CHECK (quantity > 0),
+      note TEXT,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      PRIMARY KEY (game_year, ea_id)
+    )
+  `);
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS fc_brain_state_v2 (
+      game_year SMALLINT NOT NULL,
+      ea_id BIGINT NOT NULL,
+      last_action VARCHAR(50) NOT NULL,
+      last_price INTEGER,
+      last_confidence SMALLINT,
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      PRIMARY KEY (game_year, ea_id)
+    )
+  `);
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS fc_intensive_watchlist_v2 (
+      game_year SMALLINT NOT NULL,
+      ea_id BIGINT NOT NULL,
+      player_name VARCHAR(180),
+      start_price INTEGER NOT NULL CHECK (start_price > 0),
+      requested_by VARCHAR(80),
+      last_action VARCHAR(50),
+      last_price INTEGER,
+      last_confidence SMALLINT,
+      last_alert_price INTEGER,
+      last_alert_at TIMESTAMPTZ,
+      started_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      PRIMARY KEY (game_year, ea_id)
+    )
+  `);
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS fc_discord_alert_state_v2 (
+      game_year SMALLINT NOT NULL,
+      alert_key VARCHAR(180) NOT NULL,
+      alert_type VARCHAR(50) NOT NULL,
+      last_action VARCHAR(100) NOT NULL,
+      last_price INTEGER,
+      last_confidence SMALLINT,
+      last_fingerprint VARCHAR(250),
+      last_sent_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      PRIMARY KEY (game_year, alert_key)
+    )
+  `);
 }
 
 function recordMemory(rows, at) {
@@ -3656,10 +3733,11 @@ async function recordDb(rows, at) {
   const previous = await pool.query(
     `
       SELECT ea_id::text AS ea_id, price
-      FROM fc_price_state
-      WHERE ea_id = ANY($1::bigint[])
+      FROM fc_live_price_state_v2
+      WHERE game_year = $1::smallint
+        AND ea_id = ANY($2::bigint[])
     `,
-    [ids]
+    [GAME_YEAR_NUMBER, ids]
   );
 
   const old = new Map(
@@ -3687,15 +3765,16 @@ async function recordDb(rows, at) {
     if (changedIds.length) {
       await client.query(
         `
-          INSERT INTO fc_price_history (ea_id, price, recorded_at)
-          SELECT *
+          INSERT INTO fc_live_price_history_v2 (game_year, ea_id, price, recorded_at)
+          SELECT $1::smallint, x.ea_id, x.price, x.recorded_at
           FROM UNNEST(
-            $1::bigint[],
-            $2::int[],
-            $3::timestamptz[]
-          )
+            $2::bigint[],
+            $3::int[],
+            $4::timestamptz[]
+          ) AS x(ea_id, price, recorded_at)
         `,
         [
+          GAME_YEAR_NUMBER,
           changedIds,
           changedPrices,
           changedIds.map(() => new Date(at).toISOString())
@@ -3705,20 +3784,21 @@ async function recordDb(rows, at) {
 
     await client.query(
       `
-        INSERT INTO fc_price_state (ea_id, price, recorded_at)
-        SELECT *
+        INSERT INTO fc_live_price_state_v2 (game_year, ea_id, price, recorded_at)
+        SELECT $1::smallint, x.ea_id, x.price, x.recorded_at
         FROM UNNEST(
-          $1::bigint[],
-          $2::int[],
-          $3::timestamptz[]
-        )
-        ON CONFLICT (ea_id)
+          $2::bigint[],
+          $3::int[],
+          $4::timestamptz[]
+        ) AS x(ea_id, price, recorded_at)
+        ON CONFLICT (game_year, ea_id)
         DO UPDATE
         SET
           price = EXCLUDED.price,
           recorded_at = EXCLUDED.recorded_at
       `,
       [
+        GAME_YEAR_NUMBER,
         ids,
         prices,
         ids.map(() => new Date(at).toISOString())
@@ -3816,9 +3896,10 @@ async function loadStoredPricesForIds(ids) {
     try {
       const result = await pool.query(`
         SELECT ea_id::text AS ea_id, price, recorded_at
-        FROM fc_price_state
-        WHERE ea_id = ANY($1::bigint[])
-      `, [clean.map(String)]);
+        FROM fc_live_price_state_v2
+        WHERE game_year = $1::smallint
+          AND ea_id = ANY($2::bigint[])
+      `, [GAME_YEAR_NUMBER, clean.map(String)]);
 
       for (const row of result.rows) {
         const id = Number(row.ea_id);
@@ -4707,17 +4788,18 @@ async function resolveIntensiveWatchRow(eaId) {
           ps.recorded_at AS price_recorded_at,
           d.created_at AS decision_created_at
         FROM (SELECT $1::bigint AS ea_id) x
-        LEFT JOIN fc_price_state ps ON ps.ea_id = x.ea_id
+        LEFT JOIN fc_live_price_state_v2 ps ON ps.game_year = $2::smallint AND ps.ea_id = x.ea_id
         LEFT JOIN LATERAL (
           SELECT player_name, rating, card_type, initial_price, action, confidence, created_at
           FROM fc_trader_brain_decisions
           WHERE ea_id = x.ea_id
+            AND COALESCE(NULLIF(input_snapshot->>'gameYear',''), '26') = $3
           ORDER BY created_at DESC
           LIMIT 1
         ) d ON TRUE
         WHERE ps.price IS NOT NULL OR d.initial_price IS NOT NULL
         LIMIT 1
-      `, [key]);
+      `, [key, GAME_YEAR_NUMBER, GAME_YEAR]);
 
       const saved = result.rows[0];
       const price = Number(saved?.price);
@@ -5163,10 +5245,10 @@ async function getDiscordAlertState(alertKey) {
     const result = await pool.query(`
       SELECT alert_key, alert_type, last_action, last_price, last_confidence,
              last_fingerprint, last_sent_at
-      FROM fc_discord_alert_state
-      WHERE alert_key = $1
+      FROM fc_discord_alert_state_v2
+      WHERE game_year = $1::smallint AND alert_key = $2
       LIMIT 1
-    `, [alertKey]);
+    `, [GAME_YEAR_NUMBER, alertKey]);
 
     if (!result.rowCount) return null;
     const row = result.rows[0];
@@ -5197,11 +5279,11 @@ async function saveDiscordAlertState({ alertKey, alertType, action, price = null
 
   if (dbEnabled) {
     await pool.query(`
-      INSERT INTO fc_discord_alert_state (
-        alert_key, alert_type, last_action, last_price,
+      INSERT INTO fc_discord_alert_state_v2 (
+        game_year, alert_key, alert_type, last_action, last_price,
         last_confidence, last_fingerprint, last_sent_at
-      ) VALUES ($1,$2,$3,$4,$5,$6,NOW())
-      ON CONFLICT (alert_key)
+      ) VALUES ($1,$2,$3,$4,$5,$6,$7,NOW())
+      ON CONFLICT (game_year, alert_key)
       DO UPDATE SET
         alert_type = EXCLUDED.alert_type,
         last_action = EXCLUDED.last_action,
@@ -5210,6 +5292,7 @@ async function saveDiscordAlertState({ alertKey, alertType, action, price = null
         last_fingerprint = EXCLUDED.last_fingerprint,
         last_sent_at = NOW()
     `, [
+      GAME_YEAR_NUMBER,
       state.alertKey,
       state.alertType,
       state.lastAction,
@@ -6379,9 +6462,10 @@ async function loadBrainStates(rows) {
 
   const result = await pool.query(`
     SELECT ea_id::text AS ea_id, last_action, last_price, last_confidence, updated_at
-    FROM fc_brain_state
-    WHERE ea_id = ANY($1::bigint[])
-  `, [ids]);
+    FROM fc_brain_state_v2
+    WHERE game_year = $1::smallint
+      AND ea_id = ANY($2::bigint[])
+  `, [GAME_YEAR_NUMBER, ids]);
 
   return new Map(result.rows.map(state => [
     state.ea_id,
@@ -6417,22 +6501,23 @@ async function saveBrainStates(rows, excludedIds = new Set()) {
   }
 
   await pool.query(`
-    INSERT INTO fc_brain_state (ea_id, last_action, last_price, last_confidence, updated_at)
-    SELECT *
+    INSERT INTO fc_brain_state_v2 (game_year, ea_id, last_action, last_price, last_confidence, updated_at)
+    SELECT $1::smallint, x.ea_id, x.last_action, x.last_price, x.last_confidence, x.updated_at
     FROM UNNEST(
-      $1::bigint[],
-      $2::varchar[],
-      $3::int[],
-      $4::smallint[],
-      $5::timestamptz[]
-    )
-    ON CONFLICT (ea_id)
+      $2::bigint[],
+      $3::varchar[],
+      $4::int[],
+      $5::smallint[],
+      $6::timestamptz[]
+    ) AS x(ea_id, last_action, last_price, last_confidence, updated_at)
+    ON CONFLICT (game_year, ea_id)
     DO UPDATE SET
       last_action = EXCLUDED.last_action,
       last_price = EXCLUDED.last_price,
       last_confidence = EXCLUDED.last_confidence,
       updated_at = EXCLUDED.updated_at
   `, [
+    GAME_YEAR_NUMBER,
     clean.map(row => String(row.eaId)),
     clean.map(row => String(row.aiAction)),
     clean.map(row => Number.isFinite(row.price) ? Math.round(row.price) : null),
@@ -6976,12 +7061,14 @@ async function lookupDb(ids, threshold) {
       SELECT DISTINCT ON (ea_id)
         ea_id::text AS ea_id,
         price
-      FROM fc_price_history
-      WHERE ea_id = ANY($1::bigint[])
-        AND recorded_at <= $2
+      FROM fc_live_price_history_v2
+      WHERE game_year = $1::smallint
+        AND ea_id = ANY($2::bigint[])
+        AND recorded_at <= $3
       ORDER BY ea_id, recorded_at DESC
     `,
     [
+      GAME_YEAR_NUMBER,
       ids.map(String),
       new Date(threshold).toISOString()
     ]
@@ -7004,12 +7091,14 @@ async function rangeDb(ids, start) {
         ea_id::text AS ea_id,
         MIN(price)::int AS low,
         MAX(price)::int AS high
-      FROM fc_price_history
-      WHERE ea_id = ANY($1::bigint[])
-        AND recorded_at >= $2
+      FROM fc_live_price_history_v2
+      WHERE game_year = $1::smallint
+        AND ea_id = ANY($2::bigint[])
+        AND recorded_at >= $3
       GROUP BY ea_id
     `,
     [
+      GAME_YEAR_NUMBER,
       ids.map(String),
       new Date(start).toISOString()
     ]
@@ -7036,8 +7125,9 @@ async function getPositions() {
         note,
         created_at,
         updated_at
-      FROM fc_positions
-    `);
+      FROM fc_positions_v2
+      WHERE game_year = $1::smallint
+    `, [GAME_YEAR_NUMBER]);
 
     return new Map(
       result.rows.map(row => [
@@ -7065,15 +7155,16 @@ async function savePosition(eaId, buyPrice, quantity = 1, note = "") {
   if (dbEnabled) {
     await pool.query(
       `
-        INSERT INTO fc_positions (
+        INSERT INTO fc_positions_v2 (
+          game_year,
           ea_id,
           buy_price,
           quantity,
           note,
           updated_at
         )
-        VALUES ($1, $2, $3, $4, NOW())
-        ON CONFLICT (ea_id)
+        VALUES ($1, $2, $3, $4, $5, NOW())
+        ON CONFLICT (game_year, ea_id)
         DO UPDATE
         SET
           buy_price = EXCLUDED.buy_price,
@@ -7082,6 +7173,7 @@ async function savePosition(eaId, buyPrice, quantity = 1, note = "") {
           updated_at = NOW()
       `,
       [
+        GAME_YEAR_NUMBER,
         String(eaId),
         buyPrice,
         quantity,
@@ -7105,10 +7197,10 @@ async function deletePosition(eaId) {
   if (dbEnabled) {
     await pool.query(
       `
-        DELETE FROM fc_positions
-        WHERE ea_id = $1
+        DELETE FROM fc_positions_v2
+        WHERE game_year = $1::smallint AND ea_id = $2
       `,
-      [String(eaId)]
+      [GAME_YEAR_NUMBER, String(eaId)]
     );
 
     return;
@@ -7124,9 +7216,10 @@ async function getIntensiveWatchlist() {
         ea_id::text AS ea_id, player_name, start_price, requested_by,
         last_action, last_price, last_confidence, last_alert_price,
         last_alert_at, started_at, updated_at
-      FROM fc_intensive_watchlist
+      FROM fc_intensive_watchlist_v2
+      WHERE game_year = $1::smallint
       ORDER BY started_at DESC
-    `);
+    `, [GAME_YEAR_NUMBER]);
 
     return new Map(result.rows.map(row => [
       row.ea_id,
@@ -7158,17 +7251,18 @@ async function saveIntensiveWatch(row, requestedBy = null) {
 
   if (dbEnabled) {
     await pool.query(`
-      INSERT INTO fc_intensive_watchlist (
-        ea_id, player_name, start_price, requested_by,
+      INSERT INTO fc_intensive_watchlist_v2 (
+        game_year, ea_id, player_name, start_price, requested_by,
         last_action, last_price, last_confidence, last_alert_price, updated_at
       )
-      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,NOW())
-      ON CONFLICT (ea_id)
+      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,NOW())
+      ON CONFLICT (game_year, ea_id)
       DO UPDATE SET
         player_name = EXCLUDED.player_name,
-        requested_by = COALESCE(EXCLUDED.requested_by, fc_intensive_watchlist.requested_by),
+        requested_by = COALESCE(EXCLUDED.requested_by, fc_intensive_watchlist_v2.requested_by),
         updated_at = NOW()
     `, [
+      GAME_YEAR_NUMBER,
       eaId,
       String(row.name || `EA ${eaId}`).slice(0, 180),
       Math.round(price),
@@ -7202,7 +7296,7 @@ async function saveIntensiveWatch(row, requestedBy = null) {
 async function deleteIntensiveWatch(eaId) {
   const key = String(eaId);
   if (dbEnabled) {
-    await pool.query(`DELETE FROM fc_intensive_watchlist WHERE ea_id = $1`, [key]);
+    await pool.query(`DELETE FROM fc_intensive_watchlist_v2 WHERE game_year = $1::smallint AND ea_id = $2`, [GAME_YEAR_NUMBER, key]);
   } else {
     memoryIntensiveWatchlist.delete(key);
   }
@@ -7219,17 +7313,17 @@ async function updateIntensiveWatchState(row, watch, { alertSent = false } = {})
 
   if (dbEnabled) {
     await pool.query(`
-      UPDATE fc_intensive_watchlist
+      UPDATE fc_intensive_watchlist_v2
       SET
-        player_name = $2,
-        last_action = $3,
-        last_price = $4,
-        last_confidence = $5,
-        last_alert_price = CASE WHEN $6::boolean THEN $4 ELSE last_alert_price END,
-        last_alert_at = CASE WHEN $6::boolean THEN NOW() ELSE last_alert_at END,
+        player_name = $3,
+        last_action = $4,
+        last_price = $5,
+        last_confidence = $6,
+        last_alert_price = CASE WHEN $7::boolean THEN $5 ELSE last_alert_price END,
+        last_alert_at = CASE WHEN $7::boolean THEN NOW() ELSE last_alert_at END,
         updated_at = NOW()
-      WHERE ea_id = $1
-    `, [eaId, String(row.name || `EA ${eaId}`).slice(0, 180), row.aiAction || null, price, confidence, alertSent]);
+      WHERE game_year = $1::smallint AND ea_id = $2
+    `, [GAME_YEAR_NUMBER, eaId, String(row.name || `EA ${eaId}`).slice(0, 180), row.aiAction || null, price, confidence, alertSent]);
     return;
   }
 
@@ -10023,6 +10117,7 @@ async function loadDecisionPerformanceProfiles(force = false) {
       FROM fc_trader_brain_decisions d
       JOIN fc_decision_evaluations e ON e.decision_id = d.id
       WHERE d.created_at >= NOW() - ($1::int * INTERVAL '1 day')
+        AND COALESCE(NULLIF(d.input_snapshot->>'gameYear',''), '26') = $2
         AND e.was_correct IS NOT NULL
         AND (
           (d.action = 'NOCH WARTEN' AND e.price_after_30m IS NOT NULL)
@@ -10031,7 +10126,7 @@ async function loadDecisionPerformanceProfiles(force = false) {
         )
       ORDER BY d.created_at DESC
       LIMIT 5000
-    `, [PERFORMANCE_LAB_WINDOW_DAYS]);
+    `, [PERFORMANCE_LAB_WINDOW_DAYS, GAME_YEAR]);
 
     const exact = new Map();
     const fallback = new Map();
@@ -10210,7 +10305,8 @@ async function buildDecisionPerformanceScorecard(limit = 500) {
       e.evaluated_at
     FROM fc_trader_brain_decisions d
     JOIN fc_decision_evaluations e ON e.decision_id = d.id
-    WHERE e.was_correct IS NOT NULL
+    WHERE COALESCE(NULLIF(d.input_snapshot->>'gameYear',''), '26') = $2
+      AND e.was_correct IS NOT NULL
       AND (
         (d.action = 'NOCH WARTEN' AND e.price_after_30m IS NOT NULL)
         OR
@@ -10218,7 +10314,7 @@ async function buildDecisionPerformanceScorecard(limit = 500) {
       )
     ORDER BY d.created_at DESC
     LIMIT $1
-  `, [safeLimit]);
+  `, [safeLimit, GAME_YEAR]);
 
   const rows = result.rows.map(row => ({
     ...row,
@@ -11277,10 +11373,11 @@ async function saveDecisionIfNeeded(row, work, decision, forceGemini = false) {
     FROM fc_trader_brain_decisions
     WHERE ea_id = $1
       AND action = $2
+      AND COALESCE(NULLIF(input_snapshot->>'gameYear',''), '26') = $3
       AND created_at >= NOW() - INTERVAL '2 hours'
     ORDER BY created_at DESC
     LIMIT 1
-  `, [String(row.eaId), storageAction]);
+  `, [String(row.eaId), storageAction, GAME_YEAR]);
 
   if (recent.rowCount) {
     const oldModel = String(recent.rows[0].ai_model_used || "");
@@ -11452,12 +11549,13 @@ async function priceAtOrBefore(eaId, targetMs) {
 
   const result = await pool.query(`
     SELECT price
-    FROM fc_price_history
-    WHERE ea_id = $1
-      AND recorded_at <= $2
+    FROM fc_live_price_history_v2
+    WHERE game_year = $1::smallint
+      AND ea_id = $2
+      AND recorded_at <= $3
     ORDER BY recorded_at DESC
     LIMIT 1
-  `, [String(eaId), new Date(targetMs).toISOString()]);
+  `, [GAME_YEAR_NUMBER, String(eaId), new Date(targetMs).toISOString()]);
 
   return result.rowCount ? Number(result.rows[0].price) : null;
 }
@@ -11480,9 +11578,10 @@ async function evaluatePendingDecisions() {
     FROM fc_trader_brain_decisions d
     LEFT JOIN fc_decision_evaluations e ON e.decision_id = d.id
     WHERE d.created_at >= NOW() - INTERVAL '30 hours'
+      AND COALESCE(NULLIF(d.input_snapshot->>'gameYear',''), '26') = $1
     ORDER BY d.created_at DESC
     LIMIT 200
-  `);
+  `, [GAME_YEAR]);
 
   const now = Date.now();
 
@@ -13167,9 +13266,10 @@ app.get("/api/trader-brain/feedback/history", async (req, res) => {
         e.notes
       FROM fc_trader_brain_decisions d
       LEFT JOIN fc_decision_evaluations e ON e.decision_id = d.id
+      WHERE COALESCE(NULLIF(d.input_snapshot->>'gameYear',''), '26') = $1
       ORDER BY d.created_at DESC
       LIMIT 100
-    `);
+    `, [GAME_YEAR]);
 
     res.json({ ok: true, total: result.rowCount, history: result.rows });
   } catch (error) {
