@@ -55,6 +55,11 @@ test('Trade-Memory v11 is registered with FC-year separation and real-outcome pe
   assert.match(memoryLoader, /repeatedBadCardHistoryCanBlockOrDelayBuy: true/);
 });
 
+
+test('decision model label is bounded to PostgreSQL varchar(120) at the DB edge', () => {
+  assert.match(server, /String\(decision\.ai_model_used \|\| "Quantitative Core"\)\.slice\(0, 120\)/);
+  assert.match(server, /JSON\.stringify\(decision\)/);
+});
 test('npm test includes the Trader regression directory', () => {
   const pkg = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'));
   assert.match(pkg.scripts.test, /test\/\*\.test\.mjs/);
