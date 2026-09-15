@@ -1,6 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { writeFileSync, unlinkSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { patchServer as patchServerV1064 } from '../v1064Loader.mjs';
 import { patchRatingOnly } from '../v1065Loader.mjs';
@@ -83,12 +85,12 @@ console.log(\`FC Trading Intelligence v10.61 AI Direction Consensus + Sheriff Mu
   assert.match(patched, /m === \"KAUFZONE\"/);
   assert.match(patched, /m === \"VERKAUFSZONE\"/);
 
-  const path = '/tmp/v1065-patched-fixture.mjs';
-  writeFileSync(path, patched);
-  const check = spawnSync(process.execPath, ['--check', path], { encoding: 'utf8' });
+  const fixturePath = join(tmpdir(), 'v1065-patched-fixture.mjs');
+  writeFileSync(fixturePath, patched);
+  const check = spawnSync(process.execPath, ['--check', fixturePath], { encoding: 'utf8' });
   try {
     assert.equal(check.status, 0, check.stderr || check.stdout);
   } finally {
-    try { unlinkSync(path); } catch {}
+    try { unlinkSync(fixturePath); } catch {}
   }
 });
