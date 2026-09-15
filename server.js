@@ -3082,7 +3082,11 @@ function updateSourceHealthSuccess(cards, bulk, pricedRows) {
   let status = "HEALTHY";
   let reason = `FUT.GG liefert ${pricedCards}/${universeCards} bepreiste Karten (${coveragePct}%).`;
 
-  if (pricedCards < SOURCE_HEALTH_MIN_ROWS || coverage < SOURCE_HEALTH_MIN_COVERAGE) {
+  const effectiveMinRows = GAME_YEAR_NUMBER >= 27
+    ? Math.max(100, Math.min(SOURCE_HEALTH_MIN_ROWS, Math.ceil(universeCards * SOURCE_HEALTH_MIN_COVERAGE)))
+    : SOURCE_HEALTH_MIN_ROWS;
+
+  if (pricedCards < effectiveMinRows || coverage < SOURCE_HEALTH_MIN_COVERAGE) {
     status = "UNHEALTHY";
     reason = `Zu wenig verwertbare FUT.GG-Preisdaten: ${pricedCards}/${universeCards} Karten (${coveragePct}%).`;
   } else if (coverage < SOURCE_HEALTH_DEGRADED_COVERAGE) {
@@ -3119,7 +3123,8 @@ function updateSourceHealthSuccess(cards, bulk, pricedRows) {
     lastError: null,
     consecutiveFailures: 0,
     thresholds: {
-      minRows: SOURCE_HEALTH_MIN_ROWS,
+      minRows: effectiveMinRows,
+      configuredMinRows: SOURCE_HEALTH_MIN_ROWS,
       minCoveragePct: Number((SOURCE_HEALTH_MIN_COVERAGE * 100).toFixed(2)),
       degradedCoveragePct: Number((SOURCE_HEALTH_DEGRADED_COVERAGE * 100).toFixed(2))
     },
