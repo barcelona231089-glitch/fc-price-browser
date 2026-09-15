@@ -112,8 +112,8 @@ function brainLearningCardActionKey(eaId, action) {
       );
       b = requiredReplace(
         b,
-        "    `, [BRAIN_LEARNING_WINDOW_DAYS]);",
-        "    `, [BRAIN_LEARNING_WINDOW_DAYS, GAME_YEAR]);",
+        "      LIMIT $2\n    `, [BRAIN_LEARNING_WINDOW_DAYS, HISTORICAL_LEARNING_MAX_ROWS]);",
+        "      LIMIT $3\n    `, [BRAIN_LEARNING_WINDOW_DAYS, GAME_YEAR, HISTORICAL_LEARNING_MAX_ROWS]);",
         "memory query params"
       );
       b = requiredReplace(
@@ -298,3 +298,4 @@ export async function load(url, context, nextLoad) {
 }
 
 export const __test = { sourceText, patchServerTradeMemoryV1069968 };
+
