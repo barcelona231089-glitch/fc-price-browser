@@ -11310,7 +11310,7 @@ async function saveDecisionIfNeeded(row, work, decision, forceGemini = false) {
     decision.risk,
     decision.market_state,
     decision.eaTaxBreakEven || Math.ceil(row.price / 0.95),
-    decision.ai_model_used || "Quantitative Core",
+    String(decision.ai_model_used || "Quantitative Core").slice(0, 120),
     JSON.stringify(work.input),
     JSON.stringify(decision)
   ]);
