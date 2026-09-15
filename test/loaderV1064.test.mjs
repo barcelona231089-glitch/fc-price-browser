@@ -1,6 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { writeFileSync, unlinkSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { patchServer } from '../v1064Loader.mjs';
 
@@ -58,12 +60,12 @@ console.log(\`FC Trading Intelligence v10.61 AI Direction Consensus + Sheriff Mu
   assert.match(patched.source, /api\/market\/events/);
   assert.match(patched.source, /api\/market\/regimes/);
   assert.match(patched.source, /v10\.64 Parse provider disabled/);
-  const path = '/tmp/v1064-patched-fixture.mjs';
-  writeFileSync(path, patched.source);
-  const check = spawnSync(process.execPath, ['--check', path], { encoding: 'utf8' });
+  const fixturePath = join(tmpdir(), 'v1064-patched-fixture.mjs');
+  writeFileSync(fixturePath, patched.source);
+  const check = spawnSync(process.execPath, ['--check', fixturePath], { encoding: 'utf8' });
   try {
     assert.equal(check.status, 0, check.stderr || check.stdout);
   } finally {
-    try { unlinkSync(path); } catch {}
+    try { unlinkSync(fixturePath); } catch {}
   }
 });
