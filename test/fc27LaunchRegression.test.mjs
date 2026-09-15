@@ -64,3 +64,27 @@ test('npm test includes the Trader regression directory', () => {
   const pkg = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'));
   assert.match(pkg.scripts.test, /test\/\*\.test\.mjs/);
 });
+
+test('FC27 season firewall isolates operational live state from FC26 legacy state', () => {
+  for (const table of [
+    'fc_live_price_history_v2',
+    'fc_live_price_state_v2',
+    'fc_positions_v2',
+    'fc_brain_state_v2',
+    'fc_intensive_watchlist_v2',
+    'fc_discord_alert_state_v2'
+  ]) assert.match(server, new RegExp(table));
+
+  assert.doesNotMatch(server, /FROM fc_price_history\b/);
+  assert.doesNotMatch(server, /INSERT INTO fc_price_history\b/);
+  assert.doesNotMatch(server, /FROM fc_price_state\b/);
+  assert.doesNotMatch(server, /FROM fc_positions\b/);
+  assert.doesNotMatch(server, /FROM fc_brain_state\b/);
+  assert.doesNotMatch(server, /FROM fc_intensive_watchlist\b/);
+  assert.doesNotMatch(server, /FROM fc_discord_alert_state\b/);
+
+  assert.match(server, /COALESCE\(NULLIF\(d\.input_snapshot->>'gameYear',''\), '26'\) = \$2/);
+  assert.match(server, /COALESCE\(NULLIF\(input_snapshot->>'gameYear',''\), '26'\) = \$3/);
+  assert.match(server, /ON CONFLICT \(game_year, ea_id\)/);
+  assert.match(server, /ON CONFLICT \(game_year, alert_key\)/);
+});
