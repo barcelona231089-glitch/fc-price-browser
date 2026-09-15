@@ -52,8 +52,8 @@ function marketProfile() {
     lowRatingAlertMovePct: LOW_RATING_ALERT_MOVE_PCT,
     mode: GAME_YEAR_NUMBER >= 27 ? "FC27_PROFILE" : "FC26_PROFILE",
     note: GAME_YEAR_NUMBER >= 27
-      ? `Ratings ${MAIN_RATING_MIN}-${RATING_MAX} sind Hauptmarkt. ${RATING_MIN}-${MAIN_RATING_MIN - 1} bleiben vollständig überwacht, erzeugen aber nur bei ungewöhnlich starken Bewegungen ab ${LOW_RATING_ALERT_MOVE_PCT}% besondere Alerts.`
-      : `FC26-Profil: Ratings ${RATING_MIN}-${RATING_MAX} werden normal überwacht und bewertet.`
+      ? `Ratings ${MAIN_RATING_MIN}-${RATING_MAX} sind Hauptmarkt. ${RATING_MIN}-${MAIN_RATING_MIN - 1} bleiben vollstÃ¤ndig Ã¼berwacht, erzeugen aber nur bei ungewÃ¶hnlich starken Bewegungen ab ${LOW_RATING_ALERT_MOVE_PCT}% besondere Alerts.`
+      : `FC26-Profil: Ratings ${RATING_MIN}-${RATING_MAX} werden normal Ã¼berwacht und bewertet.`
   };
 }
 
@@ -219,7 +219,7 @@ let latestFutbinParseStatus = {
   usable: Boolean(FUTBIN_PARSE_API_KEY),
   provider: "Parse FUTBIN API",
   reason: FUTBIN_PARSE_API_KEY
-    ? "Öffentliche FUTBIN-API ist konfiguriert und wartet auf einen relevanten Karten-Cross-Check."
+    ? "Ã–ffentliche FUTBIN-API ist konfiguriert und wartet auf einen relevanten Karten-Cross-Check."
     : "FUTBIN_PARSE_API_KEY ist nicht gesetzt.",
   callsToday: 0,
   dailyBudget: FUTBIN_PARSE_DAILY_BUDGET,
@@ -260,7 +260,7 @@ const BRAIN_LEARNING_CARDTYPE_MIN_EFFECTIVE = 5;
 const BRAIN_LEARNING_ACTION_MIN_EFFECTIVE = 8;
 
 // v10.47 Decision Performance Lab
-// Ziel: nicht nur Signale erzeugen, sondern jede eigenständige Entscheidung
+// Ziel: nicht nur Signale erzeugen, sondern jede eigenstÃ¤ndige Entscheidung
 // messbar machen und Confidence nur dann hoch lassen, wenn echte Outcomes sie tragen.
 const PERFORMANCE_LAB_WINDOW_DAYS = Math.max(30, Number(process.env.PERFORMANCE_LAB_WINDOW_DAYS || 90));
 const PERFORMANCE_LAB_REFRESH_MS = Math.max(5, Number(process.env.PERFORMANCE_LAB_REFRESH_MIN || 10)) * 60_000;
@@ -435,10 +435,10 @@ for (const source of CURATED_TRADER_SOURCES) {
 
 const TRADER_MARKET_IMPACT_HORIZONS = [15, 60, 360, 1440];
 
-// v10.46: Strict Rating Feed. Normale automatische Spieler-Alerts aller Kartentypen bleiben stumm; öffentliche Alerts laufen über Ratings. Einzelspieler nur bei eigener Position oder expliziter Intensiv-Watch.
-// Keeps v10.38 Market Knowledge Learning and all previous features. Öffentliche Trading-Grundsätze werden
+// v10.46: Strict Rating Feed. Normale automatische Spieler-Alerts aller Kartentypen bleiben stumm; Ã¶ffentliche Alerts laufen Ã¼ber Ratings. Einzelspieler nur bei eigener Position oder expliziter Intensiv-Watch.
+// Keeps v10.38 Market Knowledge Learning and all previous features. Ã–ffentliche Trading-GrundsÃ¤tze werden
 // nicht als Wahrheit behandelt. Lernbare Regeln starten als Hypothesen und
-// dürfen erst nach genügend echten FC26-Beobachtungen die Entscheidung leicht
+// dÃ¼rfen erst nach genÃ¼gend echten FC26-Beobachtungen die Entscheidung leicht
 // beeinflussen. Keine Wissensregel darf alleine ein JETZT KAUFEN erzeugen.
 const MARKET_KNOWLEDGE_HORIZONS = [15, 60, 360, 1440];
 const MARKET_KNOWLEDGE_MIN_SAMPLES = Math.max(6, Math.min(50, Number(process.env.MARKET_KNOWLEDGE_MIN_SAMPLES || 12)));
@@ -456,7 +456,7 @@ const MARKET_KNOWLEDGE_RULES = [
     minMovePct: 0.75,
     scope: "FODDER",
     directInfluence: true,
-    hypothesis: "Attraktive SBCs können die tatsächlich benötigten Fodder-Ratings durch zusätzliche Nachfrage anheben."
+    hypothesis: "Attraktive SBCs kÃ¶nnen die tatsÃ¤chlich benÃ¶tigten Fodder-Ratings durch zusÃ¤tzliche Nachfrage anheben."
   },
   {
     id: "pack_supply_pressure",
@@ -467,7 +467,7 @@ const MARKET_KNOWLEDGE_RULES = [
     minMovePct: 0.75,
     scope: "MARKET",
     directInfluence: true,
-    hypothesis: "Viele gleichzeitig geöffnete Packs oder Rewards können kurzfristig zusätzlichen Supply und Preisdruck erzeugen."
+    hypothesis: "Viele gleichzeitig geÃ¶ffnete Packs oder Rewards kÃ¶nnen kurzfristig zusÃ¤tzlichen Supply und Preisdruck erzeugen."
   },
   {
     id: "fodder_expiry_cooldown",
@@ -478,7 +478,7 @@ const MARKET_KNOWLEDGE_RULES = [
     minMovePct: 0.65,
     scope: "FODDER",
     directInfluence: true,
-    hypothesis: "Wenn relevante SBC-Nachfrage ausläuft, kann die betroffene Fodder-Nachfrage kurzfristig nachlassen."
+    hypothesis: "Wenn relevante SBC-Nachfrage auslÃ¤uft, kann die betroffene Fodder-Nachfrage kurzfristig nachlassen."
   },
   {
     id: "out_of_packs_scarcity",
@@ -489,7 +489,7 @@ const MARKET_KNOWLEDGE_RULES = [
     minMovePct: 1.25,
     scope: "TARGET",
     directInfluence: true,
-    hypothesis: "Sinkender zukünftiger Supply kann eine konkrete Karte stützen, sofern echte Nachfrage bestehen bleibt."
+    hypothesis: "Sinkender zukÃ¼nftiger Supply kann eine konkrete Karte stÃ¼tzen, sofern echte Nachfrage bestehen bleibt."
   },
   {
     id: "leak_market_reaction",
@@ -500,7 +500,7 @@ const MARKET_KNOWLEDGE_RULES = [
     minMovePct: 1.0,
     scope: "MARKET",
     directInfluence: false,
-    hypothesis: "Leaks können Erwartungen bereits vor dem eigentlichen Content in den Markt einpreisen. Die Richtung ist nicht vorgegeben."
+    hypothesis: "Leaks kÃ¶nnen Erwartungen bereits vor dem eigentlichen Content in den Markt einpreisen. Die Richtung ist nicht vorgegeben."
   },
   {
     id: "promo_price_discovery",
@@ -511,11 +511,11 @@ const MARKET_KNOWLEDGE_RULES = [
     minMovePct: 1.25,
     scope: "MARKET",
     directInfluence: false,
-    hypothesis: "Neue Promo-/Pack-Phasen können zunächst erhöhte Preisfindungs-Volatilität erzeugen."
+    hypothesis: "Neue Promo-/Pack-Phasen kÃ¶nnen zunÃ¤chst erhÃ¶hte Preisfindungs-VolatilitÃ¤t erzeugen."
   },
   {
     id: "panic_sell_requires_bottom",
-    name: "Panic Sell braucht Bodenbestätigung",
+    name: "Panic Sell braucht BodenbestÃ¤tigung",
     kind: "POLICY",
     expected: "WAIT_FOR_STABILIZATION",
     preferredHorizonMinutes: null,
@@ -523,7 +523,7 @@ const MARKET_KNOWLEDGE_RULES = [
     scope: "MARKET",
     directInfluence: true,
     implementation: "v10.37 Strict Buy Guard",
-    hypothesis: "Ein starker Preissturz ist allein kein Kaufsignal. Erst Boden und Recovery bestätigen."
+    hypothesis: "Ein starker Preissturz ist allein kein Kaufsignal. Erst Boden und Recovery bestÃ¤tigen."
   },
   {
     id: "leak_never_buys_alone",
@@ -539,14 +539,14 @@ const MARKET_KNOWLEDGE_RULES = [
   },
   {
     id: "complementary_goods",
-    name: "Komplementäre Karten / Chemistry",
+    name: "KomplementÃ¤re Karten / Chemistry",
     kind: "SHADOW",
     expected: "MIXED",
     preferredHorizonMinutes: 360,
     minMovePct: 1.0,
     scope: "LINKED_CARDS",
     directInfluence: false,
-    hypothesis: "Neue SBC-/Promo-Karten können passende Links stützen und ähnliche Ersatzkarten gleichzeitig unter Druck setzen.",
+    hypothesis: "Neue SBC-/Promo-Karten kÃ¶nnen passende Links stÃ¼tzen und Ã¤hnliche Ersatzkarten gleichzeitig unter Druck setzen.",
     limitation: "Noch kein belastbarer Chemistry-/Substitutionsgraph vorhanden. Daher nur als Wissensregel dokumentiert."
   },
   {
@@ -575,7 +575,7 @@ const DISCORD_NAMED_TRADE_OFFERS = false;
 const DISCORD_MAX_TRADE_OFFERS_PER_CYCLE = Math.max(1, Math.min(5, Number(process.env.DISCORD_MAX_TRADE_OFFERS_PER_CYCLE || 3)));
 const DISCORD_MIN_TRADE_OFFER_ROI_PCT = Math.max(0.5, Math.min(15, Number(process.env.DISCORD_MIN_TRADE_OFFER_ROI_PCT || 1.5)));
 const DISCORD_MIN_TRADE_OFFER_NET_PROFIT = Math.max(100, Math.min(20_000, Number(process.env.DISCORD_MIN_TRADE_OFFER_NET_PROFIT || 250)));
-// v10.44 Rating-first: normale Base-Karten werden im Discord nach Rating gebündelt; Namen nur per ausklappbarer Liste.
+// v10.44 Rating-first: normale Base-Karten werden im Discord nach Rating gebÃ¼ndelt; Namen nur per ausklappbarer Liste.
 // Einzelne Base-Spielernamen erscheinen nicht als eigener Alarm. Nur bis zu drei
 // klar teurere Ausnahmen werden kompakt innerhalb des Rating-Alarms genannt.
 const DISCORD_RATING_FIRST_BASE_ALERTS = String(process.env.DISCORD_RATING_FIRST_BASE_ALERTS || "true").toLowerCase() !== "false";
@@ -767,8 +767,8 @@ const UV_SHARED_SAFE_SNAPSHOT_MAX_AGE_MS = 5 * 60_000;
 
 function getSharedMarketForUv(platform = "console", options = {}) {
   // Trader Brain tracks the console/PS5 FUT.GG bulk feed. Reuse that already-
-  // built snapshot for ÜV so the 512 MB host does not build a second full
-  // universe/cache in memory. PC keeps the ÜV module's own lightweight cache.
+  // built snapshot for ÃœV so the 512 MB host does not build a second full
+  // universe/cache in memory. PC keeps the ÃœV module's own lightweight cache.
   //
   // v2.3.5 snapshot-sync fix: during FUT.GG recovery quarantine the last fully
   // processed Trader snapshot may still be recent and safe enough to GENERATE
@@ -1190,7 +1190,7 @@ function publicTelegramPageMatchesGameYear(html) {
 
 function identifyPublicLeakSource(text, fallbackHandle) {
   const raw = String(text || "");
-  const sourceLine = raw.match(/\bsource\s*:\s*([^\n•|]{2,80})/i);
+  const sourceLine = raw.match(/\bsource\s*:\s*([^\nâ€¢|]{2,80})/i);
   if (sourceLine) {
     const candidate = compactWhitespace(sourceLine[1]).slice(0, 80);
     const known = PUBLIC_LEAK_KNOWN_SOURCES.find(item => item.pattern.test(candidate));
@@ -1209,11 +1209,11 @@ function classifyPublicLeakText(text) {
   const raw = String(text || "");
   const lower = raw.toLowerCase();
   const isSbc = /\bsbc\b|squad building|marquee matchup|icon sbc|hero sbc/i.test(raw);
-  const isEvo = /\bevo(?:lution)?s?\b|evolution|evolutions|evoluci[oó]n|evoluzione/i.test(raw);
+  const isEvo = /\bevo(?:lution)?s?\b|evolution|evolutions|evoluci[oÃ³]n|evoluzione/i.test(raw);
   const isSupply = /\bpacks?\b|rewards?|store pack|pack weight|supply|player pick|upgrade pack/i.test(raw);
   const isPromo = /\bpromo\b|toty|tots|futties|future stars|rttf|ultimate scream|winter wildcards|trailblazers?|fantasy fc|team of the week|totw/i.test(raw);
   const isObjective = /objectives?|tokens?|gauntlet/i.test(raw);
-  const hasLeakMarker = /\bleaks?\b|leaked|rumou?r|upcoming|coming tonight|tomorrow|tonight|#?لیک/i.test(raw);
+  const hasLeakMarker = /\bleaks?\b|leaked|rumou?r|upcoming|coming tonight|tomorrow|tonight|#?Ù„ÛŒÚ©/i.test(raw);
 
   let type = "LEAK";
   let category = "LEAKS_CONTENT";
@@ -1605,7 +1605,7 @@ function classifyCard(card) {
 function futggItemIdFromUrl(value) {
   const url = String(value || "");
   // FUT.GG card URLs end in /<gameYear>-<itemId>/ .
-  // Transferkarten können denselben Spieler haben, aber eine neue Item-ID.
+  // Transferkarten kÃ¶nnen denselben Spieler haben, aber eine neue Item-ID.
   const match = url.match(/\/\d{2}-(\d+)\/?(?:[?#].*)?$/);
   const itemId = match ? Number(match[1]) : NaN;
   return Number.isFinite(itemId) && itemId > 0 ? itemId : null;
@@ -1659,7 +1659,7 @@ async function collectAllCardsForRating(rating, force = false) {
 
         // WICHTIG: nicht nur nach Spieler-ID deduplizieren.
         // Nach Transfers kann derselbe Spieler zwei handelbare Rare-Items besitzen
-        // (z.B. alter Verein + neuer Verein). FUT.GG trennt sie über die Item-ID
+        // (z.B. alter Verein + neuer Verein). FUT.GG trennt sie Ã¼ber die Item-ID
         // im Karten-URL.
         const uniqueItemId =
           urlItemId ??
@@ -2312,9 +2312,9 @@ async function loadDirectFutggPlayerPrices(ids) {
   const map = new Map();
   if (!cleanIds.length) return map;
 
-  // FUT.GG eigener Preis-Endpunkt für konkrete Definition-/Item-IDs.
-  // Er ist für die ausklappbare Rating-Liste robuster als nur der große
-  // R2-Bulk-Snapshot, weil einzelne Karten dort zeitweise fehlen können.
+  // FUT.GG eigener Preis-Endpunkt fÃ¼r konkrete Definition-/Item-IDs.
+  // Er ist fÃ¼r die ausklappbare Rating-Liste robuster als nur der groÃŸe
+  // R2-Bulk-Snapshot, weil einzelne Karten dort zeitweise fehlen kÃ¶nnen.
   const chunks = [];
   for (let i = 0; i < cleanIds.length; i += 23) {
     chunks.push(cleanIds.slice(i, i + 23));
@@ -2492,7 +2492,7 @@ async function loadAuthorizedFutbinFeed(force = false) {
 
       const payload = await response.json();
       const map = normalizeAuthorizedFutbinFeed(payload);
-      if (!map.size) throw new Error("Authorized FUTBIN feed enthält keine eaId/price-Werte");
+      if (!map.size) throw new Error("Authorized FUTBIN feed enthÃ¤lt keine eaId/price-Werte");
 
       futbinFeedCache = {
         savedAt: Date.now(),
@@ -2680,7 +2680,7 @@ function futbinParseCandidate(row) {
 
   if (row.tracked && confidence >= 75) return true;
   if (guardedStrongBuy) return true;
-  if (["JETZT KAUFEN", "VERKAUF PRÜFEN", "JETZT VERKAUFEN"].includes(row.aiAction) && confidence >= FUTBIN_PARSE_MIN_AI_CONFIDENCE) return true;
+  if (["JETZT KAUFEN", "VERKAUF PRÃœFEN", "JETZT VERKAUFEN"].includes(row.aiAction) && confidence >= FUTBIN_PARSE_MIN_AI_CONFIDENCE) return true;
   if (row.aiAction === "NOCH WARTEN" && confidence >= 90 && movement >= 10) return true;
   return false;
 }
@@ -2756,7 +2756,7 @@ async function fetchFutbinParseCrossCheck(row) {
       configured: true,
       usable: true,
       status: "READY",
-      reason: `FUTBIN-Cross-Check für ${row.name} erfolgreich.`,
+      reason: `FUTBIN-Cross-Check fÃ¼r ${row.name} erfolgreich.`,
       callsToday: futbinParseCallsToday,
       lastSuccessAt: new Date().toISOString(),
       lastError: null,
@@ -2769,7 +2769,7 @@ async function fetchFutbinParseCrossCheck(row) {
       configured: true,
       usable: true,
       status: "ERROR",
-      reason: "Öffentliche FUTBIN-API konnte den Kandidaten nicht sicher prüfen.",
+      reason: "Ã–ffentliche FUTBIN-API konnte den Kandidaten nicht sicher prÃ¼fen.",
       callsToday: futbinParseCallsToday,
       lastFailureAt: new Date().toISOString(),
       lastError: String(error?.message || error),
@@ -2816,7 +2816,7 @@ function applyFutbinParseCrossCheck(row, match, brainWork) {
 async function enrichImportantRowsWithFutbinParse(rows, brainWork) {
   if (!FUTBIN_PARSE_API_KEY || !Array.isArray(rows) || !rows.length) return 0;
   refreshFutbinParseDailyBudget();
-  const priority = { "JETZT VERKAUFEN": 110, "JETZT KAUFEN": 100, "VERKAUF PRÜFEN": 95, "NOCH WARTEN": 80, "NICHT KAUFEN": 50, "BEOBACHTEN": 20, "HALTEN": 10 };
+  const priority = { "JETZT VERKAUFEN": 110, "JETZT KAUFEN": 100, "VERKAUF PRÃœFEN": 95, "NOCH WARTEN": 80, "NICHT KAUFEN": 50, "BEOBACHTEN": 20, "HALTEN": 10 };
   const candidates = rows
     .filter(futbinParseCandidate)
     .sort((a, b) => {
@@ -2835,7 +2835,7 @@ async function enrichImportantRowsWithFutbinParse(rows, brainWork) {
   const now = Date.now();
   const uncached = [];
 
-  // Bereits geprüfte Karten sofort wieder anreichern, ohne neue API-Credits.
+  // Bereits geprÃ¼fte Karten sofort wieder anreichern, ohne neue API-Credits.
   for (const row of candidates) {
     const cached = futbinParseCardCache.get(String(row.eaId));
     if (cached && now - cached.savedAt < FUTBIN_PARSE_CARD_COOLDOWN_MS) {
@@ -2845,7 +2845,7 @@ async function enrichImportantRowsWithFutbinParse(rows, brainWork) {
     }
   }
 
-  // Pro Intervall höchstens einen neuen relevanten Kandidaten abfragen.
+  // Pro Intervall hÃ¶chstens einen neuen relevanten Kandidaten abfragen.
   for (const row of uncached) {
     const match = await fetchFutbinParseCrossCheck(row);
     if (!match) continue;
@@ -2925,7 +2925,7 @@ function updateFutbinCrossCheckHealth(rows) {
     status = "INSUFFICIENT_DATA";
     trusted = false;
     fallbackEligible = false;
-    reason = `Zu wenig gemeinsame Preise für einen belastbaren Cross-Check: ${comparedCards}/${FUTBIN_TRUST_MIN_MATCHES}.`;
+    reason = `Zu wenig gemeinsame Preise fÃ¼r einen belastbaren Cross-Check: ${comparedCards}/${FUTBIN_TRUST_MIN_MATCHES}.`;
   } else if (
     divergentShare > FUTBIN_MAX_DIVERGENT_SHARE ||
     outlierShare > FUTBIN_MAX_OUTLIER_SHARE
@@ -2933,7 +2933,7 @@ function updateFutbinCrossCheckHealth(rows) {
     status = "UNTRUSTED";
     trusted = false;
     fallbackEligible = false;
-    reason = `FUTBIN-Cross-Check unplausibel: ${(divergentShare * 100).toFixed(1)}% abweichend, ${(outlierShare * 100).toFixed(1)}% Ausreißer.`;
+    reason = `FUTBIN-Cross-Check unplausibel: ${(divergentShare * 100).toFixed(1)}% abweichend, ${(outlierShare * 100).toFixed(1)}% AusreiÃŸer.`;
   } else if (
     divergentShare > FUTBIN_MAX_DIVERGENT_SHARE * 0.5 ||
     outlierShare > FUTBIN_MAX_OUTLIER_SHARE * 0.5
@@ -2941,7 +2941,7 @@ function updateFutbinCrossCheckHealth(rows) {
     status = "DEGRADED";
     trusted = true;
     fallbackEligible = false;
-    reason = `FUTBIN-Cross-Check noch nutzbar, aber auffällig: ${(divergentShare * 100).toFixed(1)}% abweichend, ${(outlierShare * 100).toFixed(1)}% Ausreißer.`;
+    reason = `FUTBIN-Cross-Check noch nutzbar, aber auffÃ¤llig: ${(divergentShare * 100).toFixed(1)}% abweichend, ${(outlierShare * 100).toFixed(1)}% AusreiÃŸer.`;
   }
 
   const nowIso = new Date().toISOString();
@@ -3013,7 +3013,7 @@ function buildFutbinFallbackRows(safeRows, feed) {
       futbinCrossCheck: "FALLBACK",
       aiAction: "BEOBACHTEN",
       aiConfidence: 0,
-      aiReason: "FUTBIN-Fallback zeigt nur den aktuellen autorisierten Ersatzpreis. Brain, Historie, Lernen und Trading-Alerts bleiben bis zur stabilen FUT.GG-Rückkehr blockiert.",
+      aiReason: "FUTBIN-Fallback zeigt nur den aktuellen autorisierten Ersatzpreis. Brain, Historie, Lernen und Trading-Alerts bleiben bis zur stabilen FUT.GG-RÃ¼ckkehr blockiert.",
       aiModelUsed: "Fallback Display Only"
     };
 
@@ -3055,7 +3055,7 @@ function sourceHealthSnapshot() {
     snapshot.status = "RECOVERING";
     snapshot.healthy = false;
     snapshot.usable = false;
-    snapshot.reason = `FUT.GG antwortet wieder. Sicherheits-Quarantäne: ${sourceRecoveryHealthyCycles}/${SOURCE_RECOVERY_REQUIRED_CYCLES} aufeinanderfolgende gesunde Marktchecks bestätigt.`;
+    snapshot.reason = `FUT.GG antwortet wieder. Sicherheits-QuarantÃ¤ne: ${sourceRecoveryHealthyCycles}/${SOURCE_RECOVERY_REQUIRED_CYCLES} aufeinanderfolgende gesunde Marktchecks bestÃ¤tigt.`;
   }
 
   snapshot.tradingAllowed = snapshot.usable === true && !sourceRecoveryPending;
@@ -3063,8 +3063,18 @@ function sourceHealthSnapshot() {
 }
 
 function updateSourceHealthSuccess(cards, bulk, pricedRows) {
-  const universeCards = Array.isArray(cards) ? cards.length : 0;
-  const pricedCards = Array.isArray(pricedRows) ? pricedRows.length : 0;
+  const allCards = Array.isArray(cards) ? cards : [];
+  const allPricedRows = Array.isArray(pricedRows) ? pricedRows : [];
+  // FC27 launch: 75-81 are low-watch only and must not make the main market
+  // look unhealthy just because many low-rated cards are not priced yet.
+  const healthCards = GAME_YEAR_NUMBER >= 27
+    ? allCards.filter(card => Number(card?.overall) >= MAIN_RATING_MIN)
+    : allCards;
+  const healthPricedRows = GAME_YEAR_NUMBER >= 27
+    ? allPricedRows.filter(card => Number(card?.overall) >= MAIN_RATING_MIN)
+    : allPricedRows;
+  const universeCards = healthCards.length;
+  const pricedCards = healthPricedRows.length;
   const coverage = universeCards > 0 ? pricedCards / universeCards : 0;
   const coveragePct = Number((coverage * 100).toFixed(2));
   const bulkValues = Number(bulk?.totalValues || bulk?.map?.size || 0);
@@ -3084,14 +3094,13 @@ function updateSourceHealthSuccess(cards, bulk, pricedRows) {
     sourceRecoveryPending = true;
     sourceRecoveryHealthyCycles = 0;
   } else if (sourceRecoveryPending) {
-    if (status === "HEALTHY") {
-      sourceRecoveryHealthyCycles += 1;
-      if (sourceRecoveryHealthyCycles >= SOURCE_RECOVERY_REQUIRED_CYCLES) {
-        sourceRecoveryPending = false;
-        sourceRecoveryHealthyCycles = SOURCE_RECOVERY_REQUIRED_CYCLES;
-      }
-    } else {
-      sourceRecoveryHealthyCycles = 0;
+    // Any non-UNHEALTHY source is usable. Require the same consecutive-cycle
+    // quarantine for HEALTHY or DEGRADED recovery instead of deadlocking a
+    // sparse-but-real launch market until it reaches the full healthy threshold.
+    sourceRecoveryHealthyCycles += 1;
+    if (sourceRecoveryHealthyCycles >= SOURCE_RECOVERY_REQUIRED_CYCLES) {
+      sourceRecoveryPending = false;
+      sourceRecoveryHealthyCycles = SOURCE_RECOVERY_REQUIRED_CYCLES;
     }
   }
 
@@ -3165,7 +3174,7 @@ function processingHealthSnapshot() {
   } else if (!lastSuccessMs) {
     snapshot.reason = "Noch kein erfolgreicher kompletter Verarbeitungszyklus.";
   } else if (snapshot.healthy) {
-    snapshot.reason = "Marktdaten wurden erfolgreich verarbeitet, gespeichert und durch den Trader Brain geführt.";
+    snapshot.reason = "Marktdaten wurden erfolgreich verarbeitet, gespeichert und durch den Trader Brain gefÃ¼hrt.";
   } else {
     snapshot.reason = `Verarbeitungspipeline meldet ${snapshot.consecutiveFailures || 0} Fehler in Folge.`;
   }
@@ -3257,15 +3266,15 @@ async function notifySourceHealthTransition(snapshot, alertBudget = null) {
     await sendDiscordPayload({
       embeds: [{
         title: becameUnhealthy
-          ? "⚠️ FUT.GG Datenquelle nicht sicher"
-          : "✅ FUT.GG Datenquelle wieder stabil",
-        description: String(snapshot.reason || "Source-Health-Status geändert."),
+          ? "âš ï¸ FUT.GG Datenquelle nicht sicher"
+          : "âœ… FUT.GG Datenquelle wieder stabil",
+        description: String(snapshot.reason || "Source-Health-Status geÃ¤ndert."),
         fields: [
           { name: "Status", value: current, inline: true },
           { name: "Abdeckung", value: `${Number(snapshot.coveragePct || 0).toFixed(2)}%`, inline: true },
           { name: "Karten", value: `${snapshot.pricedCards || 0}/${snapshot.universeCards || 0}`, inline: true }
         ],
-        footer: { text: "FC Trader Brain • Source Health Guard" },
+        footer: { text: "FC Trader Brain â€¢ Source Health Guard" },
         timestamp: new Date().toISOString()
       }]
     });
@@ -3431,8 +3440,8 @@ async function initDb() {
   `);
 
   // v10.28: echte Signalzeit und Empfangszeit getrennt speichern.
-  // Das verhindert, dass verzögert weitergeleitete Trader-Calls so bewertet werden,
-  // als wären sie erst beim HTTP-/Discord-Eingang entstanden.
+  // Das verhindert, dass verzÃ¶gert weitergeleitete Trader-Calls so bewertet werden,
+  // als wÃ¤ren sie erst beim HTTP-/Discord-Eingang entstanden.
   await pool.query(`
     ALTER TABLE fc_discord_signals
       ADD COLUMN IF NOT EXISTS ingest_origin VARCHAR(30) DEFAULT 'legacy'
@@ -3574,7 +3583,7 @@ async function initDb() {
     )
   `);
 
-  // v10.9: letzter Brain-Zustand pro Karte für echte Signalwechsel-Alerts.
+  // v10.9: letzter Brain-Zustand pro Karte fÃ¼r echte Signalwechsel-Alerts.
   await pool.query(`
     CREATE TABLE IF NOT EXISTS fc_brain_state (
       ea_id BIGINT PRIMARY KEY,
@@ -3729,7 +3738,7 @@ function intensiveWatchAddComponents(row) {
     components: [{
       type: 2,
       style: 3,
-      label: "⭐ Intensiv überwachen",
+      label: "â­ Intensiv Ã¼berwachen",
       custom_id: `watch:add:${row.eaId}`
     }]
   }];
@@ -3742,7 +3751,7 @@ function intensiveWatchStopComponents(row) {
     components: [{
       type: 2,
       style: 4,
-      label: "🛑 Überwachung beenden",
+      label: "ðŸ›‘ Ãœberwachung beenden",
       custom_id: `watch:remove:${row.eaId}`
     }]
   }];
@@ -3758,7 +3767,7 @@ function ratingPlayerListOpenComponents(stat) {
     components: [{
       type: 2,
       style: 2,
-      label: "👥 Spieler anzeigen",
+      label: "ðŸ‘¥ Spieler anzeigen",
       custom_id: `rating:open:${rating}`
     }]
   }];
@@ -3832,8 +3841,8 @@ async function ratingPlayerListRows(rating) {
 
   // v10.51:
   // 1) zuerst ALLE passenden Karten als Metadaten sammeln,
-  // 2) Preise aus dem normalen Snapshot übernehmen,
-  // 3) fehlende Preise direkt über FUT.GG player-prices nachladen.
+  // 2) Preise aus dem normalen Snapshot Ã¼bernehmen,
+  // 3) fehlende Preise direkt Ã¼ber FUT.GG player-prices nachladen.
   // Dadurch verschwinden Karten wie Bellingham/Haaland/Hansen nicht mehr nur
   // deshalb aus der Liste, weil der Bulk-Snapshot gerade keine Zuordnung hatte.
   const candidates = new Map();
@@ -3900,7 +3909,7 @@ async function ratingPlayerListRows(rating) {
     console.error("Rating player metadata merge error:", error);
   }
 
-  // Bulk-Preis ergänzen, aber Karte NICHT verwerfen wenn dort nichts gefunden wird.
+  // Bulk-Preis ergÃ¤nzen, aber Karte NICHT verwerfen wenn dort nichts gefunden wird.
   if (bulk?.map) {
     for (const card of candidates.values()) {
       if (Number.isFinite(Number(card.price)) && Number(card.price) > 0) continue;
@@ -3924,7 +3933,7 @@ async function ratingPlayerListRows(rating) {
     }
   }
 
-  // Für ALLE Kandidaten IDs abfragen. So kann die direkte Antwort auch einen
+  // FÃ¼r ALLE Kandidaten IDs abfragen. So kann die direkte Antwort auch einen
   // stale/falschen Bulk-Wert korrigieren, nicht nur komplett fehlende Preise.
   const queryIds = [];
   for (const card of candidates.values()) {
@@ -4047,36 +4056,36 @@ async function buildRatingPlayerListPayload(rating, page = 0) {
         const duplicateName = rows.filter(item => String(item.name || "") === String(row.name || "")).length > 1;
         const name = duplicateName && row.club ? `${baseName} (${row.club})` : baseName;
         const label = row.url ? `[${name}](${row.url})` : name;
-        const watch = row.intensiveWatch ? " ⭐ **INTENSIV**" : "";
+        const watch = row.intensiveWatch ? " â­ **INTENSIV**" : "";
         const priceText = row.priceAvailable
           ? `${discordNumber(Number(row.price))} Coins`
           : "PR / kein aktueller BIN";
-        return `${start + index + 1}. ${label} • **${priceText}**${watch}`;
+        return `${start + index + 1}. ${label} â€¢ **${priceText}**${watch}`;
       }).join("\n").slice(0, 3900)
-    : "Aktuell sind keine Base-Rare-Spieler dieses Ratings mit gültigem FUT.GG-Preis verfügbar.";
+    : "Aktuell sind keine Base-Rare-Spieler dieses Ratings mit gÃ¼ltigem FUT.GG-Preis verfÃ¼gbar.";
 
   const components = [];
 
   // Discord String-Select: aus der Rating-Liste direkt einen konkreten Spieler
-  // für die intensive Überwachung auswählen, ohne Einzelspieler-Spam im Feed.
+  // fÃ¼r die intensive Ãœberwachung auswÃ¤hlen, ohne Einzelspieler-Spam im Feed.
   if (slice.length) {
     components.push({
       type: 1,
       components: [{
         type: 3,
         custom_id: `rating:watch:${rating}:${safePage}`,
-        placeholder: "⭐ Spieler intensiv überwachen",
+        placeholder: "â­ Spieler intensiv Ã¼berwachen",
         min_values: 1,
         max_values: 1,
         options: [
           {
-            label: `⭐ ALLE verfügbaren ${rating}er überwachen`.slice(0, 100),
+            label: `â­ ALLE verfÃ¼gbaren ${rating}er Ã¼berwachen`.slice(0, 100),
             value: "__ALL__",
             description: `${
               rows.filter(row => row.priceAvailable).length
             } mit Preis${
               rows.some(row => !row.priceAvailable)
-                ? ` • ${rows.filter(row => !row.priceAvailable).length} PR warten auf BIN`
+                ? ` â€¢ ${rows.filter(row => !row.priceAvailable).length} PR warten auf BIN`
                 : ""
             }`.slice(0, 100)
           },
@@ -4090,7 +4099,7 @@ async function buildRatingPlayerListPayload(rating, page = 0) {
               return {
                 label: label.slice(0, 100),
                 value: String(row.eaId),
-                description: `${discordNumber(Number(row.price))} Coins${row.intensiveWatch ? " • bereits intensiv" : ""}`.slice(0, 100)
+                description: `${discordNumber(Number(row.price))} Coins${row.intensiveWatch ? " â€¢ bereits intensiv" : ""}`.slice(0, 100)
               };
             })
         ]
@@ -4100,25 +4109,25 @@ async function buildRatingPlayerListPayload(rating, page = 0) {
 
   const nav = [];
   if (safePage > 0) {
-    nav.push({ type: 2, style: 2, label: "◀ Zurück", custom_id: `rating:page:${rating}:${safePage - 1}` });
+    nav.push({ type: 2, style: 2, label: "â—€ ZurÃ¼ck", custom_id: `rating:page:${rating}:${safePage - 1}` });
   }
   if (safePage < totalPages - 1) {
-    nav.push({ type: 2, style: 2, label: "Weiter ▶", custom_id: `rating:page:${rating}:${safePage + 1}` });
+    nav.push({ type: 2, style: 2, label: "Weiter â–¶", custom_id: `rating:page:${rating}:${safePage + 1}` });
   }
-  nav.push({ type: 2, style: 4, label: "✖ Schließen", custom_id: `rating:close:${rating}` });
+  nav.push({ type: 2, style: 4, label: "âœ– SchlieÃŸen", custom_id: `rating:close:${rating}` });
   components.push({ type: 1, components: nav.slice(0, 5) });
 
   return {
     embeds: [{
-      title: `👥 ${rating}ER Spieler-Liste`,
+      title: `ðŸ‘¥ ${rating}ER Spieler-Liste`,
       description,
       fields: [
         { name: "Rating-Preis", value: Number.isFinite(referencePrice) ? `${discordNumber(referencePrice)} Coins` : "-", inline: true },
         { name: "Spieler", value: String(rows.length), inline: true },
         { name: "Seite", value: `${safePage + 1}/${totalPages}`, inline: true },
-        { name: "Intensiv", value: "Einzelnen Spieler oder ⭐ ALLE verfügbaren auswählen. Karten mit PR/ohne BIN bleiben sichtbar und werden automatisch wieder preisfähig, sobald FUT.GG einen Preis liefert.", inline: false }
+        { name: "Intensiv", value: "Einzelnen Spieler oder â­ ALLE verfÃ¼gbaren auswÃ¤hlen. Karten mit PR/ohne BIN bleiben sichtbar und werden automatisch wieder preisfÃ¤hig, sobald FUT.GG einen Preis liefert.", inline: false }
       ],
-      footer: { text: `FC Trader Brain • nur für dich sichtbar • FC${GAME_YEAR}` },
+      footer: { text: `FC Trader Brain â€¢ nur fÃ¼r dich sichtbar â€¢ FC${GAME_YEAR}` },
       timestamp: new Date().toISOString()
     }],
     components
@@ -4233,7 +4242,7 @@ function collectDiscordText(message) {
     }
   }
 
-  // Discord Forwarded Messages / Message Snapshots, wenn vom Client unterstützt.
+  // Discord Forwarded Messages / Message Snapshots, wenn vom Client unterstÃ¼tzt.
   try {
     const snapshots = message?.messageSnapshots;
     const values = snapshots?.values ? Array.from(snapshots.values()) : [];
@@ -4253,7 +4262,7 @@ function collectDiscordText(message) {
       }
     }
   } catch {
-    // Snapshot-Unterstützung ist optional. Normale Nachrichten funktionieren weiterhin.
+    // Snapshot-UnterstÃ¼tzung ist optional. Normale Nachrichten funktionieren weiterhin.
   }
 
   return compactWhitespace(parts.join("\n"));
@@ -4264,7 +4273,7 @@ function detectTraderCall(text) {
 
   const waitPatterns = [
     /\bwait\b/, /\bwarten\b/, /\bnoch warten\b/, /\bavoid\b/,
-    /\bdon['’]?t buy\b/, /\bdo not buy\b/, /\bno buy\b/,
+    /\bdon['â€™]?t buy\b/, /\bdo not buy\b/, /\bno buy\b/,
     /\bnicht kaufen\b/, /\bhold off\b/, /\bstand by\b/
   ];
   if (waitPatterns.some(pattern => pattern.test(lower))) return "WARTEN";
@@ -4388,7 +4397,7 @@ function detectSignalTarget(text) {
   // Wenn nur der Nachname genannt wird, nur eindeutige Treffer akzeptieren.
   const surnameMatches = new Map();
   for (const card of candidates) {
-    const tokens = card.lower.split(/[^a-zà-ÿ0-9]+/i).filter(Boolean);
+    const tokens = card.lower.split(/[^a-zÃ -Ã¿0-9]+/i).filter(Boolean);
     const surname = tokens.at(-1);
     if (!surname || surname.length < 4 || !lower.match(new RegExp(`\\b${surname.replace(/[.*+?^${}()|[\\]\\]/g, "\\$&")}\\b`, "i"))) continue;
     if (!surnameMatches.has(surname)) surnameMatches.set(surname, []);
@@ -4485,8 +4494,8 @@ async function saveIncomingTraderSignal(signal) {
     return true;
   }
 
-  // Referenzpreis zur echten Signalzeit rekonstruieren. Für ganz neue Signale darf
-  // traderSignalReferencePriceAt() auf den aktuellen Marktpreis zurückfallen.
+  // Referenzpreis zur echten Signalzeit rekonstruieren. FÃ¼r ganz neue Signale darf
+  // traderSignalReferencePriceAt() auf den aktuellen Marktpreis zurÃ¼ckfallen.
   const initialReferencePrice = await traderSignalReferencePriceAt(
     signal,
     latestTradingRows,
@@ -4607,7 +4616,7 @@ async function resolveTraderSignalChannel() {
     }
   }
 
-  lastTraderSignalError = "#trader-signals wurde nicht gefunden oder ist für den Bot nicht sichtbar.";
+  lastTraderSignalError = "#trader-signals wurde nicht gefunden oder ist fÃ¼r den Bot nicht sichtbar.";
   return null;
 }
 
@@ -4627,7 +4636,7 @@ async function handleTraderSignalMessage(message) {
       traderSignalsIgnored++;
       lastTraderSignalError = parsed.reason;
       await message.reply({
-        content: `⚪ Signal nicht übernommen: ${parsed.reason}. Schreibe z. B. **"BUY Harry Kane, 89er Fodder steigt wegen SBC morgen"**.`,
+        content: `âšª Signal nicht Ã¼bernommen: ${parsed.reason}. Schreibe z. B. **"BUY Harry Kane, 89er Fodder steigt wegen SBC morgen"**.`,
         allowedMentions: { repliedUser: false, parse: [] }
       }).catch(() => {});
       return;
@@ -4650,10 +4659,10 @@ async function handleTraderSignalMessage(message) {
 
     await message.reply({
       content:
-        `📥 **${parsed.signal.signalKind === "MARKET_EVENT" ? "Markt-Event" : "Trader-Signal"} gespeichert** | ${parsed.signal.call} | ` +
+        `ðŸ“¥ **${parsed.signal.signalKind === "MARKET_EVENT" ? "Markt-Event" : "Trader-Signal"} gespeichert** | ${parsed.signal.call} | ` +
         `**${parsed.signal.playerOrRating}** | Quelle: **${parsed.signal.source}**` +
-        `${parsed.signal.sourceChannel ? ` • #${parsed.signal.sourceChannel}` : ""} | ` +
-        `Kategorie: ${parsed.signal.category}. Wird ab dem nächsten 60-Sekunden-Marktcheck gegen FUT.GG geprüft.`,
+        `${parsed.signal.sourceChannel ? ` â€¢ #${parsed.signal.sourceChannel}` : ""} | ` +
+        `Kategorie: ${parsed.signal.category}. Wird ab dem nÃ¤chsten 60-Sekunden-Marktcheck gegen FUT.GG geprÃ¼ft.`,
       allowedMentions: { repliedUser: false, parse: [] }
     }).catch(() => {});
   } catch (error) {
@@ -4753,7 +4762,7 @@ async function handleDiscordButtonInteraction(interaction) {
     } catch (error) {
       console.error("Discord rating list open error:", error);
       if (interaction.deferred || interaction.replied) {
-        await interaction.editReply({ content: `⚠️ Spieler-Liste konnte nicht geöffnet werden: ${String(error?.message || error).slice(0, 250)}`, embeds: [], components: [] }).catch(() => {});
+        await interaction.editReply({ content: `âš ï¸ Spieler-Liste konnte nicht geÃ¶ffnet werden: ${String(error?.message || error).slice(0, 250)}`, embeds: [], components: [] }).catch(() => {});
       }
     }
     return;
@@ -4787,7 +4796,7 @@ async function handleDiscordButtonInteraction(interaction) {
 
         if (!allRows.length) {
           await interaction.followUp({
-            content: `⚠️ Für ${rating}er sind gerade keine Base-Rare-Karten verfügbar.`,
+            content: `âš ï¸ FÃ¼r ${rating}er sind gerade keine Base-Rare-Karten verfÃ¼gbar.`,
             flags: 64
           }).catch(() => {});
           return;
@@ -4818,10 +4827,10 @@ async function handleDiscordButtonInteraction(interaction) {
 
         await interaction.followUp({
           content:
-            `⭐ **${rating}ER INTENSIV** • ${added} neu aktiviert` +
-            `${already ? ` • ${already} bereits aktiv` : ""}` +
-            `${prRows.length ? ` • ${prRows.length} PR/ohne BIN noch nicht startbar` : ""}` +
-            `${failed ? ` • ${failed} konnten nicht aktiviert werden` : ""}.`,
+            `â­ **${rating}ER INTENSIV** â€¢ ${added} neu aktiviert` +
+            `${already ? ` â€¢ ${already} bereits aktiv` : ""}` +
+            `${prRows.length ? ` â€¢ ${prRows.length} PR/ohne BIN noch nicht startbar` : ""}` +
+            `${failed ? ` â€¢ ${failed} konnten nicht aktiviert werden` : ""}.`,
           flags: 64
         }).catch(() => {});
         return;
@@ -4829,7 +4838,7 @@ async function handleDiscordButtonInteraction(interaction) {
 
       if (!/^\d+$/.test(eaId)) {
         await interaction.followUp({
-          content: "⚠️ Dieser Spieler konnte nicht eindeutig erkannt werden.",
+          content: "âš ï¸ Dieser Spieler konnte nicht eindeutig erkannt werden.",
           flags: 64
         }).catch(() => {});
         return;
@@ -4838,7 +4847,7 @@ async function handleDiscordButtonInteraction(interaction) {
       const resolved = await resolveIntensiveWatchRow(eaId);
       if (!resolved?.row) {
         await interaction.followUp({
-          content: "⚠️ Für diesen Spieler ist gerade kein gültiger Marktpreis verfügbar.",
+          content: "âš ï¸ FÃ¼r diesen Spieler ist gerade kein gÃ¼ltiger Marktpreis verfÃ¼gbar.",
           flags: 64
         }).catch(() => {});
         return;
@@ -4851,22 +4860,22 @@ async function handleDiscordButtonInteraction(interaction) {
         interaction.user?.id || null
       );
 
-      // Die private Rating-Liste direkt aktualisieren, damit ⭐ sofort sichtbar ist.
+      // Die private Rating-Liste direkt aktualisieren, damit â­ sofort sichtbar ist.
       await interaction.editReply(
         await buildRatingPlayerListPayload(rating, page)
       ).catch(() => {});
 
       await interaction.followUp({
         content: already
-          ? `⭐ **${resolved.row.name}** wird bereits intensiv überwacht.`
-          : `⭐ **${resolved.row.name}** wird jetzt intensiv überwacht. Referenzpreis: **${discordNumber(watch?.startPrice || resolved.row.price)} Coins**.`,
+          ? `â­ **${resolved.row.name}** wird bereits intensiv Ã¼berwacht.`
+          : `â­ **${resolved.row.name}** wird jetzt intensiv Ã¼berwacht. Referenzpreis: **${discordNumber(watch?.startPrice || resolved.row.price)} Coins**.`,
         flags: 64
       }).catch(() => {});
     } catch (error) {
       lastIntensiveWatchError = String(error);
       console.error("Discord rating-list intensive watch error:", error);
       await interaction.followUp({
-        content: `⚠️ Intensive Überwachung konnte nicht aktiviert werden: ${String(error?.message || error).slice(0, 250)}`,
+        content: `âš ï¸ Intensive Ãœberwachung konnte nicht aktiviert werden: ${String(error?.message || error).slice(0, 250)}`,
         flags: 64
       }).catch(() => {});
     }
@@ -4906,14 +4915,14 @@ async function handleDiscordButtonInteraction(interaction) {
           const deleted = await interaction.message.delete().then(() => true).catch(() => false);
           if (!deleted) await interaction.message.edit({ components: [] }).catch(() => {});
         } else {
-          // Auf dem ursprünglichen Markt-Alert den roten Stop-Button wieder in
-          // den grünen Start-Button zurücksetzen, statt den ganzen Alert zu löschen.
+          // Auf dem ursprÃ¼nglichen Markt-Alert den roten Stop-Button wieder in
+          // den grÃ¼nen Start-Button zurÃ¼cksetzen, statt den ganzen Alert zu lÃ¶schen.
           await interaction.message.edit({ components: intensiveWatchAddComponents({ eaId: Number(eaId) }) }).catch(() => {});
         }
       }
 
       await interaction.editReply({
-        content: `🛑 Intensive Überwachung für **EA ${eaId}** beendet.`
+        content: `ðŸ›‘ Intensive Ãœberwachung fÃ¼r **EA ${eaId}** beendet.`
       });
       return;
     }
@@ -4921,7 +4930,7 @@ async function handleDiscordButtonInteraction(interaction) {
     const resolved = await resolveIntensiveWatchRow(eaId);
     if (!resolved?.row) {
       await interaction.editReply({
-        content: "⚠️ Zu dieser Karte ist weder ein aktueller noch ein gespeicherter Marktpreis vorhanden. Beim nächsten Alert erneut versuchen."
+        content: "âš ï¸ Zu dieser Karte ist weder ein aktueller noch ein gespeicherter Marktpreis vorhanden. Beim nÃ¤chsten Alert erneut versuchen."
       });
       return;
     }
@@ -4931,25 +4940,25 @@ async function handleDiscordButtonInteraction(interaction) {
     const already = before.has(String(eaId));
     const watch = await saveIntensiveWatch(row, interaction.user?.id || null);
 
-    // Der gedrückte grüne Button muss sofort sichtbar in STOP wechseln.
+    // Der gedrÃ¼ckte grÃ¼ne Button muss sofort sichtbar in STOP wechseln.
     if (interaction.message) {
       await interaction.message.edit({ components: intensiveWatchStopComponents(row) }).catch(() => {});
     }
 
     const fallbackNote = resolved.source === "live"
       ? ""
-      : " Die Karte ist gerade nicht im aktuellen sicheren Snapshot; die Überwachung ist trotzdem vorgemerkt und greift automatisch wieder, sobald sie im Markt-Snapshot auftaucht.";
+      : " Die Karte ist gerade nicht im aktuellen sicheren Snapshot; die Ãœberwachung ist trotzdem vorgemerkt und greift automatisch wieder, sobald sie im Markt-Snapshot auftaucht.";
 
     await interaction.editReply({
       content: already
-        ? `⭐ **${row.name}** wird bereits intensiv überwacht.${fallbackNote}`
-        : `⭐ **${row.name}** wird jetzt intensiv überwacht. Referenzpreis: **${discordNumber(watch?.startPrice || row.price)} Coins**.${fallbackNote} Ab jetzt bekommst du engere Folge-Updates nur für diese aktivierte Karte.`
+        ? `â­ **${row.name}** wird bereits intensiv Ã¼berwacht.${fallbackNote}`
+        : `â­ **${row.name}** wird jetzt intensiv Ã¼berwacht. Referenzpreis: **${discordNumber(watch?.startPrice || row.price)} Coins**.${fallbackNote} Ab jetzt bekommst du engere Folge-Updates nur fÃ¼r diese aktivierte Karte.`
     });
   } catch (error) {
     lastIntensiveWatchError = String(error);
     console.error("Discord intensive watch interaction error:", error);
 
-    const errorText = `⚠️ Überwachung konnte nicht geändert werden: ${String(error?.message || error).slice(0, 300)}`;
+    const errorText = `âš ï¸ Ãœberwachung konnte nicht geÃ¤ndert werden: ${String(error?.message || error).slice(0, 300)}`;
     if (interaction.deferred || interaction.replied) {
       await interaction.editReply({ content: errorText }).catch(() => {});
     } else {
@@ -5018,7 +5027,7 @@ async function initDiscordBot() {
       lastDiscordError = null;
 
       console.log(
-        `Discord Gateway verbunden als ${discordBotTag} • Guilds: ${discordGuildCount}`
+        `Discord Gateway verbunden als ${discordBotTag} â€¢ Guilds: ${discordGuildCount}`
       );
 
       const channel = await resolveDiscordAlertChannel();
@@ -5093,14 +5102,14 @@ async function resolveDiscordAlertChannel() {
       }
     } catch (error) {
       console.warn(
-        `Discord Kanäle von Guild "${guild.name}" konnten nicht gelesen werden:`,
+        `Discord KanÃ¤le von Guild "${guild.name}" konnten nicht gelesen werden:`,
         error?.message || error
       );
     }
   }
 
   lastDiscordError =
-    "Discord Bot ist verbunden, aber #trading-alerts wurde nicht gefunden oder ist für den Bot nicht sichtbar.";
+    "Discord Bot ist verbunden, aber #trading-alerts wurde nicht gefunden oder ist fÃ¼r den Bot nicht sichtbar.";
   return null;
 }
 
@@ -5258,7 +5267,7 @@ function alertSanitySnapshot(row) {
   });
 
   const reasonText = String(row?.aiReason || '').toLowerCase();
-  const saysSelloff = /abverkauf|abwärtsdruck|crash|falling knife/.test(reasonText);
+  const saysSelloff = /abverkauf|abwÃ¤rtsdruck|crash|falling knife/.test(reasonText);
   const saysPump = /pump|fomo|stark steig/.test(reasonText);
   const pumpVsCrash = Boolean(
     (derivedRegime === 'PUMP' && (row?.aiAction === 'NOCH WARTEN' || saysSelloff)) ||
@@ -5280,8 +5289,8 @@ function alertSanitySnapshot(row) {
 
   const reasons = [];
   if (opposingHorizons) reasons.push(`Kurzfristige Horizonte widersprechen sich (${c1.toFixed(2)}% / ${c5.toFixed(2)}% / ${c15.toFixed(2)}%).`);
-  if (pumpVsCrash) reasons.push(`Marktregime ${derivedRegime} widerspricht der aktuellen Richtungsbegründung.`);
-  if (ratingSpikeSuspect) reasons.push(`Preis liegt auffällig weit vom ${row?.overall}er-Ratingmedian entfernt und die kurzen Horizonte sind instabil.`);
+  if (pumpVsCrash) reasons.push(`Marktregime ${derivedRegime} widerspricht der aktuellen RichtungsbegrÃ¼ndung.`);
+  if (ratingSpikeSuspect) reasons.push(`Preis liegt auffÃ¤llig weit vom ${row?.overall}er-Ratingmedian entfernt und die kurzen Horizonte sind instabil.`);
 
   return {
     blocked: reasons.length > 0,
@@ -5305,14 +5314,14 @@ function applyAlertSanityGuard(row) {
   if (!sanity.blocked) return row;
 
   // Directional high-confidence states are unsafe while the horizons disagree.
-  if (['JETZT KAUFEN', 'NOCH WARTEN', 'VERKAUF PRÜFEN', 'JETZT VERKAUFEN'].includes(String(row.aiAction || ''))) {
+  if (['JETZT KAUFEN', 'NOCH WARTEN', 'VERKAUF PRÃœFEN', 'JETZT VERKAUFEN'].includes(String(row.aiAction || ''))) {
     row.aiAlertSanity.originalAction = row.aiAction;
     row.aiAlertSanity.originalConfidence = row.aiConfidence;
     row.aiAction = 'BEOBACHTEN';
     row.aiConfidence = Math.min(Number(row.aiConfidence || 60), 60);
     row.aiRisk = 'mittel';
-    row.aiMarketState = 'DATEN PRÜFEN';
-    row.aiRecommendedHorizon = 'Nächsten sauberen 60-Sekunden-Zyklus abwarten';
+    row.aiMarketState = 'DATEN PRÃœFEN';
+    row.aiRecommendedHorizon = 'NÃ¤chsten sauberen 60-Sekunden-Zyklus abwarten';
     row.aiReason = `v10.42 Alert-Sanity: ${sanity.reasons.join(' ')} Kein Richtungs-Call, bis die Daten wieder konsistent sind.`.slice(0, 1800);
   }
 
@@ -5354,7 +5363,7 @@ function markDiscordLivePriceRecheck(row, freshPrice) {
 
   if (Math.abs(diffPct) < ALERT_SANITY_RECHECK_DIFF_PCT) return false;
 
-  const extra = `Live-FUT.GG-Recheck: Analysepreis ${discordNumber(analyzedPrice)} → aktuell ${discordNumber(latestPrice)} Coins (${discordPct(diffPct)}).`;
+  const extra = `Live-FUT.GG-Recheck: Analysepreis ${discordNumber(analyzedPrice)} â†’ aktuell ${discordNumber(latestPrice)} Coins (${discordPct(diffPct)}).`;
   row.aiAlertSanity.blocked = true;
   row.aiAlertSanity.livePriceChanged = true;
   row.aiAlertSanity.reasons = [...(row.aiAlertSanity.reasons || []), extra];
@@ -5363,9 +5372,9 @@ function markDiscordLivePriceRecheck(row, freshPrice) {
   row.aiAction = 'BEOBACHTEN';
   row.aiConfidence = Math.min(Number(row.aiConfidence || 60), 60);
   row.aiRisk = 'mittel';
-  row.aiMarketState = 'DATEN PRÜFEN';
-  row.aiRecommendedHorizon = 'Preis im nächsten Marktzyklus erneut bestätigen';
-  row.aiReason = `v10.42 Alert-Sanity: ${extra} Richtungsalarm unterdrückt, weil der Preis sich seit der Analyse materiell geändert hat.`.slice(0, 1800);
+  row.aiMarketState = 'DATEN PRÃœFEN';
+  row.aiRecommendedHorizon = 'Preis im nÃ¤chsten Marktzyklus erneut bestÃ¤tigen';
+  row.aiReason = `v10.42 Alert-Sanity: ${extra} Richtungsalarm unterdrÃ¼ckt, weil der Preis sich seit der Analyse materiell geÃ¤ndert hat.`.slice(0, 1800);
   return true;
 }
 
@@ -5481,7 +5490,7 @@ function cardDiscordAlertCandidate(row) {
     return { type: "sell", priority: 130 + row.aiConfidence };
   }
 
-  if (row.aiAction === "VERKAUF PRÜFEN" && row.aiConfidence >= DISCORD_MIN_SELL_CONFIDENCE) {
+  if (row.aiAction === "VERKAUF PRÃœFEN" && row.aiConfidence >= DISCORD_MIN_SELL_CONFIDENCE) {
     return { type: "sell", priority: 110 + row.aiConfidence };
   }
 
@@ -5499,8 +5508,8 @@ function cardDiscordAlertCandidate(row) {
 }
 
 function buildCardDiscordPayload(row, type, offer = null) {
-  const emoji = type === "buy" ? "🟢" : type === "sell" ? "💰" : type === "data" ? "⚠️" : "🚨";
-  const titleAction = type === "buy" ? "TRADER-ANGEBOT" : type === "crash" ? "NOCH WARTEN" : type === "data" ? "DATEN PRÜFEN" : row.aiAction;
+  const emoji = type === "buy" ? "ðŸŸ¢" : type === "sell" ? "ðŸ’°" : type === "data" ? "âš ï¸" : "ðŸš¨";
+  const titleAction = type === "buy" ? "TRADER-ANGEBOT" : type === "crash" ? "NOCH WARTEN" : type === "data" ? "DATEN PRÃœFEN" : row.aiAction;
   const title = `${emoji} ${titleAction}: ${row.name || `EA ${row.eaId}`} (${row.overall})`;
   const tradeOffer = type === "buy" ? (offer || buildNamedTradeOffer(row)) : null;
 
@@ -5524,17 +5533,17 @@ function buildCardDiscordPayload(row, type, offer = null) {
     { name: "1m / 5m / 15m", value: `${discordPct(row.change1m)} / ${discordPct(row.change5m)} / ${discordPct(row.change15m)}`, inline: false },
     { name: "24h Tief / Hoch", value: `${discordNumber(row.low24h)} / ${discordNumber(row.high24h)}`, inline: true },
     { name: "Rating-Markt", value: `${row.overall}er: ${String(row.ratingMarketTrend || "neutral").replaceAll("_", " ")}`, inline: true },
-    { name: "Combined Brain", value: `Player ${row.aiPlayerScore ?? "-"}/100 • Market ${row.aiMarketLogicScore ?? "-"}/100 • Combined ${row.aiCombinedScore ?? "-"}/100`, inline: false },
-    { name: "Market Logic", value: `${String(row.aiMarketPhase || "DATA_BUILDING").replaceAll("_", " ")} • These ${row.aiThesisConfirmed ?? 0}/${row.aiThesisTotal ?? 0} • Fortsetzung ${row.aiContinuationProbability ?? "-"}%`, inline: false },
-    { name: "Leak Intel", value: row.aiLeakIntel?.active ? `${row.aiLeakIntel.sourceCount || 0} Quelle(n) • ${(row.aiLeakIntel.topics || []).join(", ") || "GENERAL"} • Impact ${row.aiLeakIntel.impactScore ?? 0}/100 • Marktreaktion ${row.aiLeakIntel.marketReaction ? "JA" : "NEIN"}` : "Kein relevanter oeffentlicher Leak aktiv", inline: false },
-    { name: "Gesamtmarkt", value: `${String(row.globalMarketMood || "neutral").replaceAll("_", " ")} • ${row.packSupplyActive ? "Angebotsdruck erkannt" : "kein Angebotsdruck"}`, inline: false }
+    { name: "Combined Brain", value: `Player ${row.aiPlayerScore ?? "-"}/100 â€¢ Market ${row.aiMarketLogicScore ?? "-"}/100 â€¢ Combined ${row.aiCombinedScore ?? "-"}/100`, inline: false },
+    { name: "Market Logic", value: `${String(row.aiMarketPhase || "DATA_BUILDING").replaceAll("_", " ")} â€¢ These ${row.aiThesisConfirmed ?? 0}/${row.aiThesisTotal ?? 0} â€¢ Fortsetzung ${row.aiContinuationProbability ?? "-"}%`, inline: false },
+    { name: "Leak Intel", value: row.aiLeakIntel?.active ? `${row.aiLeakIntel.sourceCount || 0} Quelle(n) â€¢ ${(row.aiLeakIntel.topics || []).join(", ") || "GENERAL"} â€¢ Impact ${row.aiLeakIntel.impactScore ?? 0}/100 â€¢ Marktreaktion ${row.aiLeakIntel.marketReaction ? "JA" : "NEIN"}` : "Kein relevanter oeffentlicher Leak aktiv", inline: false },
+    { name: "Gesamtmarkt", value: `${String(row.globalMarketMood || "neutral").replaceAll("_", " ")} â€¢ ${row.packSupplyActive ? "Angebotsdruck erkannt" : "kein Angebotsdruck"}`, inline: false }
   );
 
   if (type === "sell" && row.tracked) {
     fields.push({
       name: "Deine Position",
       value:
-        `Kauf ${discordNumber(row.buyPrice)} × ${discordNumber(row.quantity || 1)} | ` +
+        `Kauf ${discordNumber(row.buyPrice)} Ã— ${discordNumber(row.quantity || 1)} | ` +
         `Netto ${discordNumber(row.netProfitTotal)} Coins | ${discordPct(row.profitPercent)}`,
       inline: false
     });
@@ -5543,14 +5552,14 @@ function buildCardDiscordPayload(row, type, offer = null) {
   if (Number.isFinite(row.futbinPrice)) {
     fields.push({
       name: "FUTBIN Cross-Check",
-      value: `${discordNumber(row.futbinPrice)} Coins • ${row.futbinCrossCheck} • ${discordPct(row.futbinDiffPct)}${row.futbinProvider ? ` • ${row.futbinProvider}` : ""}`,
+      value: `${discordNumber(row.futbinPrice)} Coins â€¢ ${row.futbinCrossCheck} â€¢ ${discordPct(row.futbinDiffPct)}${row.futbinProvider ? ` â€¢ ${row.futbinProvider}` : ""}`,
       inline: false
     });
   }
 
   fields.push({
     name: "KI-Grund",
-    value: String(row.aiReason || "Keine Begründung verfügbar.").slice(0, 1000),
+    value: String(row.aiReason || "Keine BegrÃ¼ndung verfÃ¼gbar.").slice(0, 1000),
     inline: false
   });
 
@@ -5564,10 +5573,10 @@ function buildCardDiscordPayload(row, type, offer = null) {
           : type === "sell"
           ? "Eigener Bestand erreicht eine relevante Gewinn-/Ausstiegszone."
           : type === "data"
-          ? "Kurzfristige Marktdaten oder der Live-Preis widersprechen sich. Kein Richtungs-Call, bis der nächste saubere Marktcheck bestätigt."
+          ? "Kurzfristige Marktdaten oder der Live-Preis widersprechen sich. Kein Richtungs-Call, bis der nÃ¤chste saubere Marktcheck bestÃ¤tigt."
           : "Starker Abverkauf erkannt. Nicht blind in den Fall kaufen.",
       fields,
-      footer: { text: "FC Trader Brain • 60-Sekunden-Analyse • manuelle Entscheidung" },
+      footer: { text: "FC Trader Brain â€¢ 60-Sekunden-Analyse â€¢ manuelle Entscheidung" },
       timestamp: new Date().toISOString()
     }],
     components: intensiveWatchAddComponents(row)
@@ -5695,8 +5704,8 @@ function lowRatingCardUnusualMove(row) {
 function ratingDiscordAlertCandidate(stat) {
   if (!stat) return false;
 
-  // FC27: 75-81 bleiben im Monitoring, aber normale Rating-Alarme werden unterdrückt.
-  // Nur wirklich ungewöhnliche Bewegungen dürfen als Low-Watch-Alarm aufs Handy.
+  // FC27: 75-81 bleiben im Monitoring, aber normale Rating-Alarme werden unterdrÃ¼ckt.
+  // Nur wirklich ungewÃ¶hnliche Bewegungen dÃ¼rfen als Low-Watch-Alarm aufs Handy.
   if (isLowWatchRating(stat.rating)) {
     return lowRatingUnusualMove(stat) && Number(stat.measuredCards || 0) >= 5;
   }
@@ -5710,45 +5719,45 @@ function buildRatingDiscordPayload(stat) {
   const unusualMove = ratingUnusualMoveValue(stat);
   const advice = String(stat.marketAdvice || "BEOBACHTEN");
 
-  let emoji = "📊";
-  if (lowWatch) emoji = "⚡";
-  else if (advice === "JETZT KAUFEN") emoji = "🟢";
-  else if (advice === "JETZT VERKAUFEN") emoji = "💰";
-  else if (advice.includes("WARTEN")) emoji = "⏳";
-  else if (advice.includes("NICHT")) emoji = "🚫";
-  else if (stat.marketSignal === "STARK STEIGEND") emoji = "🚀";
-  else if (stat.marketSignal === "STARK FALLEND") emoji = "🔻";
+  let emoji = "ðŸ“Š";
+  if (lowWatch) emoji = "âš¡";
+  else if (advice === "JETZT KAUFEN") emoji = "ðŸŸ¢";
+  else if (advice === "JETZT VERKAUFEN") emoji = "ðŸ’°";
+  else if (advice.includes("WARTEN")) emoji = "â³";
+  else if (advice.includes("NICHT")) emoji = "ðŸš«";
+  else if (stat.marketSignal === "STARK STEIGEND") emoji = "ðŸš€";
+  else if (stat.marketSignal === "STARK FALLEND") emoji = "ðŸ”»";
 
   const ratingPrice = Number(stat.ratingReferencePrice ?? stat.medianPrice);
   const priceText = Number.isFinite(ratingPrice) ? `${discordNumber(ratingPrice)} Coins` : "-";
   const actionTitle = lowWatch
-    ? `${emoji} ${stat.rating}ER • ${priceText} • ${discordPct(unusualMove)}`
-    : `${emoji} ${stat.rating}ER • ${priceText} • ${advice}`;
+    ? `${emoji} ${stat.rating}ER â€¢ ${priceText} â€¢ ${discordPct(unusualMove)}`
+    : `${emoji} ${stat.rating}ER â€¢ ${priceText} â€¢ ${advice}`;
 
   return {
     embeds: [{
       title: actionTitle,
       description: lowWatch
-        ? `FC${GAME_YEAR} Low-Rating-Watch: ungewöhnlich starke Bewegung erkannt. Normale Bewegungen unter ${MAIN_RATING_MIN} werden nicht alarmiert.`
+        ? `FC${GAME_YEAR} Low-Rating-Watch: ungewÃ¶hnlich starke Bewegung erkannt. Normale Bewegungen unter ${MAIN_RATING_MIN} werden nicht alarmiert.`
         : String(stat.reason || "Rating-Markt-Signal erkannt."),
       fields: [
         { name: "Klare Aktion", value: advice, inline: true },
         { name: "Marktsignal", value: String(stat.marketSignal || "NEUTRAL"), inline: true },
         { name: "Sicherheit", value: `${stat.confidence}%`, inline: true },
         { name: "Rating-Preis", value: `${discordNumber(ratingPrice)} Coins`, inline: true },
-        { name: "Spieler im Rating", value: `${Number(stat.cardCount || 0)} • Namen nur auf Wunsch`, inline: true },
+        { name: "Spieler im Rating", value: `${Number(stat.cardCount || 0)} â€¢ Namen nur auf Wunsch`, inline: true },
         { name: "1m / 5m / 15m / 1h", value: `${discordPct(stat.change1m)} / ${discordPct(stat.change5m)} / ${discordPct(stat.change15m)} / ${discordPct(stat.change1h)}`, inline: false },
         { name: "Steigen / Fallen (5m)", value: `${Number(stat.risingPct5m || 0).toFixed(1)}% / ${Number(stat.fallingPct5m || 0).toFixed(1)}%`, inline: true },
         { name: "Nahe 24h-Tief / Hoch", value: `${Number(stat.near24hLowPct || 0).toFixed(1)}% / ${Number(stat.near24hHighPct || 0).toFixed(1)}%`, inline: true },
         ...(lowWatch
           ? [{
               name: "FC27 Low-Watch-Regel",
-              value: `Alarm erst ab ${LOW_RATING_ALERT_MOVE_PCT}% Bewegung • Hauptmarkt ab ${MAIN_RATING_MIN}`,
+              value: `Alarm erst ab ${LOW_RATING_ALERT_MOVE_PCT}% Bewegung â€¢ Hauptmarkt ab ${MAIN_RATING_MIN}`,
               inline: false
             }]
           : [])
       ],
-      footer: { text: `FC Trader Brain • Rating Buy/Sell Intelligence • FC${GAME_YEAR}` },
+      footer: { text: `FC Trader Brain â€¢ Rating Buy/Sell Intelligence â€¢ FC${GAME_YEAR}` },
       timestamp: new Date().toISOString()
     }],
     components: ratingPlayerListOpenComponents(stat)
@@ -5777,8 +5786,8 @@ function traderConfluenceReliabilityGate(signal, profile) {
   const categoryAccuracy = Number(profile?.specializationAccuracy?.[category]);
   const totalSignals = Math.max(0, Number(profile?.totalSignals || 0));
 
-  // Bei ganz neuen Quellen bleibt der geglättete Overall-Wert maßgeblich.
-  // Sobald etwas Historie vorhanden ist, zählt die passende Kategorie stärker.
+  // Bei ganz neuen Quellen bleibt der geglÃ¤ttete Overall-Wert maÃŸgeblich.
+  // Sobald etwas Historie vorhanden ist, zÃ¤hlt die passende Kategorie stÃ¤rker.
   const effectiveReliability = Number((
     totalSignals >= 3 && Number.isFinite(categoryAccuracy)
       ? overall * 0.4 + categoryAccuracy * 0.6
@@ -5827,18 +5836,18 @@ function traderSignalBrainAgreement(signal, rows, ratingStats, brainWork, gate =
     const stat = ratingStats?.[rating] || null;
     if (!stat || !Number.isFinite(stat.confidence)) return null;
 
-    // FC27 Low-Watch-Ratings dürfen auch bei einem Trader-Call nicht durch
-    // normale Bewegung zur mobilen Konfluenz werden. Erst der ungewöhnliche
-    // Move schaltet diese Ratings für einen Alarm frei.
+    // FC27 Low-Watch-Ratings dÃ¼rfen auch bei einem Trader-Call nicht durch
+    // normale Bewegung zur mobilen Konfluenz werden. Erst der ungewÃ¶hnliche
+    // Move schaltet diese Ratings fÃ¼r einen Alarm frei.
     if (isLowWatchRating(rating) && !lowRatingUnusualMove(stat)) return null;
 
     let agrees = false;
     if (call === "KAUFEN") {
       agrees = stat.marketSignal === "KAUFZONE" && stat.confidence >= requiredRatingConfidence;
     } else if (call === "VERKAUFEN") {
-      agrees = ["STARK FALLEND", "FÄLLT"].includes(stat.marketSignal) && stat.confidence >= requiredRatingConfidence;
+      agrees = ["STARK FALLEND", "FÃ„LLT"].includes(stat.marketSignal) && stat.confidence >= requiredRatingConfidence;
     } else if (call === "WARTEN") {
-      agrees = ["STARK FALLEND", "FÄLLT"].includes(stat.marketSignal) && stat.confidence >= requiredRatingConfidence;
+      agrees = ["STARK FALLEND", "FÃ„LLT"].includes(stat.marketSignal) && stat.confidence >= requiredRatingConfidence;
     }
 
     if (!agrees) return null;
@@ -5849,27 +5858,27 @@ function traderSignalBrainAgreement(signal, rows, ratingStats, brainWork, gate =
       stat,
       confidence: stat.confidence,
       requiredConfidence: requiredRatingConfidence,
-      summary: `${rating}er Markt: ${stat.marketSignal} • ${stat.marketAdvice}`,
-      reason: stat.reason || "Rating-Markt bestätigt den Trader-Call."
+      summary: `${rating}er Markt: ${stat.marketSignal} â€¢ ${stat.marketAdvice}`,
+      reason: stat.reason || "Rating-Markt bestÃ¤tigt den Trader-Call."
     };
   }
 
   const candidates = traderSignalMatchingRows(signal, rows)
     .filter(row => Number.isFinite(row.aiConfidence))
     // v10.46 strict feed: Trader-Konfluenz darf keine normalen Einzelspieler-
-    // Alerts mehr in #trading-alerts einschleusen. Öffentlicher Weg bleibt
+    // Alerts mehr in #trading-alerts einschleusen. Ã–ffentlicher Weg bleibt
     // Rating-Alert -> "Spieler anzeigen".
     .filter(row => !suppressNormalPlayerDiscord(row))
     .filter(row => {
       const quantAction = brainWork?.get(String(row.eaId))?.quant?.suggestedAction;
 
-      // Wichtig: Der externe Trader darf den eigenen Brain nicht zirkulär "bestätigen".
-      // Deshalb muss zusätzlich der unabhängige Quantitative Core dieselbe Richtung sehen.
+      // Wichtig: Der externe Trader darf den eigenen Brain nicht zirkulÃ¤r "bestÃ¤tigen".
+      // Deshalb muss zusÃ¤tzlich der unabhÃ¤ngige Quantitative Core dieselbe Richtung sehen.
       if (call === "KAUFEN") {
         return row.aiAction === "JETZT KAUFEN" && quantAction === "JETZT KAUFEN";
       }
       if (call === "VERKAUFEN") {
-        return ["VERKAUF PRÜFEN", "JETZT VERKAUFEN"].includes(row.aiAction) && quantAction === "VERKAUF PRÜFEN";
+        return ["VERKAUF PRÃœFEN", "JETZT VERKAUFEN"].includes(row.aiAction) && quantAction === "VERKAUF PRÃœFEN";
       }
       if (call === "WARTEN") {
         return ["NOCH WARTEN", "NICHT KAUFEN"].includes(row.aiAction) &&
@@ -5888,25 +5897,25 @@ function traderSignalBrainAgreement(signal, rows, ratingStats, brainWork, gate =
     row,
     confidence: row.aiConfidence,
     requiredConfidence: requiredCardConfidence,
-    summary: `${row.aiAction} • ${row.name || `EA ${row.eaId}`} (${row.overall})`,
-    reason: row.aiReason || "Trader Brain bestätigt den Trader-Call."
+    summary: `${row.aiAction} â€¢ ${row.name || `EA ${row.eaId}`} (${row.overall})`,
+    reason: row.aiReason || "Trader Brain bestÃ¤tigt den Trader-Call."
   };
 }
 
 function buildTraderConfluencePayload(signal, agreement, gate) {
   const call = String(signal?.call || "").toUpperCase();
-  const emoji = call === "KAUFEN" ? "🧠🟢" : call === "VERKAUFEN" ? "🧠💰" : "🧠⏳";
+  const emoji = call === "KAUFEN" ? "ðŸ§ ðŸŸ¢" : call === "VERKAUFEN" ? "ðŸ§ ðŸ’°" : "ðŸ§ â³";
   const target = String(signal?.playerOrRating || "-");
-  const details = String(signal?.confirmationDetails || "Marktbestätigung aktiv.").slice(0, 900);
-  const brainReason = String(agreement?.reason || "Eigene Marktlogik bestätigt den Call.").slice(0, 900);
+  const details = String(signal?.confirmationDetails || "MarktbestÃ¤tigung aktiv.").slice(0, 900);
+  const brainReason = String(agreement?.reason || "Eigene Marktlogik bestÃ¤tigt den Call.").slice(0, 900);
 
   const fields = [
-    { name: "Trader-Call", value: `${call} • ${target}`, inline: true },
+    { name: "Trader-Call", value: `${call} â€¢ ${target}`, inline: true },
     { name: "Quelle", value: String(signal?.source || "-").slice(0, 100), inline: true },
-    { name: "Trader-Zuverlässigkeit", value: `${Number(gate?.effectiveReliability ?? signal?.sourceReliability ?? 50).toFixed(1)}%`, inline: true },
-    { name: "Reliability-Gate", value: `Brain-Schwelle ${agreement?.requiredConfidence ?? "-"}% • Anpassung ${Number(gate?.confidenceAdjustment || 0) >= 0 ? "+" : ""}${gate?.confidenceAdjustment || 0}`, inline: true },
-    { name: "Kategorie / Zeitraum", value: `${signal?.category || "-"} • ${signal?.expectedTimeframe || "nicht angegeben"}`, inline: false },
-    { name: "Eigener Brain", value: agreement?.summary || "bestätigt", inline: false },
+    { name: "Trader-ZuverlÃ¤ssigkeit", value: `${Number(gate?.effectiveReliability ?? signal?.sourceReliability ?? 50).toFixed(1)}%`, inline: true },
+    { name: "Reliability-Gate", value: `Brain-Schwelle ${agreement?.requiredConfidence ?? "-"}% â€¢ Anpassung ${Number(gate?.confidenceAdjustment || 0) >= 0 ? "+" : ""}${gate?.confidenceAdjustment || 0}`, inline: true },
+    { name: "Kategorie / Zeitraum", value: `${signal?.category || "-"} â€¢ ${signal?.expectedTimeframe || "nicht angegeben"}`, inline: false },
+    { name: "Eigener Brain", value: agreement?.summary || "bestÃ¤tigt", inline: false },
     { name: "FUT.GG Marktcheck", value: details, inline: false },
     { name: "Warum Alarm?", value: brainReason, inline: false }
   ];
@@ -5915,11 +5924,11 @@ function buildTraderConfluencePayload(signal, agreement, gate) {
 
   return {
     embeds: [{
-      title: `${emoji} TRADER + MARKT + BRAIN BESTÄTIGT`,
+      title: `${emoji} TRADER + MARKT + BRAIN BESTÃ„TIGT`,
       url,
-      description: `Externer Trader-Call wurde **nicht blind übernommen**. FUT.GG, eigener Quant Core, Trader Brain und Reliability-Gate stimmen aktuell überein.`,
+      description: `Externer Trader-Call wurde **nicht blind Ã¼bernommen**. FUT.GG, eigener Quant Core, Trader Brain und Reliability-Gate stimmen aktuell Ã¼berein.`,
       fields,
-      footer: { text: "FC Trader Brain • Reliability-Aware Confluence" },
+      footer: { text: "FC Trader Brain â€¢ Reliability-Aware Confluence" },
       timestamp: new Date().toISOString()
     }],
     components: agreement?.kind === "card" ? intensiveWatchAddComponents(agreement.row) : []
@@ -5933,8 +5942,8 @@ function traderSignalLifecycleWindowMs(signal) {
   const graceMs = 30 * 60_000;
 
   // Mindestens 90 Minuten aktiv, maximal 26 Stunden.
-  // Die zusätzliche Grace-Zeit verhindert, dass ein "morgen"-/24h-Call
-  // kurz vor seiner finalen 24h-Auswertung aus dem System fällt.
+  // Die zusÃ¤tzliche Grace-Zeit verhindert, dass ein "morgen"-/24h-Call
+  // kurz vor seiner finalen 24h-Auswertung aus dem System fÃ¤llt.
   return Math.min(
     26 * 60 * 60_000,
     Math.max(90 * 60_000, preferredMs + graceMs)
@@ -5953,14 +5962,14 @@ function traderSignalIsActive(signal, now = Date.now()) {
 
 function traderConfluenceInvalidationReason(signal, kind) {
   if (kind === "MARKET_LOST") {
-    return String(signal?.confirmationDetails || "FUT.GG bestätigt den Trader-Call aktuell nicht mehr.").slice(0, 1000);
+    return String(signal?.confirmationDetails || "FUT.GG bestÃ¤tigt den Trader-Call aktuell nicht mehr.").slice(0, 1000);
   }
 
   if (kind === "BRAIN_LOST") {
-    return "FUT.GG kann den Call noch stützen, aber Quant Core / Trader Brain erfüllen die Bestätigungsbedingungen aktuell nicht mehr.";
+    return "FUT.GG kann den Call noch stÃ¼tzen, aber Quant Core / Trader Brain erfÃ¼llen die BestÃ¤tigungsbedingungen aktuell nicht mehr.";
   }
 
-  return "Die frühere Konfluenz-Bestätigung ist aktuell nicht mehr gültig.";
+  return "Die frÃ¼here Konfluenz-BestÃ¤tigung ist aktuell nicht mehr gÃ¼ltig.";
 }
 
 function buildTraderConfluenceInvalidationPayload(signal, kind, gate) {
@@ -5971,17 +5980,17 @@ function buildTraderConfluenceInvalidationPayload(signal, kind, gate) {
 
   return {
     embeds: [{
-      title: `⚠️ TRADER-SIGNAL NICHT MEHR BESTÄTIGT`,
+      title: `âš ï¸ TRADER-SIGNAL NICHT MEHR BESTÃ„TIGT`,
       description:
-        "Eine zuvor bestätigte Konfluenz ist weggefallen. Der alte Call wird deshalb nicht mehr als aktuell bestätigt behandelt.",
+        "Eine zuvor bestÃ¤tigte Konfluenz ist weggefallen. Der alte Call wird deshalb nicht mehr als aktuell bestÃ¤tigt behandelt.",
       fields: [
-        { name: "Trader-Call", value: `${call} • ${target}`, inline: true },
+        { name: "Trader-Call", value: `${call} â€¢ ${target}`, inline: true },
         { name: "Quelle", value: String(signal?.source || "-").slice(0, 100), inline: true },
-        { name: "Trader-Zuverlässigkeit", value: `${reliability.toFixed(1)}%`, inline: true },
-        { name: "Status", value: kind === "MARKET_LOST" ? "FUT.GG-Marktbestätigung verloren" : "Brain-Bestätigung verloren", inline: false },
+        { name: "Trader-ZuverlÃ¤ssigkeit", value: `${reliability.toFixed(1)}%`, inline: true },
+        { name: "Status", value: kind === "MARKET_LOST" ? "FUT.GG-MarktbestÃ¤tigung verloren" : "Brain-BestÃ¤tigung verloren", inline: false },
         { name: "Grund", value: reason, inline: false }
       ],
-      footer: { text: "FC Trader Brain • Long-Horizon Lifecycle" },
+      footer: { text: "FC Trader Brain â€¢ Long-Horizon Lifecycle" },
       timestamp: new Date().toISOString()
     }]
   };
@@ -5995,18 +6004,18 @@ function buildTraderConfluenceExpirationPayload(signal, gate, lifecycleWindowMs)
 
   return {
     embeds: [{
-      title: "⌛ TRADER-SIGNAL ABGELAUFEN",
+      title: "âŒ› TRADER-SIGNAL ABGELAUFEN",
       description:
-        "Der erwartete Zeitraum dieses Trader-Calls ist vorbei. Das Signal wird ab jetzt nicht mehr zur aktuellen Brain-Konfluenz gezählt.",
+        "Der erwartete Zeitraum dieses Trader-Calls ist vorbei. Das Signal wird ab jetzt nicht mehr zur aktuellen Brain-Konfluenz gezÃ¤hlt.",
       fields: [
-        { name: "Trader-Call", value: `${call} • ${target}`, inline: true },
+        { name: "Trader-Call", value: `${call} â€¢ ${target}`, inline: true },
         { name: "Quelle", value: String(signal?.source || "-").slice(0, 100), inline: true },
-        { name: "Trader-Zuverlässigkeit", value: `${reliability.toFixed(1)}%`, inline: true },
+        { name: "Trader-ZuverlÃ¤ssigkeit", value: `${reliability.toFixed(1)}%`, inline: true },
         { name: "Erwarteter Zeitraum", value: String(signal?.expectedTimeframe || "nicht angegeben"), inline: true },
         { name: "Aktiv-Fenster", value: `${activeMinutes} Minuten`, inline: true },
-        { name: "Status", value: "Nicht mehr aktiv für neue Kauf-/Verkaufsbestätigungen", inline: false }
+        { name: "Status", value: "Nicht mehr aktiv fÃ¼r neue Kauf-/VerkaufsbestÃ¤tigungen", inline: false }
       ],
-      footer: { text: "FC Trader Brain • Long-Horizon Lifecycle" },
+      footer: { text: "FC Trader Brain â€¢ Long-Horizon Lifecycle" },
       timestamp: new Date().toISOString()
     }]
   };
@@ -6016,8 +6025,8 @@ async function expireTraderConfluenceSignal(signal, state, gate, lifecycleWindow
   const call = String(signal?.call || "").toUpperCase();
   const expiredAction = `EXPIRED:${call}`;
 
-  // Nur ein zuvor wirklich bestätigtes Signal braucht eine mobile Ablaufmeldung.
-  // Unbestätigte/unterdrückte Calls verschwinden still aus der aktiven Konfluenz.
+  // Nur ein zuvor wirklich bestÃ¤tigtes Signal braucht eine mobile Ablaufmeldung.
+  // UnbestÃ¤tigte/unterdrÃ¼ckte Calls verschwinden still aus der aktiven Konfluenz.
   if (!state || !String(state.lastAction || "").startsWith("CONFIRMED:")) {
     return false;
   }
@@ -6107,7 +6116,7 @@ async function processTraderConfluenceAlerts(rows, ratingStats, brainWork, alert
     for (const signal of signals) {
       if (signal.signalKind === "MARKET_EVENT" || String(signal.call || "").toUpperCase() === "BEOBACHTEN") continue;
 
-      // v10.46: Im öffentlichen #trading-alerts-Feed dürfen Trader-Konfluenz-
+      // v10.46: Im Ã¶ffentlichen #trading-alerts-Feed dÃ¼rfen Trader-Konfluenz-
       // Meldungen ebenfalls nur noch ratingbasiert erscheinen. Spielerbezogene
       // Trader-Calls werden intern weiter gelernt, aber nicht namentlich gepusht.
       if (traderSignalRating(signal) == null) continue;
@@ -6174,8 +6183,8 @@ async function processTraderConfluenceAlerts(rows, ratingStats, brainWork, alert
 
     for (const item of candidates) {
       // Trader-Confluence darf den kompletten Zyklus nicht auffressen.
-      // Bei normalem 5er-Budget bleiben bis zu 2 Slots für interne
-      // Signalwechsel und die stärksten Karten-/Rating-Alarme reserviert.
+      // Bei normalem 5er-Budget bleiben bis zu 2 Slots fÃ¼r interne
+      // Signalwechsel und die stÃ¤rksten Karten-/Rating-Alarme reserviert.
       if (!discordCycleHasRoomWithReserve(alertBudget, 2)) {
         discordCycleBlock(alertBudget);
         break;
@@ -6187,8 +6196,8 @@ async function processTraderConfluenceAlerts(rows, ratingStats, brainWork, alert
 
       if (state?.lastAction === action) continue;
 
-      // Nach einer Invalidierung mindestens 15 Minuten Stabilität verlangen,
-      // bevor derselbe Call erneut als bestätigt gemeldet wird.
+      // Nach einer Invalidierung mindestens 15 Minuten StabilitÃ¤t verlangen,
+      // bevor derselbe Call erneut als bestÃ¤tigt gemeldet wird.
       if (
         String(state?.lastAction || "").startsWith("INVALIDATED:") &&
         Number.isFinite(state?.lastSentAt) &&
@@ -6260,7 +6269,7 @@ function brainTransitionKind(previousAction, nextAction, row = null, previousSta
   const currentPrice = Number(row?.price);
   if (
     from === "JETZT KAUFEN" &&
-    ["NOCH WARTEN", "NICHT KAUFEN", "BEOBACHTEN", "HALTEN", "VERKAUF PRÜFEN", "JETZT VERKAUFEN"].includes(to) &&
+    ["NOCH WARTEN", "NICHT KAUFEN", "BEOBACHTEN", "HALTEN", "VERKAUF PRÃœFEN", "JETZT VERKAUFEN"].includes(to) &&
     Number.isFinite(previousPrice) && previousPrice > 0 &&
     Number.isFinite(currentPrice) && currentPrice < previousPrice
   ) {
@@ -6276,13 +6285,13 @@ function brainTransitionKind(previousAction, nextAction, row = null, previousSta
 
   if (
     to === "JETZT VERKAUFEN" &&
-    ["VERKAUF PRÜFEN", "HALTEN", "JETZT KAUFEN", "BEOBACHTEN"].includes(from)
+    ["VERKAUF PRÃœFEN", "HALTEN", "JETZT KAUFEN", "BEOBACHTEN"].includes(from)
   ) {
     return "sell";
   }
 
   if (
-    to === "VERKAUF PRÜFEN" &&
+    to === "VERKAUF PRÃœFEN" &&
     ["HALTEN", "JETZT KAUFEN", "BEOBACHTEN"].includes(from)
   ) {
     return "sell";
@@ -6298,47 +6307,47 @@ function buildBrainTransitionPayload(row, previousAction, kind, previousState = 
       ? Number((((Number(row.price) - previousPrice) / previousPrice) * 100).toFixed(2))
       : null;
     const ownedAction = row.tracked
-      ? (["JETZT VERKAUFEN", "VERKAUF PRÜFEN"].includes(row.aiAction) ? row.aiAction : "AUSSTIEG PRÜFEN")
+      ? (["JETZT VERKAUFEN", "VERKAUF PRÃœFEN"].includes(row.aiAction) ? row.aiAction : "AUSSTIEG PRÃœFEN")
       : "NICHT KAUFEN";
 
     return {
       embeds: [{
-        title: `🔴 KAUFSIGNAL GESCHEITERT • ${row.name || `EA ${row.eaId}`}`,
+        title: `ðŸ”´ KAUFSIGNAL GESCHEITERT â€¢ ${row.name || `EA ${row.eaId}`}`,
         url: row.url || undefined,
         description: row.tracked
-          ? `Das frühere JETZT-KAUFEN-Setup wurde invalidiert. **Eigener Bestand: ${ownedAction}.**`
-          : `Das frühere JETZT-KAUFEN-Setup wurde invalidiert. **Aktuell: NICHT KAUFEN.**`,
+          ? `Das frÃ¼here JETZT-KAUFEN-Setup wurde invalidiert. **Eigener Bestand: ${ownedAction}.**`
+          : `Das frÃ¼here JETZT-KAUFEN-Setup wurde invalidiert. **Aktuell: NICHT KAUFEN.**`,
         fields: [
           { name: "Kaufsignal bei", value: Number.isFinite(previousPrice) ? `${discordNumber(previousPrice)} Coins` : "-", inline: true },
           { name: "Aktueller Preis", value: `${discordNumber(row.price)} Coins`, inline: true },
           { name: "Seit Signal", value: dropPct == null ? "-" : discordPct(dropPct), inline: true },
-          { name: "Brain jetzt", value: `${row.aiAction} • ${row.aiConfidence}%`, inline: true },
+          { name: "Brain jetzt", value: `${row.aiAction} â€¢ ${row.aiConfidence}%`, inline: true },
           { name: "Aktion", value: ownedAction, inline: true },
-          { name: "Warum invalidiert?", value: String(row.aiReason || "Der bestätigte Boden hat nicht gehalten.").slice(0, 1000), inline: false }
+          { name: "Warum invalidiert?", value: String(row.aiReason || "Der bestÃ¤tigte Boden hat nicht gehalten.").slice(0, 1000), inline: false }
         ],
-        footer: { text: "FC Trader Brain • v10.37 Buy-Signal Invalidation" },
+        footer: { text: "FC Trader Brain â€¢ v10.37 Buy-Signal Invalidation" },
         timestamp: new Date().toISOString()
       }],
       components: intensiveWatchAddComponents(row)
     };
   }
 
-  const emoji = kind === "buy" ? "🟢" : "💰";
-  const title = `${emoji} SIGNALWECHSEL: ${row.aiAction} • ${row.name || `EA ${row.eaId}`}`;
+  const emoji = kind === "buy" ? "ðŸŸ¢" : "ðŸ’°";
+  const title = `${emoji} SIGNALWECHSEL: ${row.aiAction} â€¢ ${row.name || `EA ${row.eaId}`}`;
 
   return {
     embeds: [{
       title,
       url: row.url || undefined,
-      description: `**${previousAction} → ${row.aiAction}**`,
+      description: `**${previousAction} â†’ ${row.aiAction}**`,
       fields: [
         { name: "Preis", value: `${discordNumber(row.price)} Coins`, inline: true },
         { name: "KI-Sicherheit", value: `${row.aiConfidence}%`, inline: true },
-        { name: "Rating / Typ", value: `${row.overall} • ${row.cardType || "-"}`, inline: true },
+        { name: "Rating / Typ", value: `${row.overall} â€¢ ${row.cardType || "-"}`, inline: true },
         { name: "1m / 5m / 15m", value: `${discordPct(row.change1m)} / ${discordPct(row.change5m)} / ${discordPct(row.change15m)}`, inline: false },
-        { name: "Warum jetzt?", value: String(row.aiReason || "Signalzustand hat sich geändert.").slice(0, 1000), inline: false }
+        { name: "Warum jetzt?", value: String(row.aiReason || "Signalzustand hat sich geÃ¤ndert.").slice(0, 1000), inline: false }
       ],
-      footer: { text: "FC Trader Brain • relevanter Zustandswechsel" },
+      footer: { text: "FC Trader Brain â€¢ relevanter Zustandswechsel" },
       timestamp: new Date().toISOString()
     }],
     components: intensiveWatchAddComponents(row)
@@ -6450,8 +6459,8 @@ async function processBrainStateChangeAlerts(rows, alertBudget = null) {
   if (DISCORD_CONFIGURED) {
     for (const item of candidates) {
       if (!discordCycleHasRoomWithReserve(alertBudget, 1)) {
-        // Einen letzten Slot für den stärksten normalen Karten-/Rating-Alarm
-        // freihalten. Nicht gesendete Übergänge bleiben für den nächsten
+        // Einen letzten Slot fÃ¼r den stÃ¤rksten normalen Karten-/Rating-Alarm
+        // freihalten. Nicht gesendete ÃœbergÃ¤nge bleiben fÃ¼r den nÃ¤chsten
         // 60-Sekunden-Lauf offen, statt durch den Brain-State verloren zu gehen.
         retryIds.add(String(item.row.eaId));
         discordCycleBlock(alertBudget);
@@ -6481,7 +6490,7 @@ async function processBrainStateChangeAlerts(rows, alertBudget = null) {
           fingerprint
         });
 
-        // Unterdrückt denselben BUY/SELL-Alarm direkt danach im normalen Alert-Lauf.
+        // UnterdrÃ¼ckt denselben BUY/SELL-Alarm direkt danach im normalen Alert-Lauf.
         await saveDiscordAlertState({
           alertKey: `card:${row.eaId}`,
           alertType: kind === "buy_failed" ? "buy_invalidation" : kind,
@@ -6500,7 +6509,7 @@ async function processBrainStateChangeAlerts(rows, alertBudget = null) {
   }
 
   // Fehlgeschlagene, limitierte oder durch den v10.42-Daten-Sanity-Guard blockierte
-  // Übergänge bleiben offen. Ein widersprüchlicher Snapshot darf den Brain-State
+  // ÃœbergÃ¤nge bleiben offen. Ein widersprÃ¼chlicher Snapshot darf den Brain-State
   // nicht als neue Wahrheit speichern.
   for (const row of rows) {
     if (row?.aiAlertSanity?.blocked) retryIds.add(String(row.eaId));
@@ -6519,7 +6528,7 @@ function intensiveWatchPriority(row) {
   const action = String(row?.aiAction || "");
   const actionPriority = {
     "JETZT VERKAUFEN": 500,
-    "VERKAUF PRÜFEN": 450,
+    "VERKAUF PRÃœFEN": 450,
     "JETZT KAUFEN": 400,
     "NOCH WARTEN": 330,
     "NICHT KAUFEN": 300,
@@ -6532,36 +6541,36 @@ function intensiveWatchPriority(row) {
 function buildIntensiveWatchPayload(row, watch, trigger, movePct) {
   const netPct = intensiveWatchNetPct(row, watch);
   const action = String(row.aiAction || "BEOBACHTEN");
-  const emoji = action === "JETZT VERKAUFEN" ? "💰" : action === "VERKAUF PRÜFEN" ? "🟠" : action === "JETZT KAUFEN" ? "🟢" : "👁️";
+  const emoji = action === "JETZT VERKAUFEN" ? "ðŸ’°" : action === "VERKAUF PRÃœFEN" ? "ðŸŸ " : action === "JETZT KAUFEN" ? "ðŸŸ¢" : "ðŸ‘ï¸";
   const triggerText = trigger === "ACTION_CHANGE"
-    ? `Brain-Zustand geändert: **${watch.lastAction || "-"} → ${action}**`
+    ? `Brain-Zustand geÃ¤ndert: **${watch.lastAction || "-"} â†’ ${action}**`
     : `Preis seit dem letzten Intensiv-Update: **${discordPct(movePct)}**`;
 
   const fields = [
     { name: "Aktueller Preis", value: `${discordNumber(row.price)} Coins`, inline: true },
-    { name: "Überwachung gestartet bei", value: `${discordNumber(watch.startPrice)} Coins`, inline: true },
+    { name: "Ãœberwachung gestartet bei", value: `${discordNumber(watch.startPrice)} Coins`, inline: true },
     { name: "KI-Sicherheit", value: `${row.aiConfidence}%`, inline: true },
     { name: "1m / 5m / 15m", value: `${discordPct(row.change1m)} / ${discordPct(row.change5m)} / ${discordPct(row.change15m)}`, inline: false },
-    { name: "Seit Überwachungsstart", value: netPct == null ? "-" : `${discordPct(netPct)} nach 5% EA-Steuer (Referenz, kein bestätigter Kaufpreis)`, inline: false },
+    { name: "Seit Ãœberwachungsstart", value: netPct == null ? "-" : `${discordPct(netPct)} nach 5% EA-Steuer (Referenz, kein bestÃ¤tigter Kaufpreis)`, inline: false },
     { name: "Warum Update?", value: triggerText, inline: false },
-    { name: "Brain", value: String(row.aiReason || "Keine Begründung verfügbar.").slice(0, 900), inline: false }
+    { name: "Brain", value: String(row.aiReason || "Keine BegrÃ¼ndung verfÃ¼gbar.").slice(0, 900), inline: false }
   ];
 
   if (row.tracked) {
     fields.push({
       name: "Deine gespeicherte Position",
-      value: `Kauf ${discordNumber(row.buyPrice)} × ${discordNumber(row.quantity || 1)} | Netto ${discordNumber(row.netProfitTotal)} Coins | ${discordPct(row.profitPercent)}`,
+      value: `Kauf ${discordNumber(row.buyPrice)} Ã— ${discordNumber(row.quantity || 1)} | Netto ${discordNumber(row.netProfitTotal)} Coins | ${discordPct(row.profitPercent)}`,
       inline: false
     });
   }
 
   return {
     embeds: [{
-      title: `${emoji} INTENSIV: ${row.name || `EA ${row.eaId}`} • ${action}`,
+      title: `${emoji} INTENSIV: ${row.name || `EA ${row.eaId}`} â€¢ ${action}`,
       url: row.url || undefined,
-      description: "Diese Karte wird nur deshalb enger verfolgt, weil du **Intensiv überwachen** gedrückt hast.",
+      description: "Diese Karte wird nur deshalb enger verfolgt, weil du **Intensiv Ã¼berwachen** gedrÃ¼ckt hast.",
       fields,
-      footer: { text: "FC Trader Brain • persönliche Intensiv-Watchlist" },
+      footer: { text: "FC Trader Brain â€¢ persÃ¶nliche Intensiv-Watchlist" },
       timestamp: new Date().toISOString()
     }],
     components: intensiveWatchStopComponents(row)
@@ -6615,7 +6624,7 @@ async function processIntensiveWatchAlerts(rows, alertBudget = null) {
   for (const item of candidates) {
     if (sent >= INTENSIVE_WATCH_MAX_ALERTS_PER_CYCLE || !discordCycleHasRoom(alertBudget)) {
       discordCycleBlock(alertBudget);
-      // Nicht fortschreiben: der relevante Wechsel bleibt bis zum nächsten Zyklus offen.
+      // Nicht fortschreiben: der relevante Wechsel bleibt bis zum nÃ¤chsten Zyklus offen.
       continue;
     }
 
@@ -6663,8 +6672,8 @@ async function processDiscordAlerts(rows, ratingStats, alertBudget = null) {
     lastDiscordTraderOfferRejectedCount = namedOfferRejected;
 
     // Volatile Directional-Alerts werden direkt vor Discord einmal gegen einen
-    // frischen FUT.GG-Bulk-Snapshot gegengeprüft. Wenn der Preis seit der Analyse
-    // materiell weitergesprungen ist, senden wir DATEN PRÜFEN statt einer alten
+    // frischen FUT.GG-Bulk-Snapshot gegengeprÃ¼ft. Wenn der Preis seit der Analyse
+    // materiell weitergesprungen ist, senden wir DATEN PRÃœFEN statt einer alten
     // Kauf-/Verkauf-/Crash-Aussage.
     const needsRecheck = candidates.filter(item => item.kind === "card" && discordAlertNeedsLiveRecheck(item.row, item.type));
     if (needsRecheck.length) {
@@ -6708,7 +6717,7 @@ async function processDiscordAlerts(rows, ratingStats, alertBudget = null) {
         const alertPrice = discordAlertPrice(row);
         const fingerprint = `${item.type}|${row.aiAction}|${Math.round((row.change5m ?? 0) * 10)}|${Math.round((row.change15m ?? 0) * 10)}|${Math.round(Number(row?.aiAlertSanity?.recheckDiffPct || 0) * 10)}`;
         const state = await getDiscordAlertState(alertKey);
-        if (!discordAlertShouldSend(state, item.type === "data" ? "DATEN PRÜFEN" : row.aiAction, alertPrice, row.aiConfidence, fingerprint)) continue;
+        if (!discordAlertShouldSend(state, item.type === "data" ? "DATEN PRÃœFEN" : row.aiAction, alertPrice, row.aiConfidence, fingerprint)) continue;
 
         await sendDiscordPayload(buildCardDiscordPayload(row, item.type, item.offer || null));
         discordCycleConsume(alertBudget);
@@ -6721,7 +6730,7 @@ async function processDiscordAlerts(rows, ratingStats, alertBudget = null) {
         await saveDiscordAlertState({
           alertKey,
           alertType: item.type,
-          action: item.type === "data" ? "DATEN PRÜFEN" : row.aiAction,
+          action: item.type === "data" ? "DATEN PRÃœFEN" : row.aiAction,
           price: alertPrice,
           confidence: row.aiConfidence,
           fingerprint
@@ -6730,8 +6739,8 @@ async function processDiscordAlerts(rows, ratingStats, alertBudget = null) {
         const stat = item.stat;
         const alertKey = `rating:${stat.rating}`;
         const ratingAlertPrice = Number(stat.ratingReferencePrice ?? stat.medianPrice);
-        // Namen/Einzelausnahmen dürfen keinen neuen öffentlichen Rating-Alarm
-        // auslösen. Sie sind nur hinter dem Button "Spieler anzeigen" sichtbar.
+        // Namen/Einzelausnahmen dÃ¼rfen keinen neuen Ã¶ffentlichen Rating-Alarm
+        // auslÃ¶sen. Sie sind nur hinter dem Button "Spieler anzeigen" sichtbar.
         const fingerprint = `${stat.marketSignal}|${stat.marketAdvice}|${Math.round((stat.change5m ?? 0) * 10)}|${Math.round(ratingAlertPrice || 0)}`;
         const state = await getDiscordAlertState(alertKey);
         if (!discordAlertShouldSend(state, stat.marketSignal, ratingAlertPrice, stat.confidence, fingerprint)) continue;
@@ -6766,8 +6775,8 @@ async function sendDiscordStartupMessage() {
 
     await sendDiscordPayload({
       embeds: [{
-        title: "✅ FC Trader Brain verbunden",
-        description: "Automatische Trading-Alerts sind aktiv. Decision Performance Lab bewertet eigenständige KI-Calls automatisch im Hintergrund.",
+        title: "âœ… FC Trader Brain verbunden",
+        description: "Automatische Trading-Alerts sind aktiv. Decision Performance Lab bewertet eigenstÃ¤ndige KI-Calls automatisch im Hintergrund.",
         fields: [
           { name: "Markt-Check", value: "alle 60 Sekunden", inline: true },
           { name: "Kaufalarm ab", value: `${DISCORD_MIN_BUY_CONFIDENCE}% KI-Sicherheit`, inline: true },
@@ -6808,8 +6817,8 @@ async function monitorOnce() {
     let currentRows;
     const at = Date.now();
 
-    // v10.31: Failure-Domain-Isolation bleibt aktiv; Deploys fahren den Dienst jetzt zusätzlich sauber herunter.
-    // Fehler aus DB, Brain oder Discord gehören in eine getrennte Failure Domain.
+    // v10.31: Failure-Domain-Isolation bleibt aktiv; Deploys fahren den Dienst jetzt zusÃ¤tzlich sauber herunter.
+    // Fehler aus DB, Brain oder Discord gehÃ¶ren in eine getrennte Failure Domain.
     try {
       [cards, bulk, futbinFeed] = await Promise.all([
         ensureUniverse(false),
@@ -6900,8 +6909,8 @@ async function monitorOnce() {
       updateProcessingHealthFailure(error);
       lastMonitorError = `Processing pipeline: ${String(error)}`;
       console.error("processing pipeline error:", error);
-      // Wichtig: FUT.GG bleibt gesund, wenn nur DB/Brain/Discord fehlschlägt.
-      // Dadurch startet keine falsche Source-Recovery-Quarantäne.
+      // Wichtig: FUT.GG bleibt gesund, wenn nur DB/Brain/Discord fehlschlÃ¤gt.
+      // Dadurch startet keine falsche Source-Recovery-QuarantÃ¤ne.
     }
   } finally {
     cycleAlertBudget.finishedAt = new Date().toISOString();
@@ -7129,7 +7138,7 @@ async function saveIntensiveWatch(row, requestedBy = null) {
   const eaId = String(row?.eaId || "");
   const price = Number(row?.price);
   if (!/^\d+$/.test(eaId) || !Number.isFinite(price) || price <= 0) {
-    throw new Error("Karte hat keinen gültigen Marktpreis für die intensive Überwachung.");
+    throw new Error("Karte hat keinen gÃ¼ltigen Marktpreis fÃ¼r die intensive Ãœberwachung.");
   }
 
   if (dbEnabled) {
@@ -7298,13 +7307,13 @@ function signalFor(row) {
     signal = "BEOBACHTEN";
     score += 12;
   } else if (nearHigh && rising24) {
-    signal = "VERKAUF PRÜFEN";
+    signal = "VERKAUF PRÃœFEN";
     score += 16;
   } else if (recover1h && drop24) {
     signal = "ERHOLUNG";
     score += 15;
   } else if (falling1h) {
-    signal = "FÄLLT";
+    signal = "FÃ„LLT";
   }
 
   return {
@@ -7368,7 +7377,7 @@ function profitInfo(currentPrice, position) {
 
 async function loadRecentDiscordSignals() {
   // Bis zu 30 Stunden laden, damit 24h-/"morgen"-Signale ihren gesamten
-  // Lebenszyklus inklusive 24h-Auswertung durchlaufen können. Ob ein Signal
+  // Lebenszyklus inklusive 24h-Auswertung durchlaufen kÃ¶nnen. Ob ein Signal
   // den aktuellen Brain noch beeinflussen darf, entscheidet separat der
   // Lifecycle-Filter.
   if (!dbEnabled) return memoryTraderSignals.filter(signal => Date.now() - Number(signal.timestamp || 0) <= 30 * 60 * 60_000);
@@ -7651,7 +7660,7 @@ function buildGlobalMarketContext(rows) {
     mood,
     packSupplyActive,
     packSupplyInference: packSupplyActive
-      ? "Breiter Base-Rare-Abverkauf deutet auf erhöhte Pack-/Angebotszufuhr hin."
+      ? "Breiter Base-Rare-Abverkauf deutet auf erhÃ¶hte Pack-/Angebotszufuhr hin."
       : "Kein breites Angebotsdruck-Muster erkannt.",
     source: "market-inference",
     measuredCards: eligible.length,
@@ -7799,8 +7808,8 @@ function buildRatingStats(rows) {
   const byRating = new Map();
 
   for (const row of rows) {
-    // Für Rating-/Fodder-Intelligence bewusst nur Base Rare verwenden.
-    // Specials würden die Mediane und Marktbreite stark verzerren.
+    // FÃ¼r Rating-/Fodder-Intelligence bewusst nur Base Rare verwenden.
+    // Specials wÃ¼rden die Mediane und Marktbreite stark verzerren.
     if (row.cardType !== "Base Rare") continue;
     if (!byRating.has(row.overall)) byRating.set(row.overall, []);
     byRating.get(row.overall).push(row);
@@ -7887,7 +7896,7 @@ function buildRatingStats(rows) {
       marketSignal = "ZU WENIG DATEN";
       marketAdvice = "BEOBACHTEN";
       confidence = 35;
-      reason = "Noch zu wenige Karten mit 5-Minuten-Historie für ein belastbares Rating-Signal.";
+      reason = "Noch zu wenige Karten mit 5-Minuten-Historie fÃ¼r ein belastbares Rating-Signal.";
     } else if (
       w5m.fallingPct >= 70 &&
       w5m.medianMove <= -2
@@ -7919,7 +7928,7 @@ function buildRatingStats(rows) {
       );
       reason =
         `${nearHighPct.toFixed(0)}% der ${rating}er liegen nahe ihrem 24h-Hoch; ` +
-        `${coolingPct.toFixed(0)}% zeigen abkühlendes Momentum. 15m-Median ${w15m.medianMove >= 0 ? "+" : ""}${w15m.medianMove.toFixed(2)}%. Gewinnmitnahme im Rating-Segment sinnvoll.`;
+        `${coolingPct.toFixed(0)}% zeigen abkÃ¼hlendes Momentum. 15m-Median ${w15m.medianMove >= 0 ? "+" : ""}${w15m.medianMove.toFixed(2)}%. Gewinnmitnahme im Rating-Segment sinnvoll.`;
     } else if (
       nearLowPct >= 50 &&
       recoveryPct >= 45 &&
@@ -7937,7 +7946,7 @@ function buildRatingStats(rows) {
       );
       reason =
         `${nearLowPct.toFixed(0)}% der ${rating}er liegen nahe ihrem 24h-Tief und ` +
-        `${recoveryPct.toFixed(0)}% bestätigen 5m/15m-Erholung. Rating-Segment dreht.`;
+        `${recoveryPct.toFixed(0)}% bestÃ¤tigen 5m/15m-Erholung. Rating-Segment dreht.`;
     } else if (
       w5m.risingPct >= 70 &&
       w5m.medianMove >= 2
@@ -7962,7 +7971,7 @@ function buildRatingStats(rows) {
         );
         reason =
           `${w5m.risingPct.toFixed(0)}% der ${rating}er steigen; ` +
-          `15m-Median bereits +${w15m.medianMove.toFixed(2)}%. FOMO-Risiko erhöht.`;
+          `15m-Median bereits +${w15m.medianMove.toFixed(2)}%. FOMO-Risiko erhÃ¶ht.`;
       } else {
         marketAdvice = "BEOBACHTEN";
         confidence = Math.min(
@@ -7970,8 +7979,8 @@ function buildRatingStats(rows) {
           Math.round(76 + Math.min(12, w5m.medianMove * 2))
         );
         reason = horizonEvidence.duplicateShort
-          ? `${w5m.risingPct.toFixed(0)}% der ${rating}er steigen; 1m/5m/15m zeigen nahezu denselben Impuls und zählen nur als 1 unabhängige Bestätigung. Erst echte 15m/1h-Fortsetzung abwarten.`
-          : `${w5m.risingPct.toFixed(0)}% der ${rating}er steigen; 5m-Median +${w5m.medianMove.toFixed(2)}%. Breite Aufwärtsbewegung bestätigt.`;
+          ? `${w5m.risingPct.toFixed(0)}% der ${rating}er steigen; 1m/5m/15m zeigen nahezu denselben Impuls und zÃ¤hlen nur als 1 unabhÃ¤ngige BestÃ¤tigung. Erst echte 15m/1h-Fortsetzung abwarten.`
+          : `${w5m.risingPct.toFixed(0)}% der ${rating}er steigen; 5m-Median +${w5m.medianMove.toFixed(2)}%. Breite AufwÃ¤rtsbewegung bestÃ¤tigt.`;
       }
     } else if (
       w5m.risingPct >= 60 ||
@@ -7987,7 +7996,7 @@ function buildRatingStats(rows) {
       w5m.fallingPct >= 60 ||
       w5m.medianMove <= -1
     ) {
-      marketSignal = "FÄLLT";
+      marketSignal = "FÃ„LLT";
       marketAdvice = "NOCH WARTEN";
       confidence = 72;
       reason =
@@ -8176,7 +8185,7 @@ function buildRatingMarketLogic(ratingStats, rating, globalContext = {}) {
 
     if (rotationFromLower) {
       score += 7;
-      reasons.push(`${Number(rating) - 1}er führen die Bewegung in 15m um ${lowerLeadPct.toFixed(2)} Prozentpunkte an. Das erhöht die Chance auf eine Nachfrage-Rotation in ${rating}er.`);
+      reasons.push(`${Number(rating) - 1}er fÃ¼hren die Bewegung in 15m um ${lowerLeadPct.toFixed(2)} Prozentpunkte an. Das erhÃ¶ht die Chance auf eine Nachfrage-Rotation in ${rating}er.`);
     }
   }
 
@@ -8187,13 +8196,13 @@ function buildRatingMarketLogic(ratingStats, rating, globalContext = {}) {
   }
 
   if (c5 >= 0.5 && c15 >= 0.5 && horizonEvidence.independentKeys.includes("15m")) {
-    reasons.push(`Der ${rating}er-Median bestätigt Aufwärtsmomentum über zwei unabhängige Horizonte: 5m (${c5 >= 0 ? "+" : ""}${c5.toFixed(2)}%) und 15m (${c15 >= 0 ? "+" : ""}${c15.toFixed(2)}%).`);
+    reasons.push(`Der ${rating}er-Median bestÃ¤tigt AufwÃ¤rtsmomentum Ã¼ber zwei unabhÃ¤ngige Horizonte: 5m (${c5 >= 0 ? "+" : ""}${c5.toFixed(2)}%) und 15m (${c15 >= 0 ? "+" : ""}${c15.toFixed(2)}%).`);
   } else if (horizonEvidence.duplicateShort && Math.max(Math.abs(c5), Math.abs(c15)) >= 0.5) {
-    risks.push(`1m/5m/15m zeigen nahezu denselben Preisimpuls. Diese Horizonte zählen nur als 1 Bestätigung, bis neue zeitlich unabhängige Historie entsteht.`);
+    risks.push(`1m/5m/15m zeigen nahezu denselben Preisimpuls. Diese Horizonte zÃ¤hlen nur als 1 BestÃ¤tigung, bis neue zeitlich unabhÃ¤ngige Historie entsteht.`);
   }
 
   if (higher && c15 > 0.5 && Number(higher.change15m || 0) <= c15 - 1.5) {
-    reasons.push(`${Number(rating) + 1}er reagieren in 15m schwächer. Die Nachfrage sitzt momentan eher im ${rating}er-Band als eine Stufe höher.`);
+    reasons.push(`${Number(rating) + 1}er reagieren in 15m schwÃ¤cher. Die Nachfrage sitzt momentan eher im ${rating}er-Band als eine Stufe hÃ¶her.`);
     score += 3;
   }
 
@@ -8201,10 +8210,10 @@ function buildRatingMarketLogic(ratingStats, rating, globalContext = {}) {
     risks.push("Breiter Pack-/Angebotsdruck ist aktiv und kann eine positive Rating-Bewegung abbremsen.");
   }
   if (Number(stat.near24hHighPct || 0) >= 40) {
-    risks.push(`${Number(stat.near24hHighPct || 0).toFixed(0)}% der ${rating}er liegen nahe ihrem 24h-Hoch. Rücksetzer-/Gewinnmitnahme-Risiko ist erhöht.`);
+    risks.push(`${Number(stat.near24hHighPct || 0).toFixed(0)}% der ${rating}er liegen nahe ihrem 24h-Hoch. RÃ¼cksetzer-/Gewinnmitnahme-Risiko ist erhÃ¶ht.`);
   }
   if (Number(stat.coolingPct || 0) >= 45) {
-    risks.push(`${Number(stat.coolingPct || 0).toFixed(0)}% der ${rating}er zeigen abkühlendes Momentum.`);
+    risks.push(`${Number(stat.coolingPct || 0).toFixed(0)}% der ${rating}er zeigen abkÃ¼hlendes Momentum.`);
   }
   if (globalContext?.publicLeaks?.active) {
     const leak = globalContext.publicLeaks;
@@ -8403,22 +8412,22 @@ function buildPlayerMarketBrain(row, ratingStat, globalContext = {}) {
   const thesisChecks = [
     {
       key: "rating_breadth",
-      label: `${row.overall}er Marktbreite bestätigt`,
+      label: `${row.overall}er Marktbreite bestÃ¤tigt`,
       passed: Number(ratingStat?.risingPct5m || 0) >= 55 || marketLogic?.phase === "ACCUMULATION"
     },
     {
       key: "rating_median",
-      label: `${row.overall}er Median hält`,
+      label: `${row.overall}er Median hÃ¤lt`,
       passed: Number(ratingStat?.change5m || 0) >= -0.5
     },
     {
       key: "relative_strength",
-      label: "Karte zeigt relative Stärke",
+      label: "Karte zeigt relative StÃ¤rke",
       passed: relativeStrength >= 55
     },
     {
       key: "rating_chain",
-      label: "Rating-Kette bestätigt Nachfrage",
+      label: "Rating-Kette bestÃ¤tigt Nachfrage",
       passed: Boolean(marketLogic?.rotationFromLower) || Number(ratingStat?.risingPct15m || 0) >= 60
     },
     {
@@ -8509,7 +8518,7 @@ function applyCombinedMarketBrain(row, ratingStat, globalContext = {}) {
   if (originalAction === "JETZT KAUFEN") {
     if (brain.marketScore < 55) blockers.push(`Rating-Markt-Score nur ${brain.marketScore}/100`);
     if (brain.risk >= 60) blockers.push(`Risiko ${brain.risk}/100`);
-    if (brain.confirmedChecks < 4) blockers.push(`nur ${brain.confirmedChecks}/${brain.totalChecks} Buy-Thesen bestätigt`);
+    if (brain.confirmedChecks < 4) blockers.push(`nur ${brain.confirmedChecks}/${brain.totalChecks} Buy-Thesen bestÃ¤tigt`);
     if (["SELL_OFF", "SUPPLY_SHOCK", "DISTRIBUTION"].includes(brain.marketPhase)) blockers.push(`Marktphase ${brain.marketPhase}`);
     if (brain.leakIntel?.active && !brain.leakIntel?.marketReaction) blockers.push("aktiver Public Leak noch ohne Markt-Bestaetigung");
     if (brain.playerHorizonEvidence?.directionConflict) blockers.push("Spieler-Horizonte widersprechen sich");
@@ -8608,7 +8617,7 @@ async function persistDiscordSignalMarketConfirmations(rows, brainWork) {
       const isRatingSignal = Number.isFinite(rating) && rating >= 75 && rating <= 99;
 
       // Rating-Signale wie "89er Fodder" nur mit Base-Rare-Karten
-      // desselben Ratings prüfen. Specials und Commons verfälschen sonst den Fodder-Markt.
+      // desselben Ratings prÃ¼fen. Specials und Commons verfÃ¤lschen sonst den Fodder-Markt.
       if (isRatingSignal) {
         if (row.cardType !== "Base Rare" || row.overall !== rating) continue;
       }
@@ -8648,8 +8657,8 @@ async function persistDiscordSignalMarketConfirmations(rows, brainWork) {
 
     const extraDetails = Array.from(group.details).slice(0, 3).join(" | ");
     const confirmationDetails = (
-      `${prefix}: ${group.confirmed}/${group.checked} Marktprüfungen ` +
-      `bestätigen das Trader-Signal (${percent}%).` +
+      `${prefix}: ${group.confirmed}/${group.checked} MarktprÃ¼fungen ` +
+      `bestÃ¤tigen das Trader-Signal (${percent}%).` +
       (extraDetails ? ` ${extraDetails}` : "")
     ).slice(0, 2000);
 
@@ -8819,7 +8828,7 @@ async function traderSignalReferencePriceAt(signal, rows, atMs) {
 
   if (prices.length) return median(prices);
 
-  // Für sehr neue Signale darf der aktuelle Preis als Fallback dienen.
+  // FÃ¼r sehr neue Signale darf der aktuelle Preis als Fallback dienen.
   if (Math.abs(Date.now() - atMs) <= 2 * 60_000) {
     const currentById = new Map(rows.map(row => [String(row.eaId), row.price]));
     const currentPrices = ids.map(id => currentById.get(String(id))).filter(Number.isFinite);
@@ -8836,7 +8845,7 @@ async function ensureFrozenTraderSignalReference(signal, rows) {
     return Math.round(signal.initialReferencePrice);
   }
 
-  // Migration für Signale, die vor dem eingefrorenen Einstiegspreis angelegt wurden:
+  // Migration fÃ¼r Signale, die vor dem eingefrorenen Einstiegspreis angelegt wurden:
   // Falls bereits ein Outcome existiert, nehmen wir dessen allerersten Einstiegspreis.
   // Dadurch bleiben 5m, 15m, 1h, 6h und 24h garantiert auf derselben Basis.
   const previousOutcome = await pool.query(`
@@ -8892,7 +8901,7 @@ async function normalizeTraderSignalOutcomesToFrozenReference(signal, frozenPric
     const oldInitial = Number(row.initial_price);
 
     // Auch bestehende v10.6/v10.6.1-Outcomes werden auf denselben Einstiegspreis
-    // zurückgerechnet, damit die Lernhistorie nicht mit wechselnden Basen arbeitet.
+    // zurÃ¼ckgerechnet, damit die Lernhistorie nicht mit wechselnden Basen arbeitet.
     const update = await pool.query(`
       UPDATE fc_trader_signal_outcomes
       SET
@@ -8951,19 +8960,19 @@ function evaluateTraderCall(call, initialPrice, observedPrice) {
       netRoiAfterTaxPct,
       reason: wasCorrect
         ? `VERKAUFEN war richtig: der Referenzpreis fiel danach um ${Math.abs(grossChangePct).toFixed(2)}%.`
-        : `VERKAUFEN war zu früh: der Referenzpreis stieg danach um ${Math.max(0, grossChangePct).toFixed(2)}%.`
+        : `VERKAUFEN war zu frÃ¼h: der Referenzpreis stieg danach um ${Math.max(0, grossChangePct).toFixed(2)}%.`
     };
   }
 
-  // WARTEN wird daran gemessen, ob ein sofortiger Kauf bis zum Prüfzeitpunkt
-  // nach EA-Steuer keinen positiven Netto-ROI gebracht hätte.
+  // WARTEN wird daran gemessen, ob ein sofortiger Kauf bis zum PrÃ¼fzeitpunkt
+  // nach EA-Steuer keinen positiven Netto-ROI gebracht hÃ¤tte.
   const wasCorrect = netRoiAfterTaxPct <= 0;
   return {
     wasCorrect,
     grossChangePct,
     netRoiAfterTaxPct,
     reason: wasCorrect
-      ? `WARTEN war sinnvoll: ein Sofortkauf wäre nach Steuer bei ${netRoiAfterTaxPct.toFixed(2)}% Netto-ROI.`
+      ? `WARTEN war sinnvoll: ein Sofortkauf wÃ¤re nach Steuer bei ${netRoiAfterTaxPct.toFixed(2)}% Netto-ROI.`
       : `WARTEN verpasste einen profitablen Move von ${netRoiAfterTaxPct.toFixed(2)}% Netto-ROI nach Steuer.`
   };
 }
@@ -9230,12 +9239,12 @@ function marketKnowledgeRulesForSignal(signal) {
   const category = String(channel?.category || signal?.category || "").toUpperCase();
   const ids = new Set();
 
-  const isExpiry = type === "EXPIRY" || /\b(expir(?:e|es|y|ing)|ablauf|läuft aus|laeuft aus|endet)\b/i.test(text);
+  const isExpiry = type === "EXPIRY" || /\b(expir(?:e|es|y|ing)|ablauf|lÃ¤uft aus|laeuft aus|endet)\b/i.test(text);
   const isSbc = type === "SBC_CONTENT" || category === "SBC_FODDER" || /\bsbc\b|fodder|squad building|marquee matchup/i.test(text);
   const isSupply = type === "SUPPLY" || /\b(pack|packs|rewards?|supply|angebot|pack weight|store pack)\b/i.test(text);
   const isLeak = ["LEAK", "NEWS_LEAK"].includes(type) || /\b(leak|leaked|geleakt|content leak)\b/i.test(text);
   const isPromo = category === "PROMO_CARDS" || /\b(promo|toty|tots|futties|rttf|future stars|trailblazer|totw)\b/i.test(text);
-  const isOutOfPacks = /out[ -]?of[ -]?packs|leaves? packs|verlässt? packs|verlaesst? packs|nicht mehr in packs/i.test(text);
+  const isOutOfPacks = /out[ -]?of[ -]?packs|leaves? packs|verlÃ¤sst? packs|verlaesst? packs|nicht mehr in packs/i.test(text);
   const isPanic = /panic|crash|sell[ -]?off|abverkauf|falling knife|preissturz/i.test(text);
   const isComplementary = /chemistry|links?|linkt|nation link|league link|club link|ersatzkarte|substitut/i.test(text);
 
@@ -9370,7 +9379,7 @@ async function evaluateMarketKnowledge(rows) {
   let inserted = 0;
   const now = Date.now();
   for (const { signal, rule } of learnablePairs) {
-    // Out-of-packs ohne konkrete Karte/Rating nicht künstlich auf den Gesamtmarkt anwenden.
+    // Out-of-packs ohne konkrete Karte/Rating nicht kÃ¼nstlich auf den Gesamtmarkt anwenden.
     if (rule.scope === "TARGET" && !signal.eaId && !/^\d{2}$/.test(String(signal.playerOrRating || ""))) continue;
     for (const horizonMinutes of MARKET_KNOWLEDGE_HORIZONS) {
       const key = `${signal.id}:${rule.id}:${horizonMinutes}`;
@@ -9500,7 +9509,7 @@ function applyMarketKnowledgeLayer(row, evidence) {
     version: "10.39",
     activeVerifiedRules: evidence || [],
     influenced: false,
-    note: "Nur verifizierte Regeln mit echten FC-Daten dürfen leicht beeinflussen; keine Regel erzeugt alleine einen Kauf."
+    note: "Nur verifizierte Regeln mit echten FC-Daten dÃ¼rfen leicht beeinflussen; keine Regel erzeugt alleine einen Kauf."
   };
   if (!Array.isArray(evidence) || !evidence.length) return row;
 
@@ -9514,8 +9523,8 @@ function applyMarketKnowledgeLayer(row, evidence) {
     row.aiConfidence = Math.min(Number(row.aiConfidence || 78), 78);
     row.aiRisk = "mittel";
     row.aiMarketState = "Verifizierte Marktregel widerspricht Sofort-Kauf";
-    row.aiReason = `${row.aiReason} Market-Knowledge: ${strongestFalling.ruleName} ist nach ${strongestFalling.samples} FC-Beobachtungen mit ${strongestFalling.supportRate.toFixed(1)}% geglätteter Unterstützung verifiziert und spricht aktuell gegen einen Sofort-Kauf.`.slice(0, 1800);
-    row.aiRecommendedHorizon = "Marktregel abklingen lassen und Preis erneut bestätigen";
+    row.aiReason = `${row.aiReason} Market-Knowledge: ${strongestFalling.ruleName} ist nach ${strongestFalling.samples} FC-Beobachtungen mit ${strongestFalling.supportRate.toFixed(1)}% geglÃ¤tteter UnterstÃ¼tzung verifiziert und spricht aktuell gegen einen Sofort-Kauf.`.slice(0, 1800);
+    row.aiRecommendedHorizon = "Marktregel abklingen lassen und Preis erneut bestÃ¤tigen";
     row.aiMarketKnowledge.influenced = true;
     row.aiMarketKnowledge.effect = "BUY_BLOCKED_TO_WAIT";
   } else if (row.aiAction === "JETZT KAUFEN" && strongestRising) {
@@ -9525,11 +9534,11 @@ function applyMarketKnowledgeLayer(row, evidence) {
     const before = Number(row.aiConfidence || 50);
     row.aiConfidence = Math.min(upper, before + bonus);
     if (row.aiConfidence > before) {
-      row.aiReason = `${row.aiReason} Market-Knowledge: ${strongestRising.ruleName} ist nach ${strongestRising.samples} FC-Beobachtungen verifiziert und bestätigt den Kontext leicht (+${row.aiConfidence - before} Confidence).`.slice(0, 1800);
+      row.aiReason = `${row.aiReason} Market-Knowledge: ${strongestRising.ruleName} ist nach ${strongestRising.samples} FC-Beobachtungen verifiziert und bestÃ¤tigt den Kontext leicht (+${row.aiConfidence - before} Confidence).`.slice(0, 1800);
       row.aiMarketKnowledge.influenced = true;
       row.aiMarketKnowledge.effect = `CONFIDENCE_PLUS_${row.aiConfidence - before}`;
     }
-  } else if (["VERKAUF PRÜFEN", "JETZT VERKAUFEN"].includes(row.aiAction) && strongestFalling) {
+  } else if (["VERKAUF PRÃœFEN", "JETZT VERKAUFEN"].includes(row.aiAction) && strongestFalling) {
     const before = Number(row.aiConfidence || 50);
     row.aiConfidence = Math.min(95, before + (strongestFalling.supportRate >= 75 ? 2 : 1));
     row.aiMarketKnowledge.influenced = row.aiConfidence > before;
@@ -9702,7 +9711,7 @@ function addBrainLearningSample(map, key, row, scope) {
     group.scoredOutcomeWeight += weight;
   }
 
-  // ROI-Ausreißer sind für die Confidence nicht entscheidend. Für die Anzeige
+  // ROI-AusreiÃŸer sind fÃ¼r die Confidence nicht entscheidend. FÃ¼r die Anzeige
   // kappen wir sie robust, damit einzelne illiquide Karten das Profil nicht verzerren.
   if (Number.isFinite(row.maxRoi)) {
     const clippedRoi = Math.max(-100, Math.min(200, row.maxRoi));
@@ -9743,8 +9752,8 @@ function finalizeBrainLearningGroup(group) {
   );
 
   // v10.8.1: Nicht jeder Treffer/Fehler ist gleich wertvoll.
-  // Erst bei genügend effektiver Evidenz darf die durchschnittliche
-  // Ergebnis-Schwere die Confidence zusätzlich konservativ kalibrieren.
+  // Erst bei genÃ¼gend effektiver Evidenz darf die durchschnittliche
+  // Ergebnis-Schwere die Confidence zusÃ¤tzlich konservativ kalibrieren.
   let severityAdjustment = 0;
   if (effectiveSamples >= BRAIN_LEARNING_SEVERITY_MIN_EFFECTIVE) {
     if (averageOutcomeScore <= -40) {
@@ -9767,7 +9776,7 @@ function finalizeBrainLearningGroup(group) {
   );
 
   // WAIT ist eine passive Aktion und kann bei flachem Markt leicht scheinbar
-  // perfekt aussehen. Positive Verstärkung deshalb bewusst kleiner halten.
+  // perfekt aussehen. Positive VerstÃ¤rkung deshalb bewusst kleiner halten.
   if (group.action === "NOCH WARTEN" && confidenceAdjustment > BRAIN_LEARNING_WAIT_POSITIVE_CAP) {
     confidenceAdjustment = BRAIN_LEARNING_WAIT_POSITIVE_CAP;
   }
@@ -9802,10 +9811,10 @@ function brainLearningDecisionIsMature(row) {
     return row.priceAfter15m != null;
   }
 
-  // BUY / AVOID / SELL dürfen nicht schon nach 1h als endgültiger Lernerfolg
-  // gelten. Die Bewertungslogik betrachtet bei diesen Aktionen ein längeres
+  // BUY / AVOID / SELL dÃ¼rfen nicht schon nach 1h als endgÃ¼ltiger Lernerfolg
+  // gelten. Die Bewertungslogik betrachtet bei diesen Aktionen ein lÃ¤ngeres
   // Fenster; deshalb lernen wir erst, sobald der 6h-Punkt vorhanden ist.
-  if (["JETZT KAUFEN", "NICHT KAUFEN", "VERKAUF PRÜFEN"].includes(action)) {
+  if (["JETZT KAUFEN", "NICHT KAUFEN", "VERKAUF PRÃœFEN"].includes(action)) {
     return row.priceAfter6h != null;
   }
 
@@ -9829,7 +9838,7 @@ function performanceCardGroup(cardType) {
 
 function performanceAction(action) {
   return String(action || "").toUpperCase() === "JETZT VERKAUFEN"
-    ? "VERKAUF PRÜFEN"
+    ? "VERKAUF PRÃœFEN"
     : String(action || "").toUpperCase();
 }
 
@@ -9853,7 +9862,7 @@ function decisionPerformanceIsMature(action, tracked) {
   if (normalized === "NOCH WARTEN") {
     return tracked.after30m != null;
   }
-  if (["JETZT KAUFEN", "NICHT KAUFEN", "VERKAUF PRÜFEN"].includes(normalized)) {
+  if (["JETZT KAUFEN", "NICHT KAUFEN", "VERKAUF PRÃœFEN"].includes(normalized)) {
     return tracked.after6h != null;
   }
   return false;
@@ -9897,7 +9906,7 @@ function enhancedDecisionPerformance(record, tracked, baseEvaluation) {
     bestNetRoi <= PERFORMANCE_LAB_FALSE_BUY_MAX_NET_ROI;
 
   let sellTimingScore = null;
-  if (action === "VERKAUF PRÜFEN" && validRaw.length) {
+  if (action === "VERKAUF PRÃœFEN" && validRaw.length) {
     // Ein gutes Sell-Timing zeigt sich daran, dass der Markt nach dem Signal
     // nachgibt. 0% Rueckgang = 50 Punkte, -10% oder mehr = 100 Punkte.
     const postSignalLowMove = Math.min(...validRaw);
@@ -9916,7 +9925,7 @@ function enhancedDecisionPerformance(record, tracked, baseEvaluation) {
   else if (action === "JETZT KAUFEN" && baseEvaluation?.wasCorrect === true) outcomeClass = "GOOD_BUY";
   else if (action === "NOCH WARTEN" && baseEvaluation?.wasCorrect === true) outcomeClass = "GOOD_WAIT";
   else if (action === "NICHT KAUFEN" && baseEvaluation?.wasCorrect === true) outcomeClass = "GOOD_AVOID";
-  else if (action === "VERKAUF PRÜFEN" && baseEvaluation?.wasCorrect === true) outcomeClass = "GOOD_SELL";
+  else if (action === "VERKAUF PRÃœFEN" && baseEvaluation?.wasCorrect === true) outcomeClass = "GOOD_SELL";
   else if (decisionPerformanceIsMature(action, tracked) && baseEvaluation?.wasCorrect === false) outcomeClass = "WRONG_DECISION";
 
   return {
@@ -10003,7 +10012,7 @@ async function loadDecisionPerformanceProfiles(force = false) {
         AND (
           (d.action = 'NOCH WARTEN' AND e.price_after_30m IS NOT NULL)
           OR
-          (d.action IN ('JETZT KAUFEN','NICHT KAUFEN','VERKAUF PRÜFEN') AND e.price_after_6h IS NOT NULL)
+          (d.action IN ('JETZT KAUFEN','NICHT KAUFEN','VERKAUF PRÃœFEN') AND e.price_after_6h IS NOT NULL)
         )
       ORDER BY d.created_at DESC
       LIMIT 5000
@@ -10098,7 +10107,7 @@ function applyDecisionPerformanceCalibration(row, cache = decisionPerformanceCac
     } else if (profile.smoothedAccuracy < PERFORMANCE_LAB_BUY_ABSTAIN_ACCURACY) {
       row.aiAction = "NOCH WARTEN";
       abstained = true;
-      row.aiReason = `${row.aiReason} Performance Lab: vergleichbare reife Kaufsignale liegen nur bei ${profile.smoothedAccuracy.toFixed(1)}% geglaetteter Trefferquote. Erst weitere Marktbestätigung abwarten.`;
+      row.aiReason = `${row.aiReason} Performance Lab: vergleichbare reife Kaufsignale liegen nur bei ${profile.smoothedAccuracy.toFixed(1)}% geglaetteter Trefferquote. Erst weitere MarktbestÃ¤tigung abwarten.`;
     }
   }
 
@@ -10173,7 +10182,7 @@ async function buildDecisionPerformanceScorecard(limit = 500) {
       AND (
         (d.action = 'NOCH WARTEN' AND e.price_after_30m IS NOT NULL)
         OR
-        (d.action IN ('JETZT KAUFEN','NICHT KAUFEN','VERKAUF PRÜFEN') AND e.price_after_6h IS NOT NULL)
+        (d.action IN ('JETZT KAUFEN','NICHT KAUFEN','VERKAUF PRÃœFEN') AND e.price_after_6h IS NOT NULL)
       )
     ORDER BY d.created_at DESC
     LIMIT $1
@@ -10195,7 +10204,7 @@ async function buildDecisionPerformanceScorecard(limit = 500) {
   const waitRows = rows.filter(row => performanceAction(row.action) === "NOCH WARTEN");
   const falseBuys = buyRows.filter(row => row.false_buy === true).length;
   const missedEntries = waitRows.filter(row => row.missed_entry === true).length;
-  const sellRows = rows.filter(row => performanceAction(row.action) === "VERKAUF PRÜFEN" && Number.isFinite(row.sell_timing_score));
+  const sellRows = rows.filter(row => performanceAction(row.action) === "VERKAUF PRÃœFEN" && Number.isFinite(row.sell_timing_score));
   const confidenceErrors = rows.map(row => row.confidence_error).filter(Number.isFinite);
   const bestNet = buyRows.map(row => row.best_net_roi).filter(Number.isFinite);
 
@@ -10305,7 +10314,7 @@ async function loadBrainLearningProfiles(force = false) {
       JOIN fc_decision_evaluations e ON e.decision_id = d.id
       WHERE d.created_at >= NOW() - ($1::int * INTERVAL '1 day')
         AND e.was_correct IS NOT NULL
-        AND d.action IN ('JETZT KAUFEN', 'NOCH WARTEN', 'NICHT KAUFEN', 'VERKAUF PRÜFEN')
+        AND d.action IN ('JETZT KAUFEN', 'NOCH WARTEN', 'NICHT KAUFEN', 'VERKAUF PRÃœFEN')
       ORDER BY d.created_at DESC
       LIMIT 5000
     `, [BRAIN_LEARNING_WINDOW_DAYS]);
@@ -10341,7 +10350,7 @@ async function loadBrainLearningProfiles(force = false) {
       rawMature += 1;
 
       // Mehrere fast identische Entscheidungen derselben Karte im selben
-      // Marktfenster sind ein Ereignis, nicht mehrere unabhängige Beweise.
+      // Marktfenster sind ein Ereignis, nicht mehrere unabhÃ¤ngige Beweise.
       const seriesKey = `${row.eaId}|${row.action}`;
       const lastSeenAt = rollingEpisodeLastSeen.get(seriesKey);
 
@@ -10360,7 +10369,7 @@ async function loadBrainLearningProfiles(force = false) {
       row.learningWeight = row.learningQualityWeight * row.learningRecencyWeight;
       mature += 1;
 
-      // v10.8: Wenn genügend Evidenz vorhanden ist, lernt der Brain zuerst
+      // v10.8: Wenn genÃ¼gend Evidenz vorhanden ist, lernt der Brain zuerst
       // aus derselben Marktlage. Ein Crash wird damit nicht mehr mit einem
       // flachen oder bereits gepumpten Markt in einen Topf geworfen.
       addBrainLearningSample(
@@ -10470,7 +10479,7 @@ function applyBrainLearningToDecision(decision, profile) {
       ...decision,
       historical_learning: {
         applied: false,
-        reason: "Noch nicht genug ausgewertete ähnliche Entscheidungen."
+        reason: "Noch nicht genug ausgewertete Ã¤hnliche Entscheidungen."
       }
     };
   }
@@ -10486,7 +10495,7 @@ function applyBrainLearningToDecision(decision, profile) {
     profile.marketRegime && profile.marketRegime !== "*"
       ? `, Marktlage ${profile.marketRegime}`
       : "";
-  const learningFactor = `Historie: ${profile.samples} unabhängige Fälle${effectiveText}${regimeText}, ${profile.smoothedAccuracy.toFixed(1)}% geglättete Trefferquote, Confidence ${signed}.`;
+  const learningFactor = `Historie: ${profile.samples} unabhÃ¤ngige FÃ¤lle${effectiveText}${regimeText}, ${profile.smoothedAccuracy.toFixed(1)}% geglÃ¤ttete Trefferquote, Confidence ${signed}.`;
 
   return {
     ...decision,
@@ -10712,12 +10721,12 @@ function calibrateStrictBuyDecision(row, work) {
   if (historyCap != null && confidence > historyCap) confidence = historyCap;
 
   if (brokeConfirmedFloor) {
-    blockers.push(`Der Preis hat den zuletzt bestätigten Boden im nächsten Zyklus um ${Math.abs(cycleDropPct).toFixed(2)}% unterschritten.`);
+    blockers.push(`Der Preis hat den zuletzt bestÃ¤tigten Boden im nÃ¤chsten Zyklus um ${Math.abs(cycleDropPct).toFixed(2)}% unterschritten.`);
     severeBlock = true;
   }
 
   if (short.duplicate && change1h < 1) {
-    blockers.push(`1m/5m/15m bewegen sich nahezu identisch und zählen deshalb nur als 1 Bestätigung statt 3.`);
+    blockers.push(`1m/5m/15m bewegen sich nahezu identisch und zÃ¤hlen deshalb nur als 1 BestÃ¤tigung statt 3.`);
   }
 
   if (recoveryAfterSelloff) {
@@ -10725,7 +10734,7 @@ function calibrateStrictBuyDecision(row, work) {
       blockers.push(`Erholung erst ${recovery.heldCycles}/${STRICT_BUY_RECOVERY_CYCLES} Marktzyklen gehalten.`);
     }
     if (!recovery.noNewLow) {
-      blockers.push("Noch kein bestätigtes Higher-Low/kein neues Tief.");
+      blockers.push("Noch kein bestÃ¤tigtes Higher-Low/kein neues Tief.");
     }
     if (recovery.currentDecline) {
       blockers.push("Der aktuelle 60-Sekunden-Zyklus macht wieder ein tieferes Preisniveau.");
@@ -10734,7 +10743,7 @@ function calibrateStrictBuyDecision(row, work) {
 
   if (special && recoveryAfterSelloff) {
     if (change15m < STRICT_BUY_SPECIAL_MIN_15M) {
-      blockers.push(`Special-Karte: 15m-Bestätigung zu schwach (${change15m.toFixed(2)}%).`);
+      blockers.push(`Special-Karte: 15m-BestÃ¤tigung zu schwach (${change15m.toFixed(2)}%).`);
     }
     if (change1h < STRICT_BUY_SPECIAL_MIN_1H) {
       blockers.push(`Special-Karte: 1h-Trend noch zu negativ (${change1h.toFixed(2)}%).`);
@@ -10742,7 +10751,7 @@ function calibrateStrictBuyDecision(row, work) {
   }
 
   if (Number.isFinite(historyAccuracy) && historyAccuracy < 45 && !strongIndependentRecovery) {
-    blockers.push(`Historische Trefferquote nur ${historyAccuracy.toFixed(1)}%; ohne starke unabhängige Recovery kein Sofort-Kauf.`);
+    blockers.push(`Historische Trefferquote nur ${historyAccuracy.toFixed(1)}%; ohne starke unabhÃ¤ngige Recovery kein Sofort-Kauf.`);
   }
 
   if (futbinBlock === "OUTLIER") {
@@ -10756,9 +10765,9 @@ function calibrateStrictBuyDecision(row, work) {
     row.aiAction = severeBlock ? "NICHT KAUFEN" : "NOCH WARTEN";
     row.aiConfidence = Math.min(confidence, severeBlock ? 82 : 78);
     row.aiRisk = severeBlock ? "hoch" : "mittel";
-    row.aiMarketState = severeBlock ? "Kaufsignal durch Cross-Check invalidiert" : "Recovery noch nicht ausreichend bestätigt";
-    row.aiReason = `v10.37 Kauf-Guard: ${blockers.join(" ")} Der frühere erste grüne Tick reicht nicht mehr für JETZT KAUFEN.`.slice(0, 1800);
-    row.aiRecommendedHorizon = `Noch ${Math.max(0, STRICT_BUY_RECOVERY_CYCLES - recovery.heldCycles)} Recovery-Zyklen bzw. 15m/1h-Bestätigung abwarten`;
+    row.aiMarketState = severeBlock ? "Kaufsignal durch Cross-Check invalidiert" : "Recovery noch nicht ausreichend bestÃ¤tigt";
+    row.aiReason = `v10.37 Kauf-Guard: ${blockers.join(" ")} Der frÃ¼here erste grÃ¼ne Tick reicht nicht mehr fÃ¼r JETZT KAUFEN.`.slice(0, 1800);
+    row.aiRecommendedHorizon = `Noch ${Math.max(0, STRICT_BUY_RECOVERY_CYCLES - recovery.heldCycles)} Recovery-Zyklen bzw. 15m/1h-BestÃ¤tigung abwarten`;
   } else {
     row.aiConfidence = Math.max(10, Math.min(95, confidence));
     if (historyCap != null && originalConfidence > historyCap) {
@@ -10821,7 +10830,7 @@ function recordStrictBuyGuardOutcome(row) {
 }
 
 function normalizeDecisionForPosition(row, decision) {
-  if (!decision || decision.action !== "VERKAUF PRÜFEN") return decision;
+  if (!decision || decision.action !== "VERKAUF PRÃœFEN") return decision;
 
   const profit = Number.isFinite(row.profitPercent) ? row.profitPercent : null;
   const netProfitTotal = Number.isFinite(row.netProfitTotal) ? row.netProfitTotal : null;
@@ -10876,7 +10885,7 @@ function normalizeDecisionForPosition(row, decision) {
       (extreme24hRange && shortMomentumStillHot && !momentumCooling)
     );
 
-  // Verkaufshinweise sind nur für Karten sinnvoll, die der Nutzer wirklich besitzt.
+  // Verkaufshinweise sind nur fÃ¼r Karten sinnvoll, die der Nutzer wirklich besitzt.
   if (!row.tracked) {
     return {
       ...decision,
@@ -10884,8 +10893,8 @@ function normalizeDecisionForPosition(row, decision) {
       confidence: Math.max(80, Math.min(92, decision.confidence ?? 82)),
       risk: "hoch",
       market_state: "stark gestiegen / Einstieg unattraktiv",
-      reason: "Karte notiert nach starkem Anstieg nahe dem 24h-Hoch. Ohne eigenen Bestand kein Verkaufssignal: nicht hinterherkaufen, Rücksetzer abwarten.",
-      recommended_horizon: "Rücksetzer abwarten"
+      reason: "Karte notiert nach starkem Anstieg nahe dem 24h-Hoch. Ohne eigenen Bestand kein Verkaufssignal: nicht hinterherkaufen, RÃ¼cksetzer abwarten.",
+      recommended_horizon: "RÃ¼cksetzer abwarten"
     };
   }
 
@@ -10899,7 +10908,7 @@ function normalizeDecisionForPosition(row, decision) {
       market_state: "Position noch ohne ausreichende Gewinnmarge",
       reason: profit === null
         ? "Eigener Bestand erkannt, aber die Netto-Gewinnmarge ist noch nicht belastbar. Position weiter beobachten."
-        : `Nach 5% EA-Steuer liegt der Netto-Gewinn erst bei ${profit.toFixed(2)}%. Für ein Verkaufssignal ist die Marge noch zu klein.`,
+        : `Nach 5% EA-Steuer liegt der Netto-Gewinn erst bei ${profit.toFixed(2)}%. FÃ¼r ein Verkaufssignal ist die Marge noch zu klein.`,
       recommended_horizon: "Weiter beobachten"
     };
   }
@@ -10907,7 +10916,7 @@ function normalizeDecisionForPosition(row, decision) {
   // Bei einem extremen 24h-Sprung oder widerspruechlicher Preisquelle darf ein einzelner
   // Hochpunkt nicht als sicherer Exit interpretiert werden. Erst weitere Marktzyklen bestaetigen.
   if (pricePeakNeedsConfirmation) {
-    const rangeText = Number.isFinite(range24hPct) ? ` Die 24h-Spanne beträgt rund ${range24hPct.toFixed(0)}%.` : "";
+    const rangeText = Number.isFinite(range24hPct) ? ` Die 24h-Spanne betrÃ¤gt rund ${range24hPct.toFixed(0)}%.` : "";
     const sourceText = sourceCrossCheckBlocked
       ? ` Der Preis-Crosscheck ist ${row.futbinCrossCheck}.`
       : "";
@@ -10916,9 +10925,9 @@ function normalizeDecisionForPosition(row, decision) {
       action: "HALTEN",
       confidence: Math.min(82, Math.max(70, decision.confidence ?? 76)),
       risk: "mittel",
-      market_state: "Gewinnposition, Preis-Hoch noch nicht bestätigt",
-      reason: `Nach 5% EA-Steuer liegt dein Netto-Gewinn bei +${profit.toFixed(2)}%.${rangeText}${sourceText} Das 24h-Hoch allein reicht nicht für einen sicheren Exit; kurzfristiges Momentum und Preisqualität müssen den Ausstieg erst bestätigen.`,
-      recommended_horizon: "Preis-Hoch / Momentum bestätigen"
+      market_state: "Gewinnposition, Preis-Hoch noch nicht bestÃ¤tigt",
+      reason: `Nach 5% EA-Steuer liegt dein Netto-Gewinn bei +${profit.toFixed(2)}%.${rangeText}${sourceText} Das 24h-Hoch allein reicht nicht fÃ¼r einen sicheren Exit; kurzfristiges Momentum und PreisqualitÃ¤t mÃ¼ssen den Ausstieg erst bestÃ¤tigen.`,
+      recommended_horizon: "Preis-Hoch / Momentum bestÃ¤tigen"
     };
   }
 
@@ -10935,21 +10944,21 @@ function normalizeDecisionForPosition(row, decision) {
       action: "JETZT VERKAUFEN",
       confidence: Math.max(90, Math.min(95, decision.confidence ?? 90)),
       risk: "niedrig",
-      market_state: "Gewinnmitnahme bestätigt",
-      reason: `Nach 5% EA-Steuer liegt dein Netto-Gewinn bei +${profit.toFixed(2)}%${coins}. Die Karte steht nahe dem 24h-Hoch und das kurzfristige Momentum kühlt ab. Der Exit ist ausreichend bestätigt: jetzt verkaufen.`,
+      market_state: "Gewinnmitnahme bestÃ¤tigt",
+      reason: `Nach 5% EA-Steuer liegt dein Netto-Gewinn bei +${profit.toFixed(2)}%${coins}. Die Karte steht nahe dem 24h-Hoch und das kurzfristige Momentum kÃ¼hlt ab. Der Exit ist ausreichend bestÃ¤tigt: jetzt verkaufen.`,
       recommended_horizon: "Jetzt verkaufen / Gewinn sichern"
     };
   }
 
-  // Gute Marge, aber noch keine harte Exit-Bestätigung: erst prüfen, nicht blind verkaufen.
+  // Gute Marge, aber noch keine harte Exit-BestÃ¤tigung: erst prÃ¼fen, nicht blind verkaufen.
   if (profit >= 6 && nearHigh) {
     return {
       ...decision,
-      action: "VERKAUF PRÜFEN",
+      action: "VERKAUF PRÃœFEN",
       confidence: Math.max(84, Math.min(93, decision.confidence ?? 86)),
       risk: "niedrig",
-      market_state: "Gewinnposition nahe möglichem Exit",
-      reason: `Nach 5% EA-Steuer liegt dein Netto-Gewinn bei +${profit.toFixed(2)}%. Die Karte notiert nahe dem 24h-Hoch, aber der Exit ist noch nicht stark genug bestätigt. Verkauf prüfen, noch nicht blind aussteigen.`,
+      market_state: "Gewinnposition nahe mÃ¶glichem Exit",
+      reason: `Nach 5% EA-Steuer liegt dein Netto-Gewinn bei +${profit.toFixed(2)}%. Die Karte notiert nahe dem 24h-Hoch, aber der Exit ist noch nicht stark genug bestÃ¤tigt. Verkauf prÃ¼fen, noch nicht blind aussteigen.`,
       recommended_horizon: "Exit-Signal beobachten"
     };
   }
@@ -10960,7 +10969,7 @@ function normalizeDecisionForPosition(row, decision) {
     confidence: 82,
     risk: "niedrig",
     market_state: "Gewinnposition mit weiter laufendem Momentum",
-    reason: `Eigener Bestand liegt bei +${profit.toFixed(2)}% Netto-Gewinn, aber der Aufwärtstrend ist noch nicht klar ausgelaufen. Weiter halten und Momentum beobachten.`,
+    reason: `Eigener Bestand liegt bei +${profit.toFixed(2)}% Netto-Gewinn, aber der AufwÃ¤rtstrend ist noch nicht klar ausgelaufen. Weiter halten und Momentum beobachten.`,
     recommended_horizon: "Momentum weiter beobachten"
   };
 }
@@ -11131,7 +11140,7 @@ async function buildTradingRows(futbinFeedOverride = null) {
     const normalizedDecision = normalizeDecisionForPosition(row, rawDecision);
     const learningProfile = selectBrainLearningProfile(
       brainLearning,
-      normalizedDecision?.action === "JETZT VERKAUFEN" ? "VERKAUF PRÜFEN" : normalizedDecision?.action,
+      normalizedDecision?.action === "JETZT VERKAUFEN" ? "VERKAUF PRÃœFEN" : normalizedDecision?.action,
       row.cardType,
       row.overall,
       input
@@ -11175,7 +11184,7 @@ async function buildTradingRows(futbinFeedOverride = null) {
   const aiPriority = {
     "JETZT VERKAUFEN": 7,
     "JETZT KAUFEN": 6,
-    "VERKAUF PRÜFEN": 5,
+    "VERKAUF PRÃœFEN": 5,
     "NOCH WARTEN": 4,
     "NICHT KAUFEN": 3,
     "BEOBACHTEN": 2,
@@ -11198,7 +11207,7 @@ function candidateScore(row, work) {
   const actionScore = {
     "JETZT VERKAUFEN": 110,
     "JETZT KAUFEN": 100,
-    "VERKAUF PRÜFEN": 95,
+    "VERKAUF PRÃœFEN": 95,
     "NOCH WARTEN": 85,
     "NICHT KAUFEN": 80,
     "BEOBACHTEN": 45,
@@ -11222,9 +11231,9 @@ function candidateScore(row, work) {
 async function saveDecisionIfNeeded(row, work, decision, forceGemini = false) {
   if (!dbEnabled) return null;
 
-  const storageAction = decision.action === "JETZT VERKAUFEN" ? "VERKAUF PRÜFEN" : decision.action;
+  const storageAction = decision.action === "JETZT VERKAUFEN" ? "VERKAUF PRÃœFEN" : decision.action;
   const important =
-    ["JETZT KAUFEN", "VERKAUF PRÜFEN", "JETZT VERKAUFEN", "NICHT KAUFEN"].includes(decision.action) ||
+    ["JETZT KAUFEN", "VERKAUF PRÃœFEN", "JETZT VERKAUFEN", "NICHT KAUFEN"].includes(decision.action) ||
     (decision.action === "NOCH WARTEN" && (Math.abs(row.change1m ?? 0) >= 5 || Math.abs(row.change5m ?? 0) >= 10));
 
   if (!important && !forceGemini) return null;
@@ -11316,7 +11325,7 @@ async function automaticTraderBrain(rows, brainWork) {
       const normalizedDecision = normalizeDecisionForPosition(geminiCandidate.row, rawDecision);
       const learningProfile = selectBrainLearningProfile(
         brainLearningCache,
-        normalizedDecision?.action === "JETZT VERKAUFEN" ? "VERKAUF PRÜFEN" : normalizedDecision?.action,
+        normalizedDecision?.action === "JETZT VERKAUFEN" ? "VERKAUF PRÃœFEN" : normalizedDecision?.action,
         geminiCandidate.row.cardType,
         geminiCandidate.row.overall,
         geminiCandidate.work.input
@@ -11365,7 +11374,7 @@ async function automaticTraderBrain(rows, brainWork) {
     if (dbEnabled) {
       const notable = rows
         .filter(row =>
-          ["JETZT KAUFEN", "VERKAUF PRÜFEN", "JETZT VERKAUFEN", "NICHT KAUFEN"].includes(row.aiAction) ||
+          ["JETZT KAUFEN", "VERKAUF PRÃœFEN", "JETZT VERKAUFEN", "NICHT KAUFEN"].includes(row.aiAction) ||
           (row.aiAction === "NOCH WARTEN" && (Math.abs(row.change1m ?? 0) >= 5 || Math.abs(row.change5m ?? 0) >= 10))
         )
         .sort((a, b) => b.aiConfidence - a.aiConfidence)
@@ -12305,7 +12314,7 @@ app.get("/api/market-knowledge/status", async (req, res) => {
         profile: profiles[rule.id] || null
       })),
       recent,
-      note: "Trader-Wissen wird als Hypothese gespeichert, mit echten FUT.GG-Marktdaten geprüft und erst nach genügend FC-Beobachtungen vorsichtig gewichtet."
+      note: "Trader-Wissen wird als Hypothese gespeichert, mit echten FUT.GG-Marktdaten geprÃ¼ft und erst nach genÃ¼gend FC-Beobachtungen vorsichtig gewichtet."
     });
   } catch (error) {
     return res.status(500).json({ ok: false, error: String(error) });
@@ -12366,7 +12375,7 @@ app.get("/api/trader-reliability/status", async (req, res) => {
         priorAccuracy: TRADER_RELIABILITY_PRIOR_ACCURACY,
         priorStrength: TRADER_RELIABILITY_PRIOR_STRENGTH,
         categoryPriorStrength: TRADER_RELIABILITY_CATEGORY_PRIOR_STRENGTH,
-        note: "Zeitfenster werden passend zu Erwartung/Kategorie gewichtet; der Einstiegspreis wird pro Signal einmal eingefroren und für 5m/15m/1h/6h/24h identisch verwendet. Autorisierte Forwarder werden ab v10.28 anhand der originalen source_event_at-Zeit bewertet, nicht anhand der späteren Empfangszeit."
+        note: "Zeitfenster werden passend zu Erwartung/Kategorie gewichtet; der Einstiegspreis wird pro Signal einmal eingefroren und fÃ¼r 5m/15m/1h/6h/24h identisch verwendet. Autorisierte Forwarder werden ab v10.28 anhand der originalen source_event_at-Zeit bewertet, nicht anhand der spÃ¤teren Empfangszeit."
       },
       horizonsMinutes: TRADER_RELIABILITY_HORIZONS,
       profiles: profiles.rows.map(row => ({
@@ -12436,7 +12445,7 @@ app.get("/api/trader-confluence/status", (req, res) => {
       minActiveMinutes: 90,
       maxActiveMinutes: 1560,
       reconfirmStabilityMinutes: 15,
-      note: "24h-/morgen-Signale bleiben bis zur finalen Auswertung verfügbar; nur aktive Signale beeinflussen den Brain. Bestätigte Signale melden Invalidierung oder Ablauf einmalig."
+      note: "24h-/morgen-Signale bleiben bis zur finalen Auswertung verfÃ¼gbar; nur aktive Signale beeinflussen den Brain. BestÃ¤tigte Signale melden Invalidierung oder Ablauf einmalig."
     },
     lastGate: lastTraderConfluenceGate,
     alertsSent: traderConfluenceAlertsSent,
@@ -12462,8 +12471,8 @@ app.get("/api/discord-rating-mode/status", (req, res) => {
     ratingPlayerList: {
       enabled: true,
       button: "Spieler anzeigen",
-      intensiveSelector: "Spieler intensiv überwachen",
-      intensiveAllOption: "ALLE Rating-Spieler intensiv überwachen",
+      intensiveSelector: "Spieler intensiv Ã¼berwachen",
+      intensiveAllOption: "ALLE Rating-Spieler intensiv Ã¼berwachen",
       privateToClickingUser: true,
       pageSize: RATING_LIST_PAGE_SIZE
     },
@@ -12559,7 +12568,7 @@ app.post("/api/position", async (req, res) => {
     if (!Number.isFinite(eaId) || eaId <= 0) {
       return res.status(400).json({
         ok: false,
-        error: "Ungültige eaId"
+        error: "UngÃ¼ltige eaId"
       });
     }
 
@@ -12615,7 +12624,7 @@ app.delete("/api/position/:eaId", async (req, res) => {
     if (!Number.isFinite(eaId) || eaId <= 0) {
       return res.status(400).json({
         ok: false,
-        error: "Ungültige eaId"
+        error: "UngÃ¼ltige eaId"
       });
     }
 
@@ -12683,7 +12692,7 @@ app.post("/api/intensive-watch/:eaId", async (req, res) => {
 app.delete("/api/intensive-watch/:eaId", async (req, res) => {
   try {
     const eaId = String(req.params.eaId || "");
-    if (!/^\d+$/.test(eaId)) return res.status(400).json({ ok: false, error: "Ungültige eaId" });
+    if (!/^\d+$/.test(eaId)) return res.status(400).json({ ok: false, error: "UngÃ¼ltige eaId" });
     await deleteIntensiveWatch(eaId);
     res.json({ ok: true, eaId });
   } catch (error) {
@@ -12729,7 +12738,7 @@ function tradingDataMode() {
       hasSafeSnapshot: true,
       safeSnapshotAt,
       reason:
-        "FUT.GG ist aktuell nicht sicher. Es werden nur die letzten bereits geprüften Marktdaten angezeigt. Historie, Lernen und Trading-Alerts bleiben blockiert, bis die Quelle wieder stabil ist."
+        "FUT.GG ist aktuell nicht sicher. Es werden nur die letzten bereits geprÃ¼ften Marktdaten angezeigt. Historie, Lernen und Trading-Alerts bleiben blockiert, bis die Quelle wieder stabil ist."
     };
   }
 
@@ -12740,7 +12749,7 @@ function tradingDataMode() {
     hasSafeSnapshot: false,
     safeSnapshotAt: null,
     reason:
-      "Noch kein sicherer Markt-Snapshot verfügbar. Das System wartet auf einen erfolgreichen FUT.GG-Marktcheck."
+      "Noch kein sicherer Markt-Snapshot verfÃ¼gbar. Das System wartet auf einen erfolgreichen FUT.GG-Marktcheck."
   };
 }
 
@@ -12782,7 +12791,7 @@ app.get("/api/trading", async (req, res) => {
         buyNow: rows.filter(row => row.aiAction === "JETZT KAUFEN").length,
         wait: rows.filter(row => row.aiAction === "NOCH WARTEN").length,
         doNotBuy: rows.filter(row => row.aiAction === "NICHT KAUFEN").length,
-        sellCheck: rows.filter(row => row.aiAction === "VERKAUF PRÜFEN").length,
+        sellCheck: rows.filter(row => row.aiAction === "VERKAUF PRÃœFEN").length,
         sellNow: rows.filter(row => row.aiAction === "JETZT VERKAUFEN").length
       },
       ratingIntelligence: Object.values(latestRatingStats)
@@ -12815,7 +12824,7 @@ app.get("/api/ratings-intelligence", (req, res) => {
     "KAUFZONE": 6,
     "STARK FALLEND": 5,
     "STARK STEIGEND": 4,
-    "FÄLLT": 3,
+    "FÃ„LLT": 3,
     "STEIGEND": 2,
     "NEUTRAL": 1,
     "ZU WENIG DATEN": 0
@@ -12849,7 +12858,7 @@ app.get("/api/processing-health", (req, res) => {
     version: "10.56-public-leak-learning-brain",
     gameYear: GAME_YEAR,
     processingHealth: health,
-    note: "DB-, Brain- oder Discord-Fehler werden getrennt von FUT.GG-Quellfehlern bewertet und können den Source Health Guard nicht mehr fälschlich in Quarantäne schicken."
+    note: "DB-, Brain- oder Discord-Fehler werden getrennt von FUT.GG-Quellfehlern bewertet und kÃ¶nnen den Source Health Guard nicht mehr fÃ¤lschlich in QuarantÃ¤ne schicken."
   });
 });
 
@@ -12866,7 +12875,7 @@ app.get("/api/source-health", (req, res) => {
       blocksHistoryWriteWhenUnhealthy: true,
       blocksBrainCycleWhenUnhealthy: true,
       blocksTradingAlertsWhenUnhealthy: true,
-      note: "Bei klar unvollständigen oder ausgefallenen FUT.GG-Daten wird der aktive Trading-Zyklus gestoppt. Ohne autorisierten FUTBIN-Feed zeigt die API nur den letzten geprüften STALE_SAFE-Snapshot. Mit belastbar verifiziertem Bulk-Feed darf sie aktuelle Ersatzpreise im FUTBIN_FALLBACK_SAFE-Modus anzeigen; Historie, Lernen und Trading-Alerts bleiben dabei blockiert."
+      note: "Bei klar unvollstÃ¤ndigen oder ausgefallenen FUT.GG-Daten wird der aktive Trading-Zyklus gestoppt. Ohne autorisierten FUTBIN-Feed zeigt die API nur den letzten geprÃ¼ften STALE_SAFE-Snapshot. Mit belastbar verifiziertem Bulk-Feed darf sie aktuelle Ersatzpreise im FUTBIN_FALLBACK_SAFE-Modus anzeigen; Historie, Lernen und Trading-Alerts bleiben dabei blockiert."
     }
   });
 });
@@ -12904,7 +12913,7 @@ app.get("/api/futbin/status", (req, res) => {
       maxDivergentSharePct: Number((FUTBIN_MAX_DIVERGENT_SHARE * 100).toFixed(1)),
       maxOutlierSharePct: Number((FUTBIN_MAX_OUTLIER_SHARE * 100).toFixed(1)),
       trustTtlMinutes: Math.round(FUTBIN_TRUST_TTL_MS / 60_000),
-      note: "FUT.GG bleibt Hauptquelle. FUTBIN kommt entweder über einen autorisierten Bulk-Feed oder über die öffentliche Parse-API. Parse wird nur sparsam für relevante Einzelkarten geprüft; ein eindeutiger OUTLIER darf einen Kaufalarm blockieren, aber niemals allein einen Kauf auslösen. Anzeige-Fallback bleibt dem belastbar verifizierten Bulk-Feed vorbehalten."
+      note: "FUT.GG bleibt Hauptquelle. FUTBIN kommt entweder Ã¼ber einen autorisierten Bulk-Feed oder Ã¼ber die Ã¶ffentliche Parse-API. Parse wird nur sparsam fÃ¼r relevante Einzelkarten geprÃ¼ft; ein eindeutiger OUTLIER darf einen Kaufalarm blockieren, aber niemals allein einen Kauf auslÃ¶sen. Anzeige-Fallback bleibt dem belastbar verifizierten Bulk-Feed vorbehalten."
     },
     crossCheckHealth: latestFutbinCrossCheckHealth,
     currentCrossCheck: {
@@ -12981,7 +12990,7 @@ app.get("/api/trader-brain/learning/status", async (req, res) => {
         cardTypeMinEffectiveSamples: BRAIN_LEARNING_CARDTYPE_MIN_EFFECTIVE,
         actionMinEffectiveSamples: BRAIN_LEARNING_ACTION_MIN_EFFECTIVE,
         marketRegimes: ["CRASH", "PUMP", "RECOVERY", "FLAT", "NORMAL"],
-        note: "v10.8.1 lernt zuerst aus derselben Marktlage: Crash, Pump, Recovery, Flat oder Normal. Zusätzlich berücksichtigt die Confidence nach genügend effektiven Fällen die Schwere historischer Ergebnisse: starke wiederholte Fehler drücken etwas stärker, klar positive Outcomes verstärken etwas. Der Zusatz bleibt auf wenige Confidence-Punkte begrenzt; Aktionen werden nicht blind umgedreht."
+        note: "v10.8.1 lernt zuerst aus derselben Marktlage: Crash, Pump, Recovery, Flat oder Normal. ZusÃ¤tzlich berÃ¼cksichtigt die Confidence nach genÃ¼gend effektiven FÃ¤llen die Schwere historischer Ergebnisse: starke wiederholte Fehler drÃ¼cken etwas stÃ¤rker, klar positive Outcomes verstÃ¤rken etwas. Der Zusatz bleibt auf wenige Confidence-Punkte begrenzt; Aktionen werden nicht blind umgedreht."
       },
       totalMatureDecisions: cache.totalMatureDecisions,
       rawMatureDecisions: cache.rawMatureDecisions,
@@ -13334,14 +13343,14 @@ app.get("/trading", (req, res) => {
   <h1>FC Trading Intelligence</h1>
 
   <div class="sub">
-    Google Trader Brain • 1m / 5m / 15m / 1h / 24h / 7d / 30d • 60-Sekunden-Refresh • 5 % EA-Steuer
+    Google Trader Brain â€¢ 1m / 5m / 15m / 1h / 24h / 7d / 30d â€¢ 60-Sekunden-Refresh â€¢ 5 % EA-Steuer
   </div>
 
   <div class="bar">
 
     <input
       id="search"
-      placeholder="Spieler suchen…"
+      placeholder="Spieler suchenâ€¦"
     >
 
     <select id="type">
@@ -13368,9 +13377,9 @@ app.get("/trading", (req, res) => {
       <option>KAUFEN</option>
       <option>BEOBACHTEN</option>
       <option>ERHOLUNG</option>
-      <option>VERKAUF PRÜFEN</option>
+      <option>VERKAUF PRÃœFEN</option>
       <option>HALTEN</option>
-      <option>FÄLLT</option>
+      <option>FÃ„LLT</option>
     </select>
 
     <select id="aiFilter">
@@ -13380,13 +13389,13 @@ app.get("/trading", (req, res) => {
       <option>NICHT KAUFEN</option>
       <option>BEOBACHTEN</option>
       <option>HALTEN</option>
-      <option>VERKAUF PRÜFEN</option>
+      <option>VERKAUF PRÃœFEN</option>
       <option>JETZT VERKAUFEN</option>
     </select>
 
     <select id="trackedFilter">
       <option value="all">Alle Karten</option>
-      <option value="tracked">Meine Käufe</option>
+      <option value="tracked">Meine KÃ¤ufe</option>
       <option value="notTracked">Ohne Kaufpreis</option>
     </select>
 
@@ -13394,7 +13403,7 @@ app.get("/trading", (req, res) => {
       id="status"
       class="status"
     >
-      Wird geladen…
+      Wird geladenâ€¦
     </div>
 
   </div>
@@ -13403,16 +13412,16 @@ app.get("/trading", (req, res) => {
     id="storage"
     class="storage"
   >
-    Lade Datenbankstatus…
+    Lade Datenbankstatusâ€¦
   </div>
 
   <div class="rating-box">
     <div class="rating-head">
       <div>
         <div class="rating-title">Rating-Markt Intelligence</div>
-        <div class="rating-sub">Base Rare • kompletter Rating-Markt • automatisch alle 60 Sekunden</div>
+        <div class="rating-sub">Base Rare â€¢ kompletter Rating-Markt â€¢ automatisch alle 60 Sekunden</div>
       </div>
-      <div id="ratingSummary" class="rating-sub">Lade Rating-Märkte…</div>
+      <div id="ratingSummary" class="rating-sub">Lade Rating-MÃ¤rkteâ€¦</div>
     </div>
 
     <div class="rating-scroll">
@@ -13537,7 +13546,7 @@ function renderRatings() {
     "KAUFZONE": 6,
     "STARK FALLEND": 5,
     "STARK STEIGEND": 4,
-    "FÄLLT": 3,
+    "FÃ„LLT": 3,
     "STEIGEND": 2,
     "NEUTRAL": 1,
     "ZU WENIG DATEN": 0
@@ -13592,7 +13601,7 @@ function renderRatings() {
 
   summary.textContent =
     rows.length +
-    " Ratings • " +
+    " Ratings â€¢ " +
     alerts +
     " aktive Rating-Signale";
 }
@@ -13729,14 +13738,14 @@ function render() {
               class="tiny"
               onclick="editPosition(\${row.eaId})"
             >
-              Ändern
+              Ã„ndern
             </button>
 
             <button
               class="tiny"
               onclick="removePosition(\${row.eaId})"
             >
-              Löschen
+              LÃ¶schen
             </button>
           \`
         : \`
@@ -13800,27 +13809,27 @@ function render() {
 
       <td style="text-align:left; white-space:normal; min-width:220px">
         <b>Combined \${row.aiCombinedScore ?? "-"}/100</b><br>
-        Player \${row.aiPlayerScore ?? "-"}/100 • Market \${row.aiMarketLogicScore ?? "-"}/100<br>
-        <span class="muted">Momentum \${row.aiMomentumScore ?? "-"} • Rel. Stärke \${row.aiRelativeStrengthScore ?? "-"} • Risiko \${row.aiRiskScore ?? "-"}</span>
+        Player \${row.aiPlayerScore ?? "-"}/100 â€¢ Market \${row.aiMarketLogicScore ?? "-"}/100<br>
+        <span class="muted">Momentum \${row.aiMomentumScore ?? "-"} â€¢ Rel. StÃ¤rke \${row.aiRelativeStrengthScore ?? "-"} â€¢ Risiko \${row.aiRiskScore ?? "-"}</span>
       </td>
 
       <td style="text-align:left; white-space:normal; min-width:210px">
         Fair \${fmt(row.aiFairValue)}<br>
         \${Number.isFinite(row.aiUndervaluationPct) ? ((row.aiUndervaluationPct > 0 ? "+" : "") + row.aiUndervaluationPct.toFixed(2) + "% vs. Fair Value") : "-"}<br>
-        Ziel \${fmt(row.aiTargetLow)}–\${fmt(row.aiTargetHigh)}<br>
-        <span class="muted">Ideal \${fmt(row.aiIdealEntryLow)}–\${fmt(row.aiIdealEntryHigh)} • Invalidation \${fmt(row.aiInvalidation)}</span>
+        Ziel \${fmt(row.aiTargetLow)}â€“\${fmt(row.aiTargetHigh)}<br>
+        <span class="muted">Ideal \${fmt(row.aiIdealEntryLow)}â€“\${fmt(row.aiIdealEntryHigh)} â€¢ Invalidation \${fmt(row.aiInvalidation)}</span>
       </td>
 
       <td style="text-align:left; white-space:normal; min-width:330px">
-        <b>\${String(row.aiMarketPhase || "DATA_BUILDING").replaceAll("_", " ")}</b> • Market Confidence \${row.aiMarketLogicConfidence ?? "-"}%<br>
-        These: \${row.aiThesisConfirmed ?? 0}/\${row.aiThesisTotal ?? 0} bestätigt • Fortsetzung \${row.aiContinuationProbability ?? "-"}% • Downside \${row.aiDownsideRiskPct ?? "-"}%<br>
+        <b>\${String(row.aiMarketPhase || "DATA_BUILDING").replaceAll("_", " ")}</b> â€¢ Market Confidence \${row.aiMarketLogicConfidence ?? "-"}%<br>
+        These: \${row.aiThesisConfirmed ?? 0}/\${row.aiThesisTotal ?? 0} bestÃ¤tigt â€¢ Fortsetzung \${row.aiContinuationProbability ?? "-"}% â€¢ Downside \${row.aiDownsideRiskPct ?? "-"}%<br>
         <span class="muted">\${(row.aiMarketLogicReasons || []).slice(0,2).join(" ")}</span>
       </td>
 
       <td style="text-align:left; white-space:normal; min-width:230px">
-        <b>\${row.aiLeakIntel?.active ? "📡 AKTIV" : "kein aktiver Leak"}</b><br>
+        <b>\${row.aiLeakIntel?.active ? "ðŸ“¡ AKTIV" : "kein aktiver Leak"}</b><br>
         \${row.aiLeakIntel?.active ? ((row.aiLeakIntel.topics || []).join(", ") || "GENERAL") : "-"}<br>
-        <span class="muted">\${row.aiLeakIntel?.active ? ((row.aiLeakIntel.sourceCount || 0) + " Quelle(n) • Impact " + (row.aiLeakIntel.impactScore ?? 0) + "/100 • Marktreaktion " + (row.aiLeakIntel.marketReaction ? "JA" : "NEIN")) : "Public-Leak-Layer wartet"}</span>
+        <span class="muted">\${row.aiLeakIntel?.active ? ((row.aiLeakIntel.sourceCount || 0) + " Quelle(n) â€¢ Impact " + (row.aiLeakIntel.impactScore ?? 0) + "/100 â€¢ Marktreaktion " + (row.aiLeakIntel.marketReaction ? "JA" : "NEIN")) : "Public-Leak-Layer wartet"}</span>
       </td>
 
       <td style="text-align:left; white-space:normal; min-width:320px">
@@ -13863,7 +13872,7 @@ function render() {
     .getElementById("status")
     .textContent =
       filtered.length +
-      " passende Karten • zeige " +
+      " passende Karten â€¢ zeige " +
       Math.min(
         500,
         filtered.length
@@ -13887,7 +13896,7 @@ async function editPosition(eaId) {
 
   const buyRaw =
     prompt(
-      "Kaufpreis für " +
+      "Kaufpreis fÃ¼r " +
       row.name +
       " in Coins:",
       current
@@ -13906,7 +13915,7 @@ async function editPosition(eaId) {
     !Number.isInteger(buyPrice) ||
     buyPrice <= 0
   ) {
-    alert("Ungültiger Kaufpreis.");
+    alert("UngÃ¼ltiger Kaufpreis.");
     return;
   }
 
@@ -13928,7 +13937,7 @@ async function editPosition(eaId) {
     quantity <= 0 ||
     quantity > 1000
   ) {
-    alert("Ungültige Menge.");
+    alert("UngÃ¼ltige Menge.");
     return;
   }
 
@@ -13975,9 +13984,9 @@ async function removePosition(eaId) {
 
   if (
     !confirm(
-      "Kaufpreis für " +
+      "Kaufpreis fÃ¼r " +
       row.name +
-      " löschen?"
+      " lÃ¶schen?"
     )
   ) {
     return;
@@ -13997,7 +14006,7 @@ async function removePosition(eaId) {
   if (!response.ok || !json.ok) {
     alert(
       json.error ||
-      "Löschen fehlgeschlagen"
+      "LÃ¶schen fehlgeschlagen"
     );
     return;
   }
@@ -14016,7 +14025,7 @@ async function load() {
     document.getElementById("status");
 
   status.textContent =
-    "Aktualisiere…";
+    "Aktualisiereâ€¦";
 
   try {
 
@@ -14055,12 +14064,12 @@ async function load() {
 
     status.textContent =
       dataMode === "LIVE"
-        ? "LIVE • FUT.GG " + sourceStatus
+        ? "LIVE â€¢ FUT.GG " + sourceStatus
         : dataMode === "FUTBIN_FALLBACK_SAFE"
-        ? "🟡 FUTBIN FALLBACK SAFE • Anzeige-only • Brain/Alerts pausiert"
+        ? "ðŸŸ¡ FUTBIN FALLBACK SAFE â€¢ Anzeige-only â€¢ Brain/Alerts pausiert"
         : dataMode === "STALE_SAFE"
-        ? "⚠ STALE SAFE • letzte geprüfte Daten • FUT.GG " + sourceStatus
-        : "Warte auf sicheren FUT.GG-Markt-Snapshot…";
+        ? "âš  STALE SAFE â€¢ letzte geprÃ¼fte Daten â€¢ FUT.GG " + sourceStatus
+        : "Warte auf sicheren FUT.GG-Markt-Snapshotâ€¦";
 
     document
       .getElementById("storage")
@@ -14070,29 +14079,29 @@ async function load() {
             ? "Dauerhafte Historie: AN"
             : "Dauerhafte Historie: AUS"
         ) +
-        " • Datenmodus: " +
+        " â€¢ Datenmodus: " +
         dataMode +
-        " • FUT.GG: " +
+        " â€¢ FUT.GG: " +
         sourceStatus +
-        " • " +
+        " â€¢ " +
         json.historyNote +
-        " • Eigene Käufe: " +
+        " â€¢ Eigene KÃ¤ufe: " +
         json.trackedPositions +
-        " • KI jetzt kaufen: " +
+        " â€¢ KI jetzt kaufen: " +
         (json.aiSummary?.buyNow ?? 0) +
-        " • KI Verkauf prüfen: " +
+        " â€¢ KI Verkauf prÃ¼fen: " +
         (json.aiSummary?.sellCheck ?? 0) +
-        " • Rating-Signale: " +
+        " â€¢ Rating-Signale: " +
         (json.ratingAlerts ?? 0) +
-        " • Gemini: " +
+        " â€¢ Gemini: " +
         (json.geminiQuota?.usedToday ?? 0) +
         "/" +
         (json.geminiQuota?.dailyBudget ?? 15) +
-        " • Discord: " +
+        " â€¢ Discord: " +
         (json.discord?.configured ? "AN" : "AUS") +
-        " • Leak Intel: " +
+        " â€¢ Leak Intel: " +
         (json.publicLeaks?.enabled ? ((json.publicLeaks?.acceptedEvents ?? 0) + " neu / " + (json.publicLeaks?.relevantPosts ?? 0) + " relevant") : "AUS") +
-        " • Aktualisiert " +
+        " â€¢ Aktualisiert " +
         new Date(
           json.updatedAt
         ).toLocaleTimeString(
@@ -14156,7 +14165,7 @@ async function startMonitoring(reason = "active") {
   if (HA_ENABLED && !haIsLeader()) return;
 
   monitoringStarted = true;
-  await setUvBrainActive(true).catch(error => console.error("ÜV active-mode error:", error));
+  await setUvBrainActive(true).catch(error => console.error("ÃœV active-mode error:", error));
   console.log(`[HA] Active services starting (${reason}).`);
 
   if (DISCORD_CONFIGURED) {
@@ -14200,7 +14209,7 @@ async function stopActiveServices(reason = "standby") {
       metadataIntervalHandle = null;
     }
 
-    await setUvBrainActive(false).catch(error => console.error("ÜV standby-mode error:", error));
+    await setUvBrainActive(false).catch(error => console.error("ÃœV standby-mode error:", error));
 
     try {
       if (discordClient) discordClient.destroy();
@@ -14236,9 +14245,9 @@ async function initializeRuntime() {
       runtimeProvider: () => ({ monitoringBusy }),
       active: !HA_ENABLED
     });
-    console.log(`[ÜV] FC ÜV Brain v${uvStatus.version} integriert. Shared console snapshot: ${uvStatus.sharedConsoleMarket ? "ja" : "nein"}. Mode: ${uvStatus.runtimeMode}.`);
+    console.log(`[ÃœV] FC ÃœV Brain v${uvStatus.version} integriert. Shared console snapshot: ${uvStatus.sharedConsoleMarket ? "ja" : "nein"}. Mode: ${uvStatus.runtimeMode}.`);
   } catch (error) {
-    console.error("ÜV Brain init error:", error);
+    console.error("ÃœV Brain init error:", error);
   }
 
   if (!HA_ENABLED) {
@@ -14318,7 +14327,7 @@ async function gracefulShutdown(reason = "shutdown") {
   try {
     await shutdownUvBrain();
   } catch (error) {
-    console.error("ÜV shutdown error:", error);
+    console.error("ÃœV shutdown error:", error);
   }
 
   if (pool) {
