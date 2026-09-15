@@ -277,6 +277,11 @@ const PERFORMANCE_LAB_BUY_BLOCK_ACCURACY = Math.max(25, Math.min(
   PERFORMANCE_LAB_BUY_ABSTAIN_ACCURACY,
   Number(process.env.PERFORMANCE_LAB_BUY_BLOCK_ACCURACY || 43)
 ));
+const PERFORMANCE_LAB_SELL_REVIEW_ACCURACY = Math.max(35, Math.min(70, Number(process.env.PERFORMANCE_LAB_SELL_REVIEW_ACCURACY || 50)));
+const PERFORMANCE_LAB_SELL_BLOCK_ACCURACY = Math.max(25, Math.min(
+  PERFORMANCE_LAB_SELL_REVIEW_ACCURACY,
+  Number(process.env.PERFORMANCE_LAB_SELL_BLOCK_ACCURACY || 42)
+));
 
 let decisionPerformanceCache = {
   loadedAt: 0,
@@ -1244,7 +1249,8 @@ function publicLeakSignalFromPost(post) {
   const platform = isDirectX ? "x" : "telegram";
   let targetInfo = detectSignalTarget(post.text);
   if (!targetInfo) targetInfo = { target: "MARKT", eaId: null, kind: "market" };
-  const eventAt = Number.isFinite(Number(post.sourceEventAt)) ? Number(post.sourceEventAt) : Date.now();
+  if (!Number.isFinite(Number(post.sourceEventAt))) return { skipReason: "UNKNOWN_TIME" };
+  const eventAt = Number(post.sourceEventAt);
   const fingerprint = crypto
     .createHash("sha1")
     .update(`${platform}|${post.handle}|${post.postId}|${post.text}`)
@@ -1477,7 +1483,11 @@ async function pollPublicLeakSources(force = false) {
         let sourceAccepted = 0;
 
         for (const post of posts) {
-          const eventAt = Number.isFinite(Number(post.sourceEventAt)) ? Number(post.sourceEventAt) : now;
+          if (!Number.isFinite(Number(post.sourceEventAt))) {
+            cycle.skippedUnknownTime += 1;
+            continue;
+          }
+          const eventAt = Number(post.sourceEventAt);
           if (now - eventAt > PUBLIC_LEAK_MAX_AGE_MS || eventAt > now + 5 * 60_000) {
             cycle.skippedOld += 1;
             continue;
@@ -10116,6 +10126,23 @@ function applyDecisionPerformanceCalibration(row, cache = decisionPerformanceCac
     }
   }
 
+  // SELL/Exit gets the same empirical veto philosophy as BUY. Historical
+  // performance may downgrade a sell, but never create a fresh sell signal.
+  if (
+    performanceAction(originalAction) === performanceAction("JETZT VERKAUFEN") &&
+    profile.samples >= PERFORMANCE_LAB_MIN_ABSTAIN_SAMPLES
+  ) {
+    if (profile.smoothedAccuracy < PERFORMANCE_LAB_SELL_BLOCK_ACCURACY) {
+      row.aiAction = "HALTEN";
+      abstained = true;
+      row.aiReason = `${row.aiReason} Performance Lab: historische Exit-Qualität zu schwach (${profile.smoothedAccuracy.toFixed(1)}%). Sofortiger Exit blockiert.`;
+    } else if (originalAction === "JETZT VERKAUFEN" && profile.smoothedAccuracy < PERFORMANCE_LAB_SELL_REVIEW_ACCURACY) {
+      row.aiAction = performanceAction("JETZT VERKAUFEN");
+      abstained = true;
+      row.aiReason = `${row.aiReason} Performance Lab: Exit-Historie nur ${profile.smoothedAccuracy.toFixed(1)}%. Verkauf nochmals live bestätigen.`;
+    }
+  }
+
   row.aiPerformanceCalibration = {
     active: true,
     samples: profile.samples,
@@ -10280,7 +10307,9 @@ async function buildDecisionPerformanceScorecard(limit = 500) {
       calibrationMinSamples: PERFORMANCE_LAB_MIN_CALIBRATION_SAMPLES,
       abstainMinSamples: PERFORMANCE_LAB_MIN_ABSTAIN_SAMPLES,
       buyAbstainBelowAccuracy: PERFORMANCE_LAB_BUY_ABSTAIN_ACCURACY,
-      buyBlockBelowAccuracy: PERFORMANCE_LAB_BUY_BLOCK_ACCURACY
+      buyBlockBelowAccuracy: PERFORMANCE_LAB_BUY_BLOCK_ACCURACY,
+      sellReviewBelowAccuracy: PERFORMANCE_LAB_SELL_REVIEW_ACCURACY,
+      sellBlockBelowAccuracy: PERFORMANCE_LAB_SELL_BLOCK_ACCURACY
     }
   };
 }
