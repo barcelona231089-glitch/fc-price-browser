@@ -420,6 +420,7 @@ function evidenceFreshness(observedAt, fetchedAt) {
 function patchServerFinal(source) {
   let out = String(source || "");
   if (out.includes('FINAL_TRADER_HARDENING_VERSION = "10.69.9.6.9"')) return out;
+  out = out.replaceAll('10.69.9.6.5-final', '10.69.9.6.9-final');
 
   out = out.replace(
     'const MARKET_KNOWLEDGE_MIN_SAMPLES = Math.max(6, Math.min(50, Number(process.env.MARKET_KNOWLEDGE_MIN_SAMPLES || 12)));',
