@@ -17,6 +17,7 @@ try {
   register("./v1069965LeakHotfixL5Loader.mjs", pathToFileURL("./"));
   register("./v1069965LeakHotfixL6Loader.mjs", pathToFileURL("./"));
   register("./v1069965LeakHotfixL7Loader.mjs", pathToFileURL("./"));
+  register("./v1069969FinalHardeningLoader.mjs", pathToFileURL("./"));
   console.log(`${prefix} 6.8 v11 Trade-Memory + L1-L7 loaders registered.`);
   await import("./server.js");
 } catch (error) {
