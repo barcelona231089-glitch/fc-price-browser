@@ -4,6 +4,7 @@ import { GoogleGenAI } from "@google/genai";
 
 export const MARKET_EVIDENCE_VERSION = "1.1.0";
 const BUILD = "10.69.4";
+const EVIDENCE_STALE_MIN = Math.max(30, Math.min(1440, Number(process.env.MARKET_EVIDENCE_STALE_MIN || 360)));
 
 let schemaReady = false;
 let schemaPromise = null;
@@ -31,6 +32,17 @@ function parseDate(value) {
   if (!value) return null;
   const d = new Date(value);
   return Number.isFinite(d.getTime()) ? d.toISOString() : null;
+}
+
+function evidenceFreshness(observedAt, fetchedAt, now = Date.now()) {
+  const observedMs = Date.parse(observedAt || "");
+  const fetchedMs = Date.parse(fetchedAt || "");
+  const sourceAgeMinutes = Number.isFinite(observedMs) ? Math.max(0, (now - observedMs) / 60_000) : null;
+  const fetchAgeMinutes = Number.isFinite(fetchedMs) ? Math.max(0, (now - fetchedMs) / 60_000) : null;
+  const age = Number.isFinite(sourceAgeMinutes) ? sourceAgeMinutes : fetchAgeMinutes;
+  const freshnessStatus = !Number.isFinite(age) ? "UNKNOWN" : age <= EVIDENCE_STALE_MIN ? "FRESH" : age <= EVIDENCE_STALE_MIN * 2 ? "AGING" : "STALE";
+  const freshnessWeight = !Number.isFinite(age) ? 0 : Number(Math.max(0, 1 - Math.min(age, EVIDENCE_STALE_MIN * 2) / (EVIDENCE_STALE_MIN * 2)).toFixed(3));
+  return { fetchedAt: parseDate(fetchedAt), sourceAgeMinutes: Number.isFinite(sourceAgeMinutes) ? Number(sourceAgeMinutes.toFixed(2)) : null, fetchAgeMinutes: Number.isFinite(fetchAgeMinutes) ? Number(fetchAgeMinutes.toFixed(2)) : null, freshnessStatus, freshnessWeight };
 }
 
 function normalizeSale(row) {
@@ -66,7 +78,8 @@ function normalizeCard(row) {
     Array.isArray(row.sales) ? row.sales : [])
     .map(normalizeSale).filter(Boolean);
 
-  const observedAt = parseDate(row.observed_at ?? row.observedAt ?? row.updated_at ?? row.updatedAt) || new Date().toISOString();
+  const fetchedAt = parseDate(row.fetched_at ?? row.fetchedAt ?? row.retrieved_at ?? row.retrievedAt) || new Date().toISOString();
+  const observedAt = parseDate(row.observed_at ?? row.observedAt ?? row.updated_at ?? row.updatedAt) || fetchedAt;
 
   return {
     eaId,
@@ -81,7 +94,8 @@ function normalizeCard(row) {
     sales,
     source: clean(row.source ?? "NORMALIZED_EVIDENCE_FEED", 80),
     sourceUrl: clean(row.source_url ?? row.sourceUrl, 500) || null,
-    observedAt
+    observedAt,
+    fetchedAt
   };
 }
 
@@ -255,7 +269,7 @@ async function rebuildCache(pool, gameYear) {
 
   const cards = await pool.query(`
     SELECT game_year, ea_id, player_name, rating, version, games, games_console,
-           games_pc, popular_rank, popularity_count, source, source_url, observed_at
+           games_pc, popular_rank, popularity_count, source, source_url, observed_at, updated_at
     FROM fc_market_evidence_cards
     WHERE game_year = $1
   `, [String(gameYear)]);
@@ -274,7 +288,8 @@ async function rebuildCache(pool, gameYear) {
       popularityCount: row.popularity_count == null ? null : Number(row.popularity_count),
       source: row.source,
       sourceUrl: row.source_url,
-      observedAt: row.observed_at
+      observedAt: row.observed_at,
+      fetchedAt: row.updated_at
     });
   }
 
@@ -328,7 +343,7 @@ function liquidityFromTimedSales(timedSales, now = Date.now()) {
   if (!timed.length) {
     return {
       sales1h: null, sales6h: null, sales24h: null, sales7d: null,
-      salesPerHour24h: null, medianSaleGapMinutes: null, activeHours24h: null,
+      salesPerHour24h: null, salesPerMinute24h: null, medianSaleGapMinutes: null, activeHours24h: null,
       continuityPct24h: null, minutesSinceLastSale: null, volatilityPct24h: null,
       score: null, trend: "INSUFFICIENT_DATA", confidence: 0
     };
@@ -380,6 +395,7 @@ function liquidityFromTimedSales(timedSales, now = Date.now()) {
     sales24h: h24.length,
     sales7d: d7.length,
     salesPerHour24h: Number(salesPerHour24h.toFixed(3)),
+    salesPerMinute24h: Number((salesPerHour24h / 60).toFixed(4)),
     medianSaleGapMinutes: gapMedian == null ? null : Number(gapMedian.toFixed(2)),
     activeHours24h: activeHours,
     continuityPct24h: Number(continuityPct.toFixed(2)),
@@ -1043,9 +1059,11 @@ export async function attachMarketEvidenceToRowsV1069({
     if (!ev) continue;
     const sales = await salesFor(pool, gameYear, row.eaId, 60);
     const stats = salesStats(sales);
+    const freshness = evidenceFreshness(ev.observedAt, ev.fetchedAt);
 
     row.marketEvidence = {
       ...ev,
+      ...freshness,
       salesHistory: sales,
       salesStats: stats
     };
@@ -1061,12 +1079,21 @@ export async function attachMarketEvidenceToRowsV1069({
     row.evidenceLiquidityTrend = stats.liquidity?.trend ?? "INSUFFICIENT_DATA";
     row.evidenceSalesPerHour24h = stats.liquidity?.salesPerHour24h ?? null;
     row.evidenceMinutesSinceLastSale = stats.liquidity?.minutesSinceLastSale ?? null;
+    row.evidenceSalesPerMinute24h = stats.liquidity?.salesPerMinute24h ?? null;
+    row.evidenceFreshnessStatus = freshness.freshnessStatus;
+    row.evidenceFreshnessWeight = freshness.freshnessWeight;
+    row.evidenceSourceAgeMinutes = freshness.sourceAgeMinutes;
 
     const work = brainWork?.get?.(String(row.eaId));
     if (work?.input) {
       work.input.marketEvidence = {
         source: ev.source,
         observedAt: ev.observedAt,
+        fetchedAt: freshness.fetchedAt,
+        sourceAgeMinutes: freshness.sourceAgeMinutes,
+        fetchAgeMinutes: freshness.fetchAgeMinutes,
+        freshnessStatus: freshness.freshnessStatus,
+        freshnessWeight: freshness.freshnessWeight,
         games: row.evidenceGames,
         gamesConsole: row.evidenceGamesConsole,
         gamesPc: row.evidenceGamesPc,
@@ -1077,6 +1104,7 @@ export async function attachMarketEvidenceToRowsV1069({
         liquidityScore: row.evidenceLiquidityScore,
         liquidityTrend: row.evidenceLiquidityTrend,
         salesPerHour24h: row.evidenceSalesPerHour24h,
+        salesPerMinute24h: row.evidenceSalesPerMinute24h,
         minutesSinceLastSale: row.evidenceMinutesSinceLastSale,
         liquidityConfidence: stats.liquidity?.confidence ?? 0,
         salesSamples: stats.samples,
@@ -1103,8 +1131,11 @@ function statusPayload() {
       salesHistory: true,
       popularRank: true,
       liquidityFromSales: true,
-      gamesVelocityFromSnapshots: true
+      gamesVelocityFromSnapshots: true,
+      evidenceFreshness: true,
+      salesPerMinuteFromObservedSales: true
     },
+    freshnessPolicy: { staleAfterMinutes: EVIDENCE_STALE_MIN, sourceTimestampPreferred: true, missingTimestampWeight: 0 },
     rightsPolicy: {
       directFutbinScrape: false,
       acceptedInputs: ["AUTHORIZED_FEED", "EXPLICIT_INGEST", "PUBLIC_INDEXED_GROUNDED_EVIDENCE"],
@@ -1129,7 +1160,7 @@ function statusPayload() {
     lastSource,
     cardsLoaded,
     salesLoaded,
-    note: "FUT.GG bleibt die Preis- und Marktquelle. Zusatzdaten kommen ausschließlich aus FUTBIN-Evidenz. Wenn direkter FUTBIN-Zugriff nicht verfügbar ist, darf Gemini Google Search nur öffentlich indexierte FUTBIN-Seiten auswerten. Games/Sales/Popular bleiben ohne verifizierte FUTBIN-Evidenz null/leer."
+    note: "FUT.GG bleibt die Preis- und Marktquelle. Zusatzdaten kommen ausschlieÃŸlich aus FUTBIN-Evidenz. Wenn direkter FUTBIN-Zugriff nicht verfÃ¼gbar ist, darf Gemini Google Search nur Ã¶ffentlich indexierte FUTBIN-Seiten auswerten. Games/Sales/Popular bleiben ohne verifizierte FUTBIN-Evidenz null/leer."
   };
 }
 
