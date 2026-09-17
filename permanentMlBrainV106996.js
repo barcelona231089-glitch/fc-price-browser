@@ -299,8 +299,10 @@ async function persistModel(pool, gameYear, modelKey, featureVersion, model, tra
 }
 
 function decisionLabelForHorizon(row, horizon) {
-  const value = finite(row?.[`roi_${horizon}`]);
-  if (value == null) return null;
+  const raw = row?.[`roi_${horizon}`];
+  if (raw == null || raw === '') return null;
+  const value = Number(raw);
+  if (!Number.isFinite(value)) return null;
   return value > 0;
 }
 

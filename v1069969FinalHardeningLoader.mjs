@@ -486,7 +486,7 @@ function patchServerFinal(source) {
         const ownRow = {
           eaId: String(trade.ea_id || ""), action: "JETZT KAUFEN", cardType: "OWN_REALIZED_TRADE",
           ratingBand: "*", marketRegime: "*", wasCorrect: Number(trade.net_profit_total || 0) > 0,
-          outcomeScore: clamp(roi * 10, -100, 100), maxRoi: roi,
+          outcomeScore: clampBrainScore(roi * 10, -100, 100), maxRoi: roi,
           learningWeight: brainLearningRecencyWeight(createdAt, now)
         };
         if (ownRow.eaId) addBrainLearningSample(cardActionRaw, brainLearningCardActionKey(ownRow.eaId, ownRow.action), ownRow, "cardAction");

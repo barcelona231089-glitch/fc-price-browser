@@ -1377,6 +1377,7 @@ export async function attachSeasonMemoryToRows({ rows = [], pool = null, gameYea
     const firstPrice = Number(s.first_price || 0) || null;
     const lastPrice = Number(s.last_price || 0) || null;
     row.fc26SeasonMemory = {
+      gameYear: String(gameYear),
       days: Number(s.days || 0),
       firstDay: s.first_day || null,
       lastDay: s.last_day || null,

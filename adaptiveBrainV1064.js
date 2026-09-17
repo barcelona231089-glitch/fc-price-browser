@@ -7,6 +7,16 @@ const MIN_PUBLIC_BUY_CONFIDENCE = clamp(Number(process.env.FC_V1062_MIN_BUY_CONF
 const MIN_PUBLIC_SELL_CONFIDENCE = clamp(Number(process.env.FC_V1062_MIN_SELL_CONFIDENCE || 75), 60, 95);
 const BUY_SCORE_THRESHOLD = clamp(Number(process.env.FC_V1062_BUY_SCORE || 72), 55, 95);
 const SELL_SCORE_THRESHOLD = clamp(Number(process.env.FC_V1062_SELL_SCORE || 70), 55, 95);
+const FC27_CONSERVATIVE_BUY_GUARD = String(process.env.FC27_CONSERVATIVE_BUY_GUARD || 'false').trim().toLowerCase() === 'true';
+const FC27_CONSERVATIVE_BUY_MIN_CONFIDENCE = clamp(Number(process.env.FC27_CONSERVATIVE_BUY_MIN_CONFIDENCE || 80), 60, 95);
+const FC27_CONSERVATIVE_BUY_MAX_RATING = clamp(Number(process.env.FC27_CONSERVATIVE_BUY_MAX_RATING || 82), 75, 99);
+const FC27_LAUNCH_PERF_GUARD_ENABLED = String(process.env.FC27_LAUNCH_PERF_GUARD_ENABLED || 'false').trim().toLowerCase() === 'true';
+const FC27_LAUNCH_PERF_GUARD_SHADOW = String(process.env.FC27_LAUNCH_PERF_GUARD_SHADOW || 'true').trim().toLowerCase() !== 'false';
+const FC27_LAUNCH_PERF_GUARD_MIN_SAMPLES = Math.round(clamp(Number(process.env.FC27_LAUNCH_PERF_GUARD_MIN_SAMPLES || 24), 12, 100));
+const FC27_LAUNCH_PERF_GUARD_WINDOW = Math.round(clamp(Number(process.env.FC27_LAUNCH_PERF_GUARD_WINDOW || 100), 24, 500));
+const FC27_LAUNCH_PERF_GUARD_MIN_WIN_PCT = clamp(Number(process.env.FC27_LAUNCH_PERF_GUARD_MIN_WIN_PCT || 40), 0, 100);
+const FC27_LAUNCH_PERF_GUARD_MIN_MEDIAN_30M = Number(process.env.FC27_LAUNCH_PERF_GUARD_MIN_MEDIAN_30M || 0);
+const FC27_LAUNCH_PERF_GUARD_REFRESH_MS = clamp(Number(process.env.FC27_LAUNCH_PERF_GUARD_REFRESH_SEC || 60), 15, 600) * 1000;
 
 const LEARNING_REFRESH_MS = clamp(Number(process.env.FC_V1062_LEARNING_REFRESH_MIN || 15), 5, 180) * 60_000;
 const DEMAND_REFRESH_MS = clamp(Number(process.env.FC_V1062_FUTGG_DEMAND_REFRESH_MIN || 10), 5, 60) * 60_000;
@@ -72,6 +82,11 @@ let learningSummary = {
 const demandCache = new Map();
 let demandContext = null;
 let lastCycleStatus = null;
+let fc27LaunchGuardLastRefreshAt = 0;
+let fc27LaunchGuardInflight = null;
+let fc27LaunchGuardCache = {
+  samples: 0, medianNetRoi30m: null, winPct30m: null, updatedAt: null, lastError: null
+};
 
 let cpuState = {
   mode: 'NORMAL',
@@ -93,6 +108,75 @@ function clamp(value, min, max) {
 function numberOr(value, fallback = 0) {
   const n = Number(value);
   return Number.isFinite(n) ? n : fallback;
+}
+
+export function fc27LaunchPerformanceGuardDecision(metrics = {}) {
+  const samples = Math.max(0, Number(metrics.samples || 0));
+  const medianNetRoi30m = Number(metrics.medianNetRoi30m);
+  const winPct30m = Number(metrics.winPct30m);
+  const enoughSamples = samples >= FC27_LAUNCH_PERF_GUARD_MIN_SAMPLES;
+  const medianOk = Number.isFinite(medianNetRoi30m) && medianNetRoi30m >= FC27_LAUNCH_PERF_GUARD_MIN_MEDIAN_30M;
+  const winOk = Number.isFinite(winPct30m) && winPct30m >= FC27_LAUNCH_PERF_GUARD_MIN_WIN_PCT;
+  return { samples, medianNetRoi30m: Number.isFinite(medianNetRoi30m) ? medianNetRoi30m : null, winPct30m: Number.isFinite(winPct30m) ? winPct30m : null, enoughSamples, medianOk, winOk, wouldBlock: !(enoughSamples && medianOk && winOk) };
+}
+
+async function refreshFc27LaunchPerformanceGuard(pool, gameYear, force = false) {
+  if (String(gameYear) !== '27' || !pool || (!FC27_LAUNCH_PERF_GUARD_ENABLED && !FC27_LAUNCH_PERF_GUARD_SHADOW)) return fc27LaunchGuardCache;
+  if (fc27LaunchGuardInflight) return fc27LaunchGuardInflight;
+  if (!force && Date.now() - fc27LaunchGuardLastRefreshAt < FC27_LAUNCH_PERF_GUARD_REFRESH_MS) return fc27LaunchGuardCache;
+  fc27LaunchGuardInflight = (async () => {
+    try {
+      const result = await pool.query(`
+        SELECT COUNT(*)::int AS samples,
+               percentile_cont(0.5) WITHIN GROUP (ORDER BY q.net_roi_30m) AS median_30m,
+               100.0 * AVG((q.net_roi_30m > 0)::int) AS win_pct_30m
+        FROM (
+          SELECT e.net_roi_30m
+          FROM fc_trader_brain_decisions d
+          JOIN fc_decision_evaluations e ON e.decision_id = d.id
+          WHERE d.input_snapshot->>'gameYear' = '27'
+            AND COALESCE(d.input_snapshot->'adaptiveV1064'->>'publicCall', CASE WHEN d.action = 'JETZT KAUFEN' THEN 'BUY' END) = 'BUY'
+            AND e.net_roi_30m IS NOT NULL
+            AND d.created_at <= NOW() - INTERVAL '30 minutes'
+          ORDER BY d.created_at DESC
+          LIMIT $1
+        ) q
+      `, [FC27_LAUNCH_PERF_GUARD_WINDOW]);
+      const row = result.rows?.[0] || {};
+      fc27LaunchGuardCache = {
+        samples: Number(row.samples || 0),
+        medianNetRoi30m: row.median_30m == null ? null : Number(row.median_30m),
+        winPct30m: row.win_pct_30m == null ? null : Number(row.win_pct_30m),
+        updatedAt: new Date().toISOString(),
+        lastError: null
+      };
+      fc27LaunchGuardLastRefreshAt = Date.now();
+    } catch (error) {
+      fc27LaunchGuardCache = { ...fc27LaunchGuardCache, updatedAt: new Date().toISOString(), lastError: String(error?.message || error) };
+      fc27LaunchGuardLastRefreshAt = Date.now();
+    } finally {
+      fc27LaunchGuardInflight = null;
+    }
+    return fc27LaunchGuardCache;
+  })();
+  return fc27LaunchGuardInflight;
+}
+
+function applyFc27LaunchPerformanceGuard(row, work, gameYear) {
+  if (String(gameYear) !== '27') return;
+  const candidateBuy = row?.adaptivePublicCall === 'BUY';
+  const decision = fc27LaunchPerformanceGuardDecision(fc27LaunchGuardCache);
+  const snapshot = {
+    version: '1.0', enabled: FC27_LAUNCH_PERF_GUARD_ENABLED, shadow: FC27_LAUNCH_PERF_GUARD_SHADOW,
+    candidateBuy, ...decision, updatedAt: fc27LaunchGuardCache.updatedAt, lastError: fc27LaunchGuardCache.lastError
+  };
+  row.aiFc27LaunchPerformanceGuard = snapshot;
+  if (work?.input && typeof work.input === 'object') work.input.fc27LaunchPerformanceGuard = snapshot;
+  if (candidateBuy && FC27_LAUNCH_PERF_GUARD_ENABLED && decision.wouldBlock) {
+    row.aiAction = 'NOCH WARTEN';
+    row.aiConfidence = Math.min(Number(row.aiConfidence || 0), 72);
+    row.aiReason = `${String(row.aiReason || '')} FC27 Launch Guard: 30m-Forward-Qualitaet noch nicht freigegeben (${decision.samples} reife Kandidaten, Median ${decision.medianNetRoi30m ?? 'n/a'}%, Winrate ${decision.winPct30m == null ? 'n/a' : decision.winPct30m.toFixed(1)}%).`;
+  }
 }
 
 function safeJson(value, fallback = {}) {
@@ -788,14 +872,16 @@ function seasonPhaseAdjustment(row, gameYear = '26', side = 'BUY') {
   return side === 'SELL' ? clamp(-buy * 0.7, -5, 5) : buy;
 }
 
-function seasonMemoryAdjustment(row, side = 'BUY') {
+function seasonMemoryAdjustment(row, side = 'BUY', gameYear = '26') {
   const m = row?.fc26SeasonMemory;
+  const sameGameYear = String(m?.gameYear || '') === String(gameYear || '');
   if (!m || Number(m.days || 0) < 5) return 0;
   const price = Number(row?.price);
   const low = Number(m.seasonLow);
   const high = Number(m.seasonHigh);
-  if (!(price > 0) || !(low > 0) || !(high > low)) return 0;
-  const percentile = clamp((price - low) / (high - low), 0, 1);
+  const percentile = sameGameYear && price > 0 && low > 0 && high > low
+    ? clamp((price - low) / (high - low), 0, 1)
+    : null;
   const recent = numberOr(row?.change15m, 0) * 0.35 + numberOr(row?.change1h, 0) * 0.45 + numberOr(row?.change24h, 0) * 0.20;
   const crashShare = Number(m.crashDaySharePct);
   const recoveryShare = Number(m.recoveryDaySharePct);
@@ -804,18 +890,18 @@ function seasonMemoryAdjustment(row, side = 'BUY') {
   const seasonReturn = Number(m.seasonReturnPct);
   let buy = 0;
 
-  if (percentile <= 0.20) buy += 4;
-  else if (percentile >= 0.85) buy -= 4;
-  if (percentile <= 0.35 && recent > 0.5) buy += 3;
-  if (percentile >= 0.80 && recent < -0.5) buy -= 3;
+  if (percentile != null && percentile <= 0.20) buy += 4;
+  else if (percentile != null && percentile >= 0.85) buy -= 4;
+  if (percentile != null && percentile <= 0.35 && recent > 0.5) buy += 3;
+  if (percentile != null && percentile >= 0.80 && recent < -0.5) buy -= 3;
 
   if (Number.isFinite(crashShare) && crashShare >= 10) buy -= 1.5;
   if (Number.isFinite(recoveryShare) && recoveryShare >= 8 && recent > 0) buy += 1.5;
   if (Number.isFinite(volatility) && volatility >= 9) buy -= 2;
-  if (Number.isFinite(drawdown) && drawdown <= -35 && percentile <= 0.35 && recent > 0) buy += 1.5;
+  if (percentile != null && Number.isFinite(drawdown) && drawdown <= -35 && percentile <= 0.35 && recent > 0) buy += 1.5;
   if (Number.isFinite(seasonReturn)) {
-    if (seasonReturn > 40 && percentile < 0.55) buy += 1;
-    if (seasonReturn < -40 && percentile > 0.60) buy -= 1;
+    if (percentile != null && seasonReturn > 40 && percentile < 0.55) buy += 1;
+    if (percentile != null && seasonReturn < -40 && percentile > 0.60) buy -= 1;
   }
 
   const depth = Math.min(1, Number(m.days || 0) / 120);
@@ -1010,7 +1096,7 @@ function applyDecision(row, work, context) {
   buyScore += futbinWindowBuy;
   buyScore += freshnessAdj;
   buyScore += marketOverviewBuyAdj;
-  buyScore += seasonMemoryAdjustment(row, 'BUY');
+  buyScore += seasonMemoryAdjustment(row, 'BUY', context.gameYear);
   buyScore += catalystBuyAdj;
   buyScore += phaseBuyAdj;
   buyScore += historyAdjustment(patternBuy, 12);
@@ -1039,7 +1125,7 @@ function applyDecision(row, work, context) {
     sellScore += futbinPublicMarketScore(row, 'SELL');
     sellScore += futbinWindowSell;
     sellScore += marketOverviewSellAdj;
-    sellScore += seasonMemoryAdjustment(row, 'SELL');
+    sellScore += seasonMemoryAdjustment(row, 'SELL', context.gameYear);
     sellScore += catalystSellAdj;
     sellScore += phaseSellAdj;
     sellScore -= Math.min(2, Math.max(0, freshnessAdj));
@@ -1050,11 +1136,18 @@ function applyDecision(row, work, context) {
   const buyConf = evidenceConfidence(buyScore, [patternBuy, cardBuy], source, contradictions);
   const sellConf = evidenceConfidence(sellScore, [patternSell, cardSell], source, contradictions);
   const dataNeeds = chooseDataNeeds(row, regime, catalyst);
+  const fc27ConservativeBuyGuardBlock = Boolean(
+    FC27_CONSERVATIVE_BUY_GUARD && String(context.gameYear) === '27' && (
+      regime !== 'RECOVERY' ||
+      buyConf.confidence < FC27_CONSERVATIVE_BUY_MIN_CONFIDENCE ||
+      Number(row?.rating || 0) > FC27_CONSERVATIVE_BUY_MAX_RATING
+    )
+  );
 
   let publicCall = null;
   let finalConfidence = Math.max(buyConf.confidence, sellConf.confidence);
 
-  if (!hardBlock && !legacyBuyGuardBlock && !legacySanityBlock && buyScore >= BUY_SCORE_THRESHOLD && buyConf.confidence >= MIN_PUBLIC_BUY_CONFIDENCE && !contradictions.severe) {
+  if (!hardBlock && !legacyBuyGuardBlock && !legacySanityBlock && !fc27ConservativeBuyGuardBlock && buyScore >= BUY_SCORE_THRESHOLD && buyConf.confidence >= MIN_PUBLIC_BUY_CONFIDENCE && !contradictions.severe) {
     publicCall = 'BUY';
     finalConfidence = buyConf.confidence;
     row.aiAction = 'JETZT KAUFEN';
@@ -1099,6 +1192,8 @@ function applyDecision(row, work, context) {
     hardBlock,
     legacyBuyGuardBlock,
     legacySanityBlock,
+    fc27ConservativeBuyGuardBlock,
+    fc27ConservativeBuyGuard: { enabled: FC27_CONSERVATIVE_BUY_GUARD, minConfidence: FC27_CONSERVATIVE_BUY_MIN_CONFIDENCE, maxRating: FC27_CONSERVATIVE_BUY_MAX_RATING },
     dataNeeds,
     futbinPublic: row?.futbinPublic ? {
       trendPct: row.futbinTrendPct ?? null,
@@ -1262,13 +1357,15 @@ export async function adaptiveV1062ApplyCycle({
     if (pool) await ensureSchema(pool);
     await Promise.allSettled([
       refreshLearning(pool, String(gameYear), false),
-      refreshFutggDemand(cleanRows)
+      refreshFutggDemand(cleanRows),
+      refreshFc27LaunchPerformanceGuard(pool, String(gameYear), false)
     ]);
 
     for (let index = 0; index < cleanRows.length; index++) {
       const row = cleanRows[index];
       const work = brainWork?.get?.(String(row?.eaId)) || { input: { discordSignals: [] } };
       applyDecision(row, work, { gameYear: String(gameYear), marketContext, ratingStats, activeSignals });
+      applyFc27LaunchPerformanceGuard(row, work, String(gameYear));
 
       // Yield often enough for the CPU sampler/HA heartbeat to breathe on small hosts.
       if (index > 0 && index % 250 === 0) {
@@ -1548,6 +1645,16 @@ export async function adaptiveV1062Status({ pool = null, gameYear = '26' } = {})
       note: 'FC26 nutzt vorhandene PostgreSQL-Preis-, Signal-, Event- und FUTBIN-Historie. Fehlende historische Daten werden nicht erfunden.'
     },
     topSourceProfiles: topSources,
+    launchPerformanceGuard: {
+      enabled: FC27_LAUNCH_PERF_GUARD_ENABLED,
+      shadow: FC27_LAUNCH_PERF_GUARD_SHADOW,
+      minSamples: FC27_LAUNCH_PERF_GUARD_MIN_SAMPLES,
+      window: FC27_LAUNCH_PERF_GUARD_WINDOW,
+      minWinPct30m: FC27_LAUNCH_PERF_GUARD_MIN_WIN_PCT,
+      minMedianNetRoi30m: FC27_LAUNCH_PERF_GUARD_MIN_MEDIAN_30M,
+      ...fc27LaunchGuardCache,
+      decision: fc27LaunchPerformanceGuardDecision(fc27LaunchGuardCache)
+    },
     lastCycle: lastCycleStatus
   };
 }
