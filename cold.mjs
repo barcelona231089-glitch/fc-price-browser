@@ -21,6 +21,7 @@ const pool = databaseUrl ? new Pool({
 }) : null;
 
 let child = null;
+let launching = false;
 let stopping = false;
 let candidateSince = 0;
 let otherLeaderChecks = 0;
@@ -40,9 +41,22 @@ const healthServer = http.createServer((req, res) => {
     databaseConfigured: Boolean(databaseUrl)
   }));
 });
-healthServer.listen(port, '0.0.0.0', () => {
-  console.log(`[COLD] Health listener active on port ${port}.`);
-});
+
+function startHealthServer() {
+  if (stopping || healthServer.listening) return;
+  healthServer.listen(port, '0.0.0.0', () => {
+    console.log(`[COLD] Health listener active on port ${port}.`);
+  });
+}
+
+function stopHealthServer() {
+  return new Promise(resolve => {
+    if (!healthServer.listening) return resolve();
+    healthServer.close(() => resolve());
+  });
+}
+
+startHealthServer();
 
 async function readLease() {
   if (!pool) {
@@ -72,31 +86,45 @@ async function readLease() {
   };
 }
 
-function launchFullBrain() {
-  if (child || stopping || !pool) return;
-  console.log(`[COLD] No valid leader. Launching full brain for ${instanceId}.`);
-  child = spawn(process.execPath, [fullBootstrap.pathname], {
-    cwd: new URL('.', import.meta.url),
-    env: process.env,
-    stdio: 'inherit'
-  });
-  otherLeaderChecks = 0;
-  child.once('exit', (code, signal) => {
-    console.log(`[COLD] Full brain exited code=${code ?? 'null'} signal=${signal ?? 'null'}. Returning to cold watch.`);
-    child = null;
-    candidateSince = 0;
+async function launchFullBrain() {
+  if (child || launching || stopping || !pool) return;
+  launching = true;
+  console.log(`[COLD] No valid leader. Preparing full brain for ${instanceId}.`);
+
+  try {
+    await stopHealthServer();
+    if (stopping) return;
+
+    console.log(`[COLD] Port ${port} handed off. Launching full brain for ${instanceId}.`);
+    child = spawn(process.execPath, [fullBootstrap.pathname], {
+      cwd: new URL('.', import.meta.url),
+      env: process.env,
+      stdio: 'inherit'
+    });
     otherLeaderChecks = 0;
-  });
+
+    child.once('exit', (code, signal) => {
+      console.log(`[COLD] Full brain exited code=${code ?? 'null'} signal=${signal ?? 'null'}. Returning to cold watch.`);
+      child = null;
+      candidateSince = 0;
+      otherLeaderChecks = 0;
+      launching = false;
+      if (!stopping) startHealthServer();
+    });
+  } catch (error) {
+    launching = false;
+    console.error('[COLD] Full brain launch failed:', error?.message || error);
+    if (!stopping) startHealthServer();
+  }
 }
 
 async function stopFullBrain(reason) {
   if (!child) return;
   console.log(`[COLD] Stopping full brain (${reason}); another valid leader owns the lease.`);
   const proc = child;
-  child = null;
   try { proc.kill('SIGTERM'); } catch {}
   await sleep(3000);
-  try { if (!proc.killed) proc.kill('SIGKILL'); } catch {}
+  try { if (proc.exitCode === null && proc.signalCode === null) proc.kill('SIGKILL'); } catch {}
   candidateSince = 0;
   otherLeaderChecks = 0;
 }
@@ -107,12 +135,12 @@ async function cycle() {
     const lease = await readLease();
     lastLease = lease;
 
-    if (child) {
-      if (lease.valid && lease.holderId === instanceId) {
+    if (child || launching) {
+      if (child && lease.valid && lease.holderId === instanceId) {
         otherLeaderChecks = 0;
         return;
       }
-      if (lease.valid && lease.holderId && lease.holderId !== instanceId) {
+      if (child && lease.valid && lease.holderId && lease.holderId !== instanceId) {
         otherLeaderChecks += 1;
         if (otherLeaderChecks >= 2) await stopFullBrain(`leader=${lease.holderId}`);
       } else {
@@ -130,7 +158,7 @@ async function cycle() {
     if (!pool) return;
     if (!candidateSince) candidateSince = Date.now();
     const waited = (Date.now() - candidateSince) / 1000;
-    if (waited >= startDelaySeconds) launchFullBrain();
+    if (waited >= startDelaySeconds) await launchFullBrain();
     else console.log(`[COLD] No valid leader; waiting ${Math.ceil(startDelaySeconds - waited)}s failover delay.`);
   } catch (error) {
     candidateSince = 0;
@@ -145,7 +173,7 @@ async function shutdown() {
     try { child.kill('SIGTERM'); } catch {}
     await sleep(1500);
   }
-  try { healthServer.close(); } catch {}
+  try { await stopHealthServer(); } catch {}
   try { if (pool) await pool.end(); } catch {}
   process.exit(0);
 }
