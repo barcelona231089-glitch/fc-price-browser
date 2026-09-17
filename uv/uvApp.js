@@ -746,7 +746,7 @@ async function performLiveRecheck(listId, job = null) {
   const counts = rows.reduce((acc, row) => { acc[row.status] = (acc[row.status] || 0) + 1; return acc; }, {});
   const actionable = rows.filter(r => r.actionable).length;
   const futbinConfirmed = rows.filter(r => r.fresh?.futbinMatch === true).length;
-  const futbinPriceCoverage = rows.filter(r => Number.isFinite(Number(r.fresh?.futbinPrice))).length;
+  const futbinPriceCoverage = rows.filter(r => { const price = Number(r.fresh?.futbinPrice); return Number.isFinite(price) && price > 0; }).length;
   const futbinGamesCoverage = rows.filter(r => Number.isFinite(Number(r.fresh?.futbinGamesCount))).length;
   const futbinSalesCoverage = rows.filter(r => Number(r.fresh?.futbinSoldSampleCount || 0) > 0).length;
   const recheckSummary = {
