@@ -370,6 +370,10 @@ function patchUvAppV2105(source) {
   let out = String(source || '');
   out = out.replace("const UV_VERSION = '2.10.4';", "const UV_VERSION = '2.10.12';");
   out = out.replace(
+    '  const futbinPriceCoverage = rows.filter(r => Number.isFinite(Number(r.fresh?.futbinPrice))).length;',
+    '  const futbinPriceCoverage = rows.filter(r => { const price = Number(r.fresh?.futbinPrice); return Number.isFinite(price) && price > 0; }).length;'
+  );
+  out = out.replace(
     'generationCpuSafeBatches: true,',
     'generationCpuSafeBatches: true, generationAsyncProxyJob: true, allocatorConsistentHard100Fallback: true, playerCapAwareHard100Mix: true, unsavedLiveRecheck: true, transientRecheckState: true, saveRequiredForLiveCheck: false, futbinParseLivePriceMemory: true, futbinBasicDataStatusAccurate: true, futbinExtendedEvidenceAdapter: true, futbinGamesEvidenceReady: true, futbinSalesEvidenceReady: true, futbinPopularRankEvidenceReady: true, futbinParseAutoRevision: true, futbinRegexTemplateEscapeHotfix: true,'
   );
