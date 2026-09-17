@@ -234,7 +234,12 @@ export async function crosscheckFutbin(cards, platform = 'console') {
     return cards.map(card => ({ ...card, futbinPrice: null, futbinChecked: false }));
   }
   const ranked = [...cards]
-    .sort((a, b) => (b.selectionScore || b.uvScore || 0) - (a.selectionScore || a.uvScore || 0))
+    .sort((a, b) => {
+      const aNeedsPrice = Number(a?.price) > 0 && !(Number(a?.futbinPrice) > 0) ? 1 : 0;
+      const bNeedsPrice = Number(b?.price) > 0 && !(Number(b?.futbinPrice) > 0) ? 1 : 0;
+      if (aNeedsPrice !== bNeedsPrice) return bNeedsPrice - aNeedsPrice;
+      return (b.selectionScore || b.uvScore || 0) - (a.selectionScore || a.uvScore || 0);
+    })
     .slice(0, FUTBIN_CROSSCHECK_LIMIT);
   const byId = new Map();
   const results = await mapLimit(ranked, 3, async card => ({ card, result: await searchFutbinCard(card, platform) }));
