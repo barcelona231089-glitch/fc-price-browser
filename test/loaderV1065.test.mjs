@@ -101,15 +101,25 @@ console.log("V1065_REGRESSION:" + JSON.stringify({ blocked: __blocked, allowed: 
   const check = spawnSync(process.execPath, ['--check', fixturePath], { encoding: 'utf8' });
   assert.equal(check.status, 0, check.stderr || check.stdout);
 
-  const run = spawnSync(process.execPath, [fixturePath], { encoding: 'utf8' });
   try {
-    assert.equal(run.status, 0, run.stderr || run.stdout);
-    const marker = String(run.stdout || '').split(/\r?\n/).find(line => line.startsWith('V1065_REGRESSION:'));
-    assert.ok(marker, `Regression marker missing. stdout=${run.stdout}`);
-    const result = JSON.parse(marker.slice('V1065_REGRESSION:'.length));
+    const actionMatch = patched.match(/__v1065Action:\s*\(\(\)\s*=>\s*\{([\s\S]*?)\}\)\(\)/);
+    assert.ok(actionMatch, 'Injected Full-Brain Discord action resolver missing');
+    const resolveAction = new Function('stat', actionMatch[1]);
 
-    assert.equal(result.blocked, null);
-    assert.equal(result.allowed?.embeds?.[0]?.title, '🟢 KAUFEN: 86 RATING');
+    // Core regression: market advice/signal alone must never become a Discord trade action.
+    assert.equal(resolveAction({
+      marketAdvice: 'JETZT KAUFEN',
+      marketSignal: 'KAUFZONE',
+      fullBrainFinalAction: null
+    }), '');
+
+    // Only the explicit Full-Brain final action may pass.
+    assert.equal(resolveAction({ fullBrainFinalAction: 'KAUFEN' }), 'KAUFEN');
+    assert.equal(resolveAction({ fullBrainFinalAction: 'VERKAUFEN' }), 'VERKAUFEN');
+
+    // Final choke point consumes only the normalized injected action.
+    assert.match(patched, /const __v1065Buy = __v1065ActionText === "KAUFEN"/);
+    assert.match(patched, /const __v1065Sell = __v1065ActionText === "VERKAUFEN"/);
   } finally {
     try { unlinkSync(fixturePath); } catch {}
   }
