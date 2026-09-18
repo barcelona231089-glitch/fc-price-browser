@@ -859,8 +859,8 @@ export async function listGeneratedLists(platform = null, limit = 25) {
   if (!pool) return [];
   const safeLimit = Math.max(1, Math.min(100, Math.floor(Number(limit || 25))));
   const values = [];
-  let where = '';
-  if (platform) { values.push(platform); where = 'WHERE gl.platform=$1'; }
+  let where = "WHERE COALESCE((gl.summary_payload->>'transientRecheckOnly')::boolean, false) = false";
+  if (platform) { values.push(platform); where += ' AND gl.platform=$1'; }
   values.push(safeLimit);
   const limitPos = values.length;
   const result = await pool.query(`

@@ -133,6 +133,7 @@ test('v2.4 saved lists are reopenable and persist the last live recheck', () => 
   assert.ok(db.includes('last_recheck_summary JSONB'));
   assert.ok(db.includes('last_recheck JSONB'));
   assert.ok(db.includes('export async function saveListRecheck'));
+  assert.ok(db.includes("WHERE COALESCE((gl.summary_payload->>'transientRecheckOnly')::boolean, false) = false"));
 });
 
 test('v2.4 exposes budget Top-100 ranking without weakening hard 100 or rating floor', () => {
