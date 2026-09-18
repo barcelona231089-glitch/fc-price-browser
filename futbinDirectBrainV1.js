@@ -9,6 +9,7 @@ const MAX_FILTER_PAGES = Math.max(1, Math.min(20, Number(process.env.FUTBIN_DIRE
 const MAX_PER_RATING = Math.max(3, Math.min(12, Number(process.env.FUTBIN_DIRECT_BRAIN_PER_RATING || 6)));
 const MAX_IMPORTANT = Math.max(0, Math.min(40, Number(process.env.FUTBIN_DIRECT_BRAIN_IMPORTANT || 20)));
 const ERROR_BACKOFF_MS = Math.max(60_000, Number(process.env.FUTBIN_DIRECT_BRAIN_ERROR_BACKOFF_MS || 10 * 60_000));
+const BLOCKED_BACKOFF_MS = Math.max(ERROR_BACKOFF_MS, Number(process.env.FUTBIN_DIRECT_BRAIN_BLOCKED_BACKOFF_MS || 60 * 60_000));
 
 const idCache = new Map();
 const pageCache = new Map();
@@ -160,6 +161,12 @@ async function resolveIds(cards, year, fetcher) {
       resolved.set(String(eaId), cached);
       continue;
     }
+    const suppliedId = positive(card?.futbinId);
+    if (suppliedId) {
+      writeCache(idCache, `${year}|${eaId}`, suppliedId);
+      resolved.set(String(eaId), suppliedId);
+      continue;
+    }
     if (year === 27) {
       const staticId = positive(FUTBIN_FC27_EA_TO_ID[String(eaId)]);
       if (staticId) {
@@ -167,6 +174,10 @@ async function resolveIds(cards, year, fetcher) {
         resolved.set(String(eaId), staticId);
         continue;
       }
+      // Production Hostless is currently blocked on FUTBIN discovery endpoints.
+      // Unknown FC27 ids fail closed and are left to Parse. Custom test fetchers
+      // may still exercise the discovery path deterministically.
+      if (fetcher === fetch) continue;
     }
     const rating = positive(card?.overall);
     if (!rating) continue;
@@ -302,10 +313,13 @@ export async function enrichRowsWithDirectFutbinBrain(rows = [], options = {}) {
     };
     return state.lastRun;
   } catch (error) {
-    state.disabledUntil = new Date(Date.now() + ERROR_BACKOFF_MS).toISOString();
+    const message = String(error?.message || error);
+    const blocked = /(?:HTTP\s*403|non-JSON)/i.test(message);
+    const backoffMs = blocked ? BLOCKED_BACKOFF_MS : ERROR_BACKOFF_MS;
+    state.disabledUntil = new Date(Date.now() + backoffMs).toISOString();
     state.lastRun = {
       ok: false, year, selected: selected.length, enriched: 0,
-      error: String(error?.message || error), durationMs: Date.now() - started,
+      error: message, blocked, backoffMs, durationMs: Date.now() - started,
       disabledUntil: state.disabledUntil
     };
     return state.lastRun;

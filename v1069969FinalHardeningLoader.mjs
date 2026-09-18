@@ -555,6 +555,11 @@ function patchServerFinal(source) {
     if (!out.includes(importAnchor)) throw new Error('[6.9] direct FUTBIN import anchor missing');
     out = out.replace(importAnchor, `${importAnchor}\nimport { enrichRowsWithDirectFutbinBrain, getDirectFutbinBrainStatus } from "./futbinDirectBrainV1.js";`);
   }
+  if (!out.includes('./futbinParseBrainFallbackV1.js')) {
+    const directImportAnchor = 'import { enrichRowsWithDirectFutbinBrain, getDirectFutbinBrainStatus } from "./futbinDirectBrainV1.js";';
+    if (!out.includes(directImportAnchor)) throw new Error('[6.9] Parse FUTBIN fallback import anchor missing');
+    out = out.replace(directImportAnchor, `${directImportAnchor}\nimport { enrichImportantRowsWithParseFutbinBrain, getParseFutbinBrainFallbackStatus } from "./futbinParseBrainFallbackV1.js";`);
+  }
 
   out = out.replace(
     'const MARKET_KNOWLEDGE_MIN_SAMPLES = Math.max(6, Math.min(50, Number(process.env.MARKET_KNOWLEDGE_MIN_SAMPLES || 12)));',
@@ -677,7 +682,7 @@ ${ratingBuildAnchor}`);
         : null;
     if (!directInsertAnchor) throw new Error('[6.9] rating full-brain FUTBIN anchor missing');
 
-    out = out.replace(directInsertAnchor, `      // v10.69.9.6.9 direct FC27 FUTBIN first; existing FUTBIN bridge stays fallback for missing cards.
+    out = out.replace(directInsertAnchor, `      // v10.69.9.6.9 FUT.GG primary; direct FUTBIN first, Parse only for important missing cards.
       if (!HA_ENABLED || haIsLeader()) {
         await enrichRowsWithDirectFutbinBrain(latestTradingRows, {
           gameYear: GAME_YEAR,
@@ -698,6 +703,11 @@ ${ratingBuildAnchor}`);
             checkedAt: directRow.futbinCheckedAt
           };
         }
+        await enrichImportantRowsWithParseFutbinBrain(latestTradingRows, built.brainWork, {
+          gameYear: GAME_YEAR,
+          maxDiffPct: FUTBIN_MAX_DIFF_PCT,
+          outlierDiffPct: FUTBIN_OUTLIER_DIFF_PCT
+        });
       }
 ${directInsertAnchor}`);
 
@@ -773,7 +783,9 @@ app.get("/api/trades/closed", async (req, res) => {
   if (!out.includes('/api/position/:eaId/close')) out = out.replace(lifecycleRouteAnchor, lifecycleRoutes + lifecycleRoutes2 + lifecycleRouteAnchor);
   const directStatusAnchor = '    ratingStats: latestRatingStats';
   if (out.includes(directStatusAnchor) && !out.includes('futbinDirectBrain: getDirectFutbinBrainStatus()')) {
-    out = out.replace(directStatusAnchor, '    futbinDirectBrain: getDirectFutbinBrainStatus(),\n    ratingStats: latestRatingStats');
+    out = out.replace(directStatusAnchor, '    futbinDirectBrain: getDirectFutbinBrainStatus(),\n    futbinParseBrainFallback: getParseFutbinBrainFallbackStatus(),\n    ratingStats: latestRatingStats');
+  } else if (out.includes('futbinDirectBrain: getDirectFutbinBrainStatus()') && !out.includes('futbinParseBrainFallback: getParseFutbinBrainFallbackStatus()')) {
+    out = out.replace('    futbinDirectBrain: getDirectFutbinBrainStatus(),', '    futbinDirectBrain: getDirectFutbinBrainStatus(),\n    futbinParseBrainFallback: getParseFutbinBrainFallbackStatus(),');
   }
 
   const healthAnchor = '    decisionPerformanceLab: {';
@@ -819,6 +831,9 @@ ${healthAnchor}`);
     './futbinDirectBrainV1.js',
     'enrichRowsWithDirectFutbinBrain',
     'futbinDirectBrain: getDirectFutbinBrainStatus()',
+    './futbinParseBrainFallbackV1.js',
+    'enrichImportantRowsWithParseFutbinBrain',
+    'futbinParseBrainFallback: getParseFutbinBrainFallbackStatus()',
     'copyDuplicateCount',
     'avgFirstReactionMinutes',
     'leakAloneCannotBuy: true',
