@@ -376,7 +376,8 @@ function timeAwareCycleSamplesReplacement() {
 }
 
 export function patchPermanentMlArchiveV1069965(source) {
-  let out = String(source || "");
+  // Normalize Windows checkouts before exact source-anchor patches.
+  let out = String(source || "").replace(/\r\n/g, "\n");
   if (out.includes("v10.69.9.6.5 time-aware historical labels")) return out;
 
   out = out.replace(

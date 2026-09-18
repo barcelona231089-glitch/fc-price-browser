@@ -15,8 +15,20 @@ const DECISION_EPOCHS = Math.max(3, Math.min(40, Number(process.env.PERMANENT_ML
 const CYCLE_EPOCHS = Math.max(3, Math.min(40, Number(process.env.PERMANENT_ML_CYCLE_EPOCHS || 10)));
 const LEARNING_RATE = Math.max(0.005, Math.min(0.25, Number(process.env.PERMANENT_ML_LEARNING_RATE || 0.045)));
 const L2 = Math.max(0, Math.min(0.1, Number(process.env.PERMANENT_ML_L2 || 0.0015)));
+const AUTONOMOUS_ARCHITECTURE_VERSION = "v11-final-autonomous-12m";
+const CHAMPION_MAX_ACC_REGRESSION = 0.015;
+const CHAMPION_MAX_BRIER_REGRESSION = 0.02;
+const CHAMPION_REFRESH_DAYS = 7;
 
 const models = new Map();
+const autonomousSelectionStats = {
+  architectureVersion: AUTONOMOUS_ARCHITECTURE_VERSION,
+  candidatesEvaluated: 0,
+  promotions: 0,
+  rejections: 0,
+  lastDecisionAt: null,
+  lastDecision: null
+};
 let refreshHandle = null;
 let busy = false;
 let started = false;
@@ -174,6 +186,12 @@ function trainLogistic(samples, featureNames, { epochs = 10, lr = LEARNING_RATE 
   const balancedAccuracy = (tpr + tnr) / 2;
   const accuracy = validation.length ? (tp + tn) / validation.length : 0;
   const positives = samples.filter(s => s.y).length;
+  const featureStats = featureNames.map((name, index) => {
+    const values = train.map(sample => Number(sample.x?.[index] || 0)).filter(Number.isFinite);
+    const mean = values.length ? values.reduce((sum, value) => sum + value, 0) / values.length : 0;
+    const variance = values.length ? values.reduce((sum, value) => sum + (value - mean) ** 2, 0) / values.length : 0;
+    return { name, mean: Number(mean.toFixed(6)), std: Number(Math.sqrt(Math.max(variance, 1e-6)).toFixed(6)) };
+  });
   return {
     featureNames,
     weights,
@@ -187,7 +205,8 @@ function trainLogistic(samples, featureNames, { epochs = 10, lr = LEARNING_RATE 
       balancedAccuracy: Number(balancedAccuracy.toFixed(4)),
       brier: Number((brier / Math.max(1, validation.length)).toFixed(4)),
       tpr: Number(tpr.toFixed(4)),
-      tnr: Number(tnr.toFixed(4))
+      tnr: Number(tnr.toFixed(4)),
+      featureStats
     },
     trusted: samples.length >= MIN_TRAIN_SAMPLES && validation.length >= MIN_VALIDATION_SAMPLES && balancedAccuracy >= MIN_TRUST_BALANCED_ACCURACY
   };
@@ -199,6 +218,57 @@ function predict(model, x) {
   const n = Math.min(model.weights.length, x.length);
   for (let i = 0; i < n; i++) z += Number(model.weights[i] || 0) * Number(x[i] || 0);
   return sigmoid(z);
+}
+
+function compareChampionChallenger(champion, challenger, trainedTo = null) {
+  if (!challenger) return { promote: false, reason: "NO_CHALLENGER" };
+  if (!champion) return { promote: true, reason: "INITIAL_CHAMPION" };
+  if (champion.trusted && !challenger.trusted) return { promote: false, reason: "CHALLENGER_UNTRUSTED" };
+  if (!champion.trusted && challenger.trusted) return { promote: true, reason: "TRUST_UPGRADE" };
+
+  const cAcc = Number(champion.metrics?.balancedAccuracy || 0.5);
+  const nAcc = Number(challenger.metrics?.balancedAccuracy || 0.5);
+  const cBrier = Number(champion.metrics?.brier ?? 1);
+  const nBrier = Number(challenger.metrics?.brier ?? 1);
+  const accDelta = nAcc - cAcc;
+  const brierDelta = nBrier - cBrier;
+  const championHasDriftBaseline = Array.isArray(champion.metrics?.featureStats) && champion.metrics.featureStats.length > 0;
+  const challengerHasDriftBaseline = Array.isArray(challenger.metrics?.featureStats) && challenger.metrics.featureStats.length > 0;
+  if (!championHasDriftBaseline && challengerHasDriftBaseline && accDelta >= -CHAMPION_MAX_ACC_REGRESSION && brierDelta <= CHAMPION_MAX_BRIER_REGRESSION) {
+    return { promote: true, reason: "DRIFT_BASELINE_UPGRADE", accDelta, brierDelta };
+  }
+  if (accDelta < -CHAMPION_MAX_ACC_REGRESSION || brierDelta > CHAMPION_MAX_BRIER_REGRESSION) {
+    return { promote: false, reason: "VALIDATION_REGRESSION", accDelta, brierDelta };
+  }
+  if (accDelta >= 0.003 || brierDelta <= -0.005) {
+    return { promote: true, reason: "MEASURABLE_IMPROVEMENT", accDelta, brierDelta };
+  }
+
+  const championTo = Date.parse(champion.trainedTo || champion.updatedAt || "");
+  const challengerTo = Date.parse(trainedTo || "");
+  const refreshAgeDays = Number.isFinite(championTo) && Number.isFinite(challengerTo)
+    ? (challengerTo - championTo) / 86_400_000
+    : 0;
+  if (refreshAgeDays >= CHAMPION_REFRESH_DAYS && accDelta >= -0.005 && brierDelta <= 0.008) {
+    return { promote: true, reason: "NONINFERIOR_FRESH_REFRESH", accDelta, brierDelta, refreshAgeDays };
+  }
+  return { promote: false, reason: "CHAMPION_RETAINS", accDelta, brierDelta, refreshAgeDays };
+}
+
+function modelFeatureDrift(model, x) {
+  const stats = model?.metrics?.featureStats;
+  if (!Array.isArray(stats) || !stats.length || !Array.isArray(x)) {
+    return { status: "UNKNOWN", score: null, weightFactor: 1 };
+  }
+  const zScores = stats.map((stat, index) => {
+    const std = Math.max(0.08, Number(stat?.std || 0));
+    return Math.abs((Number(x[index] || 0) - Number(stat?.mean || 0)) / std);
+  }).filter(Number.isFinite);
+  if (!zScores.length) return { status: "UNKNOWN", score: null, weightFactor: 1 };
+  const score = zScores.reduce((sum, value) => sum + Math.min(6, value), 0) / zScores.length;
+  const status = score >= 3 ? "EXTREME" : score >= 2 ? "HIGH" : score >= 1.25 ? "ELEVATED" : "NORMAL";
+  const weightFactor = status === "EXTREME" ? 0.15 : status === "HIGH" ? 0.4 : status === "ELEVATED" ? 0.72 : 1;
+  return { status, score: Number(score.toFixed(3)), weightFactor };
 }
 
 async function ensureSchema(pool) {
@@ -226,6 +296,28 @@ async function ensureSchema(pool) {
   await pool.query(`
     CREATE INDEX IF NOT EXISTS idx_fc_permanent_ml_models_updated_v106996
     ON fc_permanent_ml_models_v106996 (updated_at DESC)
+  `);
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS fc_permanent_ml_challengers_v11 (
+      id BIGSERIAL PRIMARY KEY,
+      game_year VARCHAR(2) NOT NULL,
+      model_key VARCHAR(64) NOT NULL,
+      trusted BOOLEAN NOT NULL DEFAULT FALSE,
+      samples INTEGER NOT NULL,
+      validation_samples INTEGER NOT NULL,
+      balanced_accuracy DOUBLE PRECISION,
+      brier DOUBLE PRECISION,
+      promoted BOOLEAN NOT NULL DEFAULT FALSE,
+      reason VARCHAR(80) NOT NULL,
+      metrics JSONB NOT NULL DEFAULT '{}'::jsonb,
+      trained_from TIMESTAMPTZ,
+      trained_to TIMESTAMPTZ,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+  `);
+  await pool.query(`
+    CREATE INDEX IF NOT EXISTS idx_fc_permanent_ml_challengers_v11_recent
+    ON fc_permanent_ml_challengers_v11 (game_year, model_key, created_at DESC)
   `);
 }
 
@@ -259,6 +351,31 @@ async function loadPersistedModels(pool, gameYear) {
 
 async function persistModel(pool, gameYear, modelKey, featureVersion, model, trainedFrom, trainedTo) {
   if (!model) return;
+  const key = `${String(gameYear)}:${modelKey}`;
+  const champion = models.get(key) || null;
+  const selection = compareChampionChallenger(champion, model, trainedTo);
+  autonomousSelectionStats.candidatesEvaluated += 1;
+  autonomousSelectionStats.lastDecisionAt = new Date().toISOString();
+  autonomousSelectionStats.lastDecision = {
+    gameYear: String(gameYear), modelKey, promote: Boolean(selection.promote), reason: selection.reason,
+    accDelta: Number.isFinite(selection.accDelta) ? Number(selection.accDelta.toFixed(4)) : null,
+    brierDelta: Number.isFinite(selection.brierDelta) ? Number(selection.brierDelta.toFixed(4)) : null
+  };
+  if (selection.promote) autonomousSelectionStats.promotions += 1;
+  else autonomousSelectionStats.rejections += 1;
+
+  await pool.query(`
+    INSERT INTO fc_permanent_ml_challengers_v11 (
+      game_year, model_key, trusted, samples, validation_samples,
+      balanced_accuracy, brier, promoted, reason, metrics, trained_from, trained_to
+    ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::jsonb,$11,$12)
+  `, [
+    String(gameYear), modelKey, Boolean(model.trusted), Number(model.samples || 0), Number(model.validationSamples || 0),
+    finite(model.metrics?.balancedAccuracy), finite(model.metrics?.brier), Boolean(selection.promote), String(selection.reason || "UNKNOWN"),
+    JSON.stringify(model.metrics || {}), trainedFrom || null, trainedTo || null
+  ]);
+
+  if (!selection.promote) return;
   await pool.query(`
     INSERT INTO fc_permanent_ml_models_v106996 (
       game_year, model_key, model_version, feature_version, feature_names,
@@ -286,7 +403,7 @@ async function persistModel(pool, gameYear, modelKey, featureVersion, model, tra
     Number(model.samples || 0), Number(model.positives || 0), Number(model.negatives || 0), Number(model.validationSamples || 0),
     Boolean(model.trusted), JSON.stringify(model.metrics || {}), trainedFrom || null, trainedTo || null
   ]);
-  models.set(`${String(gameYear)}:${modelKey}`, {
+  models.set(key, {
     ...model,
     gameYear: String(gameYear),
     modelKey,
@@ -553,6 +670,17 @@ function modelWeight(model) {
   const size = Math.min(1, Number(model.samples || 0) / 500);
   return Math.max(0.1, (acc - 0.5) * 4 + 0.2) * (0.35 + size * 0.65);
 }
+function modelWeightForInput(model, x) {
+  const drift = modelFeatureDrift(model, x);
+  return { weight: modelWeight(model) * Number(drift.weightFactor || 0), drift };
+}
+function activeYearMaturity(activeYear) {
+  const activeModels = [...models.values()].filter(model => String(model?.gameYear) === String(activeYear));
+  if (!activeModels.length) return 0;
+  const maxSamples = Math.max(0, ...activeModels.map(model => Number(model?.samples || 0)));
+  const maxSpanDays = Math.max(0, ...activeModels.map(model => daysBetween(model?.trainedFrom, model?.trainedTo)));
+  return Number(clamp(Math.max(maxSamples / 10000, maxSpanDays / 240), 0, 1).toFixed(3));
+}
 
 export function scorePermanentMlV106996(input = {}) {
   const activeYear = String(input.gameYear || runtimeGameYear || "26");
@@ -560,20 +688,29 @@ export function scorePermanentMlV106996(input = {}) {
   const cycleX = cycleFeaturesFromLive(input);
 
   const sourceYears = [...new Set([activeYear, ...HISTORICAL_SOURCE_YEARS])];
+  const maturity = activeYearMaturity(activeYear);
   const recencyWeight = year => {
     if (String(year) === activeYear) return 1.0;
-    if (String(year) === "26") return Number(activeYear) >= 27 ? 0.30 : 0.22;
-    if (String(year) === "25") return Number(activeYear) >= 27 ? 0.14 : 0.18;
-    return 0.10;
+    if (String(year) === "26") {
+      const base = Number(activeYear) >= 27 ? 0.30 : 0.22;
+      return Math.max(0.08, base * (1 - maturity * 0.72));
+    }
+    if (String(year) === "25") {
+      const base = Number(activeYear) >= 27 ? 0.14 : 0.18;
+      return Math.max(0.03, base * (1 - maturity * 0.82));
+    }
+    return 0.08;
   };
 
   const decisionParts = horizon => sourceYears.map(year => {
     const model = modelFor(year, `decision_${horizon}`);
-    return { year, model, prob: model?.trusted ? predict(model, decisionX) : null, weight: modelWeight(model) * recencyWeight(year) };
+    const weighted = modelWeightForInput(model, decisionX);
+    return { year, model, prob: model?.trusted ? predict(model, decisionX) : null, weight: weighted.weight * recencyWeight(year), drift: weighted.drift };
   });
   const cycleParts = horizon => sourceYears.map(year => {
     const model = modelFor(year, `cycle_${horizon}`);
-    return { year, model, prob: model?.trusted ? predict(model, cycleX) : null, weight: modelWeight(model) * recencyWeight(year) };
+    const weighted = modelWeightForInput(model, cycleX);
+    return { year, model, prob: model?.trusted ? predict(model, cycleX) : null, weight: weighted.weight * recencyWeight(year), drift: weighted.drift };
   });
 
   const d1 = decisionParts("1h");
@@ -590,9 +727,15 @@ export function scorePermanentMlV106996(input = {}) {
   ]);
   const p7d = weightedProbability(c7);
 
-  const trustedModels = [...d1, ...d6, ...d24, ...c24, ...c7]
+  const allParts = [...d1, ...d6, ...d24, ...c24, ...c7];
+  const trustedModels = allParts
     .map(p => p.model)
     .filter((m, i, arr) => m?.trusted && arr.indexOf(m) === i);
+  const driftRows = allParts
+    .filter(part => part?.model?.trusted && part?.drift && part.drift.status !== "UNKNOWN")
+    .map(part => ({ year: String(part.year), modelKey: part.model.modelKey, ...part.drift }));
+  const driftRank = { UNKNOWN: 0, NORMAL: 1, ELEVATED: 2, HIGH: 3, EXTREME: 4 };
+  const worstDrift = driftRows.sort((a, b) => (driftRank[b.status] || 0) - (driftRank[a.status] || 0))[0] || null;
   const probs = [p1, p6, p24, p7d].filter(Number.isFinite);
   if (!probs.length || !trustedModels.length) {
     return {
@@ -607,7 +750,8 @@ export function scorePermanentMlV106996(input = {}) {
   }
 
   const primary = Number.isFinite(p6) ? p6 : Number.isFinite(p24) ? p24 : probs.reduce((a, b) => a + b, 0) / probs.length;
-  const confidence = Math.round(clamp(Math.abs(primary - 0.5) * 200, 0, 95));
+  const driftConfidenceFactor = worstDrift?.status === "EXTREME" ? 0.35 : worstDrift?.status === "HIGH" ? 0.60 : worstDrift?.status === "ELEVATED" ? 0.82 : 1;
+  const confidence = Math.round(clamp(Math.abs(primary - 0.5) * 200 * driftConfidenceFactor, 0, 95));
   let signal = "NEUTRAL";
   if ((Number.isFinite(p6) && p6 >= 0.64) || (Number.isFinite(p24) && p24 >= 0.66)) signal = "BULLISH";
   if ((Number.isFinite(p6) && p6 <= 0.36) && (!Number.isFinite(p24) || p24 <= 0.44)) signal = "BEARISH";
@@ -622,6 +766,14 @@ export function scorePermanentMlV106996(input = {}) {
     sourceYearsUsed,
     targetLearningDays: LEARNING_WINDOW_DAYS,
     targetLearningMonths: 24,
+    autonomousArchitectureVersion: AUTONOMOUS_ARCHITECTURE_VERSION,
+    activeYearMaturity: maturity,
+    drift: {
+      status: worstDrift?.status || "UNKNOWN",
+      score: worstDrift?.score ?? null,
+      confidenceFactor: driftConfidenceFactor,
+      modelCount: driftRows.length
+    },
     signal,
     confidence,
     probabilityNetPositive1h: Number.isFinite(p1) ? Number((p1 * 100).toFixed(1)) : null,
@@ -637,6 +789,9 @@ export function scorePermanentMlV106996(input = {}) {
       canVetoWeakBuy: true,
       activeGameYearPreferred: true,
       olderGameYearsDownweighted: true,
+      adaptiveHistoricalPriorDecay: true,
+      driftAwareConfidence: true,
+      championChallengerGuard: true,
       gameYearsNeverMergedAsRawPrices: true,
       synthetic: false
     }
@@ -776,6 +931,18 @@ export function getPermanentMlStatusV106996() {
     targetMonths: 24,
     historicalSourceYears: [...HISTORICAL_SOURCE_YEARS],
     performanceWindowDays: LEARNING_WINDOW_DAYS,
+    autonomousArchitecture: {
+      version: AUTONOMOUS_ARCHITECTURE_VERSION,
+      architectureFrozen: true,
+      operationalTargetMonths: 12,
+      selfLearningContinues: true,
+      championChallenger: true,
+      driftDetection: true,
+      adaptiveHistoricalPriorDecay: true,
+      automaticRetraining: true,
+      manualIntelligenceUpgradeExpected: false,
+      selection: { ...autonomousSelectionStats }
+    },
     policy: {
       realObservedDataOnly: true,
       noSyntheticBackfill: true,
@@ -797,5 +964,8 @@ export const __test = {
   cycleFeaturesFromLive,
   trainLogistic,
   predict,
-  historicalCycleSamples
+  historicalCycleSamples,
+  compareChampionChallenger,
+  modelFeatureDrift,
+  activeYearMaturity
 };

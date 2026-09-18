@@ -50,4 +50,43 @@ test('status advertises a strict 24-month / 730-day target', () => {
   assert.deepEqual(status.historicalSourceYears, ['25','26']);
   assert.equal(status.policy.rawPricesNeverMergedAcrossGameYears, true);
   assert.equal(status.policy.noSyntheticBackfill, true);
+  assert.equal(status.autonomousArchitecture.architectureFrozen, true);
+  assert.equal(status.autonomousArchitecture.operationalTargetMonths, 12);
+  assert.equal(status.autonomousArchitecture.championChallenger, true);
+  assert.equal(status.autonomousArchitecture.driftDetection, true);
+  assert.equal(status.autonomousArchitecture.manualIntelligenceUpgradeExpected, false);
+});
+
+test('trained models retain feature baselines for drift detection', () => {
+  const samples = [];
+  for (let i = 0; i < 320; i++) {
+    const positive = i % 2 === 0;
+    samples.push({ x: [positive ? 1.1 : -1.1, positive ? 0.6 : -0.6], y: positive });
+  }
+  const model = __test.trainLogistic(samples, ['a','b'], { epochs: 14, lr: 0.06 });
+  assert.ok(Array.isArray(model.metrics.featureStats));
+  assert.equal(model.metrics.featureStats.length, 2);
+  const normal = __test.modelFeatureDrift(model, [1.0, 0.5]);
+  const extreme = __test.modelFeatureDrift(model, [3, 3]);
+  assert.ok(['NORMAL','ELEVATED','HIGH'].includes(normal.status));
+  assert.equal(extreme.status, 'EXTREME');
+  assert.ok(extreme.weightFactor < normal.weightFactor);
+});
+
+test('champion challenger rejects regression and promotes measurable improvement', () => {
+  const champion = {
+    trusted: true,
+    metrics: { balancedAccuracy: 0.61, brier: 0.19, featureStats: [{ name: 'a', mean: 0, std: 1 }] },
+    trainedTo: '2026-09-01T00:00:00Z'
+  };
+  const worse = {
+    trusted: true,
+    metrics: { balancedAccuracy: 0.57, brier: 0.23, featureStats: [{ name: 'a', mean: 0, std: 1 }] }
+  };
+  const better = {
+    trusted: true,
+    metrics: { balancedAccuracy: 0.62, brier: 0.18, featureStats: [{ name: 'a', mean: 0, std: 1 }] }
+  };
+  assert.equal(__test.compareChampionChallenger(champion, worse, '2026-09-10T00:00:00Z').promote, false);
+  assert.equal(__test.compareChampionChallenger(champion, better, '2026-09-10T00:00:00Z').promote, true);
 });
