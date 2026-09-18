@@ -104,7 +104,7 @@ function renderSummary(data){
     metric('Qualitätsziel Rating',`${data.candidatePipeline?.preferredMinimumRating||data.candidatePipeline?.minimumRating||'–'}+`,true),
     metric('Aktive Rating-Untergrenze',`${data.candidatePipeline?.minimumRating||'–'}+`),
     metric('Budget-Lockerung',`${data.candidatePipeline?.adaptiveBudgetRelaxed?'JA • '+(data.candidatePipeline?.adaptiveRelaxationDemandMode||'Demand'):'NEIN'}`),
-    metric('Budget-Feasibility',`${data.dynamicCountReduced?'✓ über Slot-Anzahl':data.candidatePipeline?.adaptiveBudgetFeasible===true?'✓ 100 machbar':data.candidatePipeline?.adaptiveBudgetFeasible===false?'⚠ 100 nicht machbar':'–'}`),
+    metric('Budget-Feasibility',`${Number(data.count||data.generatedCount||0) >= Number(data.requestedCount||100) && Number(data.totalBuy||0) <= Number(data.budget||0) ? '✓ 100 machbar' : data.dynamicCountReduced ? '✓ über Slot-Anzahl' : data.candidatePipeline?.adaptiveBudgetFeasible===false ? '⚠ 100 nicht machbar' : '–'}`),
     metric('Qualitätsmodus',`${data.dynamicCountReduced?'QUALITY-FIRST • Slots reduziert':'100-SLOT'}`,true),
     metric('Geschätztes Mindestbudget',`${finite(data.candidatePipeline?.adaptiveEstimatedMinimumCost)?coins(data.candidatePipeline.adaptiveEstimatedMinimumCost):'–'}`),
     metric('Demand-Lockerung erlaubt',`${data.candidatePipeline?.demandRelaxationCandidates||0}`),

@@ -254,3 +254,9 @@ test('FC27 FUTBIN direct API is optional, backoff-safe and exposed in UV status'
   assert.ok(direct.includes('FUTBIN_DIRECT_DISCOVERY_ENABLED'));
   assert.ok(futbin.includes("FUTBIN_CATALOG_ENABLED"));
 });
+
+test('UI reports final hard-100 budget feasibility from the generated portfolio, not an earlier pipeline estimate', () => {
+  assert.ok(ui.includes("Number(data.count||data.generatedCount||0) >= Number(data.requestedCount||100)"));
+  assert.ok(ui.includes("Number(data.totalBuy||0) <= Number(data.budget||0)"));
+  assert.ok(ui.includes("? '✓ 100 machbar'"));
+});
