@@ -1027,11 +1027,32 @@ app.post('/api/uv/rebalance/:listId', async (req, res) => {
       replacementNeed,
       { budget, portfolioCount: count, gameYear: GAME_YEAR, adaptivePolicy: adaptiveMarketPolicy }
     );
-    const replacementPool = filterConservativeCandidates(
+    let replacementPool = filterConservativeCandidates(
       replacementPipeline.pool,
       replacementNeed,
       { budget, portfolioCount: count }
     );
+
+    // Rebalance must use the same hard-100 safe fallback universe as a fresh
+    // generation. Otherwise a valid 300k/100 list can become impossible to
+    // rebalance merely because many old slots are DROP/WAIT at the same time.
+    // These fallbacks never bypass Bronze, sub-82 normal, low Non-Rare,
+    // crash/source-risk or rejected-outcome safety guards.
+    const rebalanceHard100Fallback = buildHard100SellabilityFallback(replacementPipeline.cards, { budget, count });
+    const rebalanceBudgetAdaptiveFallback = buildBudgetAdaptiveSellabilityFallback(replacementPipeline.cards, { budget, count });
+    const rebalanceSafetyReserveFallback = buildBudgetSafetyReserveFallback(replacementPipeline.cards, { budget, count });
+    const replacementById = new Map(replacementPool.map(card => [String(card.eaId), card]));
+    for (const fallback of [rebalanceHard100Fallback, rebalanceBudgetAdaptiveFallback, rebalanceSafetyReserveFallback]) {
+      for (const card of fallback.pool || []) {
+        const key = String(card.eaId);
+        const current = replacementById.get(key);
+        const currentScore = Number(current?.budgetTop100Score ?? current?.selectionScore ?? -1);
+        const nextScore = Number(card?.budgetTop100Score ?? card?.selectionScore ?? -1);
+        if (!current || nextScore > currentScore) replacementById.set(key, card);
+      }
+    }
+    replacementPool = [...replacementById.values()];
+
     const balanced = rebalancePortfolio({
       retained: seedInfo.retained,
       candidates: replacementPool,

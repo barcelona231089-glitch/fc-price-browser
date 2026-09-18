@@ -262,3 +262,13 @@ test('UI reports final hard-100 budget feasibility from the generated portfolio,
   assert.ok(ui.includes("? '✓ 100 machbar'"));
   assert.ok(ui.includes("Pipeline-Mindestbudget (vor Fallback)"));
 });
+
+test('rebalance reuses the hard-100 safe fallback ladders from fresh generation', () => {
+  const rebalanceStart = uvApp.indexOf("app.post('/api/uv/rebalance/:listId'");
+  const rebalanceEnd = uvApp.indexOf("app.post('/api/uv/generate'", rebalanceStart);
+  assert.ok(rebalanceStart >= 0 && rebalanceEnd > rebalanceStart);
+  const rebalanceBlock = uvApp.slice(rebalanceStart, rebalanceEnd);
+  assert.ok(rebalanceBlock.includes('buildHard100SellabilityFallback'));
+  assert.ok(rebalanceBlock.includes('buildBudgetAdaptiveSellabilityFallback'));
+  assert.ok(rebalanceBlock.includes('buildBudgetSafetyReserveFallback'));
+});
