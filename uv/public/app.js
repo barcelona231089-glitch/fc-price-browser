@@ -106,7 +106,7 @@ function renderSummary(data){
     metric('Budget-Lockerung',`${data.candidatePipeline?.adaptiveBudgetRelaxed?'JA • '+(data.candidatePipeline?.adaptiveRelaxationDemandMode||'Demand'):'NEIN'}`),
     metric('Budget-Feasibility',`${Number(data.count||data.generatedCount||0) >= Number(data.requestedCount||100) && Number(data.totalBuy||0) <= Number(data.budget||0) ? '✓ 100 machbar' : data.dynamicCountReduced ? '✓ über Slot-Anzahl' : data.candidatePipeline?.adaptiveBudgetFeasible===false ? '⚠ 100 nicht machbar' : '–'}`),
     metric('Qualitätsmodus',`${data.dynamicCountReduced?'QUALITY-FIRST • Slots reduziert':'100-SLOT'}`,true),
-    metric('Geschätztes Mindestbudget',`${finite(data.candidatePipeline?.adaptiveEstimatedMinimumCost)?coins(data.candidatePipeline.adaptiveEstimatedMinimumCost):'–'}`),
+    metric('Pipeline-Mindestbudget (vor Fallback)',`${finite(data.candidatePipeline?.adaptiveEstimatedMinimumCost)?coins(data.candidatePipeline.adaptiveEstimatedMinimumCost):'–'}`),
     metric('Demand-Lockerung erlaubt',`${data.candidatePipeline?.demandRelaxationCandidates||0}`),
     metric('Demand-Lockerung raus',`${data.candidatePipeline?.demandRelaxationRejected||0}`),
     metric('Live Demand Q25 Rating',`${finite(data.candidatePipeline?.adaptiveMarketQ25Rating)?Number(data.candidatePipeline.adaptiveMarketQ25Rating).toFixed(1):'–'}`),

@@ -25,7 +25,7 @@ test('UV browser UI uses the production /api/uv namespace and /uv assets', () =>
   assert.ok(ui.includes("fetch('/api/uv/generate'"));
   assert.equal(ui.includes("fetch('/api/status')"), false);
   assert.ok(html.includes('href="/uv/styles.css"'));
-  assert.ok(html.includes('src="/uv/app.js?v=2.10.12-feasibility1"'));
+  assert.ok(html.includes('src="/uv/app.js?v=2.10.12-feasibility2"'));
 });
 
 test('compact UV UI exposes status filters, essential columns and recheck-aware pricing', () => {
@@ -259,4 +259,5 @@ test('UI reports final hard-100 budget feasibility from the generated portfolio,
   assert.ok(ui.includes("Number(data.count||data.generatedCount||0) >= Number(data.requestedCount||100)"));
   assert.ok(ui.includes("Number(data.totalBuy||0) <= Number(data.budget||0)"));
   assert.ok(ui.includes("? '✓ 100 machbar'"));
+  assert.ok(ui.includes("Pipeline-Mindestbudget (vor Fallback)"));
 });
