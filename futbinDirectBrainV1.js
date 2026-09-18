@@ -1,3 +1,4 @@
+import https from "node:https";
 import { FUTBIN_FC27_EA_TO_ID } from "./futbinIdMapFc27.js";
 
 const DEFAULT_BASE = "https://www.futbin.org/futbin/api";
@@ -16,6 +17,7 @@ const inflightPages = new Map();
 
 const state = {
   calls: 0, successes: 0, failures: 0, mappingCalls: 0, priceCalls: 0,
+  ipv4FallbackAttempts: 0, ipv4FallbackSuccesses: 0,
   cacheHits: 0, enriched: 0, lastSuccessAt: null, lastFailureAt: null,
   lastError: null, lastRunAt: null, lastRun: null, disabledUntil: null
 };
@@ -51,18 +53,61 @@ function chunksOf(values, size) {
   for (let i = 0; i < values.length; i += size) out.push(values.slice(i, i + size));
   return out;
 }
-async function requestJson(url, fetcher = fetch) {
-  state.calls += 1;
-  try {
-    const response = await fetcher(url, {
+function requestJsonIpv4(url) {
+  state.ipv4FallbackAttempts += 1;
+  return new Promise((resolve, reject) => {
+    const req = https.get(url, {
+      family: 4,
       headers: {
         accept: "application/json",
         "user-agent": "Mozilla/5.0",
-        referer: "https://www.futbin.com/"
-      }
+        referer: "https://www.futbin.com/",
+        "accept-language": "en-US,en;q=0.9"
+      },
+      timeout: 12000
+    }, res => {
+      let body = "";
+      res.setEncoding("utf8");
+      res.on("data", chunk => { body += chunk; });
+      res.on("end", () => {
+        const status = Number(res.statusCode || 0);
+        if (status < 200 || status >= 300) {
+          return reject(new Error(`FUTBIN direct IPv4 HTTP ${status}`));
+        }
+        try {
+          const json = JSON.parse(body);
+          state.ipv4FallbackSuccesses += 1;
+          resolve(json);
+        } catch {
+          reject(new Error(`FUTBIN direct IPv4 non-JSON: ${body.slice(0, 80).replace(/\s+/g, " ")}`));
+        }
+      });
     });
-    const json = typeof response?.json === "function" ? await response.json() : response;
-    if (response && "ok" in response && !response.ok) throw new Error(`FUTBIN direct HTTP ${response.status}`);
+    req.on("timeout", () => req.destroy(new Error("FUTBIN direct IPv4 timeout")));
+    req.on("error", reject);
+  });
+}
+
+async function requestJson(url, fetcher = fetch) {
+  state.calls += 1;
+  try {
+    let json;
+    try {
+      const response = await fetcher(url, {
+        headers: {
+          accept: "application/json",
+          "user-agent": "Mozilla/5.0",
+          referer: "https://www.futbin.com/",
+          "accept-language": "en-US,en;q=0.9"
+        },
+        cache: "no-store"
+      });
+      if (response && "ok" in response && !response.ok) throw new Error(`FUTBIN direct HTTP ${response.status}`);
+      json = typeof response?.json === "function" ? await response.json() : response;
+    } catch (primaryError) {
+      if (fetcher !== fetch) throw primaryError;
+      json = await requestJsonIpv4(url);
+    }
     state.successes += 1;
     state.lastSuccessAt = new Date().toISOString();
     state.lastError = null;
