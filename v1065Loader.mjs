@@ -117,6 +117,11 @@ export function patchRatingOnly(source) {
         '    embeds: [{\n' +
         '      ...__v1065Embed,\n' +
         '      title: (__v1065Buy ? "🟢 KAUFEN: " : "🔴 VERKAUFEN: ") + Math.round(__v1065Rating) + " RATING",\n' +
+        '      description: String(__v1065Embed.description || ""),\n' +
+        '      fields: (Array.isArray(__v1065Embed.fields) ? __v1065Embed.fields : []).map((field) => {\n' +
+        '        if (String(field?.name || "") !== "Klare Aktion") return field;\n' +
+        '        return { ...field, value: __v1065Buy ? "JETZT KAUFEN" : "JETZT VERKAUFEN" };\n' +
+        '      }),\n' +
         '      url: undefined\n' +
         '    }]\n' +
         '  };\n' +
