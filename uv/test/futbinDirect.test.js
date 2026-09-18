@@ -188,3 +188,64 @@ test('HTTP 403 activates one-hour style backoff and suppresses repeat HTTP', asy
   );
   assert.equal(calls.length, 1);
 });
+
+
+test('direct FUTBIN is disabled by default when env is unset', () => {
+  const previous = process.env.FUTBIN_DIRECT_ENABLED;
+  delete process.env.FUTBIN_DIRECT_ENABLED;
+  try {
+    assert.equal(isDirectFutbinEnabled({ gameYear: 27 }), false);
+  } finally {
+    if (previous === undefined) delete process.env.FUTBIN_DIRECT_ENABLED;
+    else process.env.FUTBIN_DIRECT_ENABLED = previous;
+  }
+});
+
+test('live-confirmed 11-id batch is matched by FUTBIN ID even when response order differs', async () => {
+  resetFutbinDirectCachesForTests();
+  const requested = [778, 777, 565, 22, 462, 756, 864, 564, 840, 722, 98];
+  const liveRows = [
+    { ID: 22, Player_Resource: 158023, Player_ID: 158023, Player_Fullname: 'Lionel Messi', LCPrice: 69500 },
+    { ID: 98, Player_Resource: 192119, Player_ID: 192119, Player_Fullname: 'Thibaut Courtois', LCPrice: 98500 },
+    { ID: 462, Player_Resource: 177003, Player_ID: 177003, Player_Fullname: 'Luka Modrić', LCPrice: 2200 },
+    { ID: 564, Player_Resource: 185122, Player_ID: 185122, Player_Fullname: 'Péter Gulácsi', LCPrice: 650 },
+    { ID: 565, Player_Resource: 20801, Player_ID: 20801, Player_Fullname: 'C. Ronaldo dos Santos Aveiro', LCPrice: 1400 },
+    { ID: 722, Player_Resource: 188545, Player_ID: 188545, Player_Fullname: 'Robert Lewandowski', LCPrice: 750 },
+    { ID: 756, Player_Resource: 177683, Player_ID: 177683, Player_Fullname: 'Yann Sommer', LCPrice: 750 },
+    { ID: 777, Player_Resource: 216549, Player_ID: 216549, Player_Fullname: 'Alexander Sørloth', LCPrice: 800 },
+    { ID: 778, Player_Resource: 230899, Player_ID: 230899, Player_Fullname: 'Ademola Lookman', LCPrice: 0 },
+    { ID: 840, Player_Resource: 188335, Player_ID: 188335, Player_Fullname: 'Ante Budimir', LCPrice: 650 },
+    { ID: 864, Player_Resource: 183898, Player_ID: 183898, Player_Fullname: 'Ángel Di María', LCPrice: 750 }
+  ];
+  const { fetcher, calls } = fakeFetcher(url => {
+    assert.equal(new URL(url).searchParams.get('player_ids'), requested.join(','));
+    return { data: liveRows, errorcode: '200', errormsg: 'SUCCESS' };
+  });
+  const r = await fetchDirectFutbinPrices(requested, 'console', { enabled: true, gameYear: 27, fetcher });
+  assert.equal(calls.length, 1);
+  assert.equal(r.prices.size, 11);
+  assert.equal(r.prices.get('22').eaId, 158023);
+  assert.equal(r.prices.get('22').price, 69500);
+  assert.equal(r.prices.get('777').eaId, 216549);
+  assert.equal(r.prices.get('777').price, 800);
+  assert.equal(r.prices.get('778').eaId, 230899);
+  assert.equal(r.prices.get('778').price, null);
+});
+
+test('live-shaped getFilteredPlayers row maps resource_id to FUTBIN ID', async () => {
+  resetFutbinDirectCachesForTests();
+  const { fetcher, calls } = fakeFetcher(url => {
+    assert.match(url, /getFilteredPlayers/);
+    return {
+      data: [{ ID: 1777, resource_id: 990216549, playerid: 990216549, rating: 83, ps_LCPrice: 800 }],
+      errorcode: '200',
+      errormsg: 'SUCCESS'
+    };
+  });
+  const r = await resolveDirectFutbinIds([{ eaId: 990216549, overall: 83 }], 'console', {
+    enabled: true, gameYear: 27, discoveryEnabled: true, fetcher
+  });
+  assert.equal(r.resolved.get('990216549'), 1777);
+  assert.equal(r.missing.length, 0);
+  assert.equal(calls.length, 1);
+});
