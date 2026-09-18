@@ -25,7 +25,7 @@ test('UV browser UI uses the production /api/uv namespace and /uv assets', () =>
   assert.ok(ui.includes("fetch('/api/uv/generate'"));
   assert.equal(ui.includes("fetch('/api/status')"), false);
   assert.ok(html.includes('href="/uv/styles.css"'));
-  assert.ok(html.includes('src="/uv/app.js"'));
+  assert.ok(html.includes('src="/uv/app.js?v=2.10.12-feasibility1"'));
 });
 
 test('compact UV UI exposes status filters, essential columns and recheck-aware pricing', () => {
