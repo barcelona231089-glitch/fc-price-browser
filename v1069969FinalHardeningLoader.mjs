@@ -668,9 +668,16 @@ ${ratingBuildAnchor}`);
   }
 
   if (!out.includes('v10.69.9.6.9 rating full-brain recalibration after FUTBIN')) {
-    const ratingMonitorAnchor = '      await enrichImportantRowsWithFutbinParse(latestTradingRows, built.brainWork);';
-    if (!out.includes(ratingMonitorAnchor)) throw new Error('[6.9] rating full-brain monitor anchor missing');
-    out = out.replace(ratingMonitorAnchor, `      // v10.69.9.6.9 direct FC27 FUTBIN first; existing Parse path stays fallback for missing cards.
+    const legacyFutbinAnchor = '      await enrichImportantRowsWithFutbinParse(latestTradingRows, built.brainWork);';
+    const safeFutbinAnchor = '      await enrichRowsWithFutbinSafeV1066({';
+    const directInsertAnchor = out.includes(safeFutbinAnchor)
+      ? safeFutbinAnchor
+      : out.includes(legacyFutbinAnchor)
+        ? legacyFutbinAnchor
+        : null;
+    if (!directInsertAnchor) throw new Error('[6.9] rating full-brain FUTBIN anchor missing');
+
+    out = out.replace(directInsertAnchor, `      // v10.69.9.6.9 direct FC27 FUTBIN first; existing FUTBIN bridge stays fallback for missing cards.
       if (!HA_ENABLED || haIsLeader()) {
         await enrichRowsWithDirectFutbinBrain(latestTradingRows, {
           gameYear: GAME_YEAR,
@@ -692,12 +699,16 @@ ${ratingBuildAnchor}`);
           };
         }
       }
-${ratingMonitorAnchor}
-      // v10.69.9.6.9 rating full-brain recalibration after FUTBIN/Parse enrichment.
+${directInsertAnchor}`);
+
+    const postFutbinAnchor = '      await automaticTraderBrain(latestTradingRows, built.brainWork);';
+    if (!out.includes(postFutbinAnchor)) throw new Error('[6.9] rating full-brain post-FUTBIN anchor missing');
+    out = out.replace(postFutbinAnchor, `      // v10.69.9.6.9 rating full-brain recalibration after FUTBIN/Parse enrichment.
       for (const [ratingKey, ratingStat] of Object.entries(latestRatingStats || {})) {
         const ratingRows = latestTradingRows.filter(row => row.cardType === "Base Rare" && Number(row.overall) === Number(ratingKey));
         calibrateRatingDecisionFullBrainEvidence(ratingStat, ratingRows);
-      }`);
+      }
+${postFutbinAnchor}`);
   }
 
   if (!out.includes('v10.69.9.6.9 final evidence/event/liquidity guard')) {
@@ -760,9 +771,9 @@ app.get("/api/trades/closed", async (req, res) => {
 
 `;
   if (!out.includes('/api/position/:eaId/close')) out = out.replace(lifecycleRouteAnchor, lifecycleRoutes + lifecycleRoutes2 + lifecycleRouteAnchor);
-  const directStatusAnchor = '    permanentMl: getPermanentMlStatusV106996(),\n    ratingStats: latestRatingStats';
+  const directStatusAnchor = '    ratingStats: latestRatingStats';
   if (out.includes(directStatusAnchor) && !out.includes('futbinDirectBrain: getDirectFutbinBrainStatus()')) {
-    out = out.replace(directStatusAnchor, '    permanentMl: getPermanentMlStatusV106996(),\n    futbinDirectBrain: getDirectFutbinBrainStatus(),\n    ratingStats: latestRatingStats');
+    out = out.replace(directStatusAnchor, '    futbinDirectBrain: getDirectFutbinBrainStatus(),\n    ratingStats: latestRatingStats');
   }
 
   const healthAnchor = '    decisionPerformanceLab: {';
