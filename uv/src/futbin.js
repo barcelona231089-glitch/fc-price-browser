@@ -1,11 +1,16 @@
 import { FUTBIN_PARSE_API_BASE, FUTBIN_CROSSCHECK_LIMIT, FUTBIN_SEARCH_ENDPOINT } from './config.js';
 import { clamp, fetchJson, mapLimit, normalizeName } from './utils.js';
 import { extractFutbinStructuredEvidence } from './futbinEvidence.js';
+import { getDirectFutbinCards, getFutbinDirectStatus, isDirectFutbinEnabled } from './futbinDirect.js';
 
 const cache = new Map();
 const CACHE_MS = 30 * 60_000;
 const MARKET_CACHE_MS = 10 * 60_000;
+const CATALOG_CACHE_MS = 30 * 60_000;
+const CATALOG_ENABLED = ['1', 'true', 'yes', 'on'].includes(String(process.env.FUTBIN_CATALOG_ENABLED || '').trim().toLowerCase());
+const CATALOG_MAX_PAGES = Math.max(1, Math.min(12, Number(process.env.FUTBIN_CATALOG_MAX_PAGES || 6)));
 let marketCache = null;
+const catalogCache = new Map();
 const extendedDataState = {
   gamesObserved: false,
   salesHistoryObserved: false,
@@ -26,14 +31,18 @@ function observeExtendedEvidence(evidence) {
 }
 
 export function getFutbinExtendedDataStatus() {
+  const direct = getFutbinDirectStatus();
   return {
     adapterReady: true,
-    source: 'FUTBIN via Parse API structured fields only',
+    source: direct.configured ? 'FUTBIN direct FC27 API + Parse structured fallback' : 'FUTBIN via Parse API structured fields only',
     gamesObserved: extendedDataState.gamesObserved,
     salesHistoryObserved: extendedDataState.salesHistoryObserved,
     popularRankObserved: extendedDataState.popularRankObserved,
     observedSalesPerDayObserved: extendedDataState.observedSalesPerDayObserved,
     lastObservedAt: extendedDataState.lastObservedAt,
+    directFutbinApi: direct,
+    parseCatalogEnabled: CATALOG_ENABLED,
+    parseCatalogMaxPages: CATALOG_MAX_PAGES,
     directFutbinScrape: false
   };
 }
@@ -187,6 +196,46 @@ export function attachMarketMoverSignals(cards, marketContext) {
   });
 }
 
+async function loadFutbinCatalog(platform = 'console') {
+  if (!CATALOG_ENABLED) return [];
+  const apiKey = String(process.env.FUTBIN_PARSE_API_KEY || '').trim();
+  if (!apiKey) return [];
+  const gameYear = Math.max(26, Number(process.env.GAME_YEAR || 26));
+  const cacheKey = `${gameYear}|${platform}`;
+  const cached = catalogCache.get(cacheKey);
+  if (cached && Date.now() - cached.at < CATALOG_CACHE_MS) return cached.rows;
+
+  const rows = [];
+  for (let page = 1; page <= CATALOG_MAX_PAGES; page++) {
+    const yearFlag = gameYear === 27 ? '&fc27_only=true' : '&fc26_only=true';
+    const url = `${FUTBIN_PARSE_API_BASE}/get_players?page=${page}${yearFlag}`;
+    const json = await fetchJson(url, { headers: { 'X-API-Key': apiKey } });
+    const pageRows = extractRows(json);
+    if (!pageRows.length) break;
+    rows.push(...pageRows);
+    if (pageRows.length < 25) break;
+  }
+  catalogCache.set(cacheKey, { at: Date.now(), rows });
+  return rows;
+}
+
+function matchCatalogCard(rows, card) {
+  const wanted = normalizeName(card.name);
+  const overall = Number(card.overall || 0);
+  const matches = rows
+    .filter(row => {
+      const name = normalizeName(row.name || row.full_name);
+      return name === wanted || (wanted && name.includes(wanted));
+    })
+    .map(row => ({
+      row,
+      ratingDelta: Math.abs(Number(row.rating || 0) - overall),
+      versionMatch: normalizeName(row.version || '') === normalizeName(card.rarityName || card.cardName || card.cardType || '') ? 0 : 1
+    }))
+    .sort((a, b) => a.ratingDelta - b.ratingDelta || a.versionMatch - b.versionMatch);
+  return matches[0]?.row || null;
+}
+
 export async function searchFutbinCard(card, platform = 'console') {
   const apiKey = String(process.env.FUTBIN_PARSE_API_KEY || '').trim();
   if (!apiKey) return { ok: false, reason: 'FUTBIN_PARSE_API_KEY fehlt' };
@@ -194,20 +243,20 @@ export async function searchFutbinCard(card, platform = 'console') {
   const cached = cache.get(cacheKey);
   if (cached && Date.now() - cached.at < CACHE_MS) return cached.value;
 
-  const url = `${FUTBIN_PARSE_API_BASE}/${FUTBIN_SEARCH_ENDPOINT}?query=${encodeURIComponent(card.name || '')}`;
   try {
-    const json = await fetchJson(url, { headers: { 'X-API-Key': apiKey } });
-    const rows = extractRows(json);
-    const wanted = normalizeName(card.name);
-    const matches = rows
-      .filter(row => normalizeName(row.name || row.full_name) === wanted || normalizeName(row.name || row.full_name).includes(wanted))
-      .map(row => ({
-        row,
-        ratingDelta: Math.abs(Number(row.rating || 0) - Number(card.overall || 0)),
-        versionMatch: normalizeName(row.version || '') === normalizeName(card.rarityName || card.cardName || '') ? 0 : 1
-      }))
-      .sort((a, b) => a.ratingDelta - b.ratingDelta || a.versionMatch - b.versionMatch);
-    const best = matches[0]?.row || rows[0] || null;
+    let best = null;
+    try {
+      const catalogRows = await loadFutbinCatalog(platform);
+      best = matchCatalogCard(catalogRows, card);
+    } catch {
+      // Catalogue failure must not remove the existing per-card fallback.
+    }
+    if (!best) {
+      const url = `${FUTBIN_PARSE_API_BASE}/${FUTBIN_SEARCH_ENDPOINT}?query=${encodeURIComponent(card.name || '')}`;
+      const json = await fetchJson(url, { headers: { 'X-API-Key': apiKey } });
+      const rows = extractRows(json);
+      best = matchCatalogCard(rows, card) || rows[0] || null;
+    }
     const price = best ? pickPrice(best, platform) : null;
     const evidence = best ? extractFutbinStructuredEvidence(best, price || card.price) : { gamesAvailable: false, salesHistoryAvailable: false };
     observeExtendedEvidence(evidence);
@@ -230,7 +279,9 @@ export async function searchFutbinCard(card, platform = 'console') {
 }
 
 export async function crosscheckFutbin(cards, platform = 'console') {
-  if (!process.env.FUTBIN_PARSE_API_KEY || FUTBIN_CROSSCHECK_LIMIT <= 0) {
+  const directEnabled = isDirectFutbinEnabled();
+  const parseConfigured = Boolean(String(process.env.FUTBIN_PARSE_API_KEY || '').trim());
+  if ((!directEnabled && !parseConfigured) || FUTBIN_CROSSCHECK_LIMIT <= 0) {
     return cards.map(card => ({ ...card, futbinPrice: null, futbinChecked: false }));
   }
   const ranked = [...cards]
@@ -241,8 +292,32 @@ export async function crosscheckFutbin(cards, platform = 'console') {
       return (b.selectionScore || b.uvScore || 0) - (a.selectionScore || a.uvScore || 0);
     })
     .slice(0, FUTBIN_CROSSCHECK_LIMIT);
+
   const byId = new Map();
-  const results = await mapLimit(ranked, 3, async card => ({ card, result: await searchFutbinCard(card, platform) }));
+
+  if (directEnabled) {
+    try {
+      const direct = await getDirectFutbinCards(ranked, platform);
+      for (const card of ranked) {
+        const result = direct?.results?.get?.(String(card.eaId));
+        if (result) byId.set(String(card.eaId), result);
+      }
+    } catch {
+      // Direct FUTBIN is optional. Parse remains the fail-closed fallback.
+    }
+  }
+
+  const fallbackCards = parseConfigured
+    ? ranked.filter(card => !(Number(byId.get(String(card.eaId))?.price) > 0))
+    : [];
+  const parseResults = parseConfigured
+    ? await mapLimit(fallbackCards, 3, async card => ({ card, result: await searchFutbinCard(card, platform) }))
+    : [];
+  const results = parseResults.filter(item => {
+    if (!item?.card) return false;
+    const key = String(item.card.eaId);
+    return item.result?.ok || !byId.has(key);
+  });
   for (const item of results) if (item?.card) byId.set(String(item.card.eaId), item.result);
 
   return cards.map(card => {
@@ -281,6 +356,8 @@ export async function crosscheckFutbin(cards, platform = 'console') {
       futbinMatch: result ? Boolean(result?.ok) : Boolean(card.futbinMatch),
       futbinId: result?.id ?? card.futbinId ?? null,
       futbinVersion: result?.version ?? card.futbinVersion ?? null,
+      futbinProvider: result?.source ?? card.futbinProvider ?? null,
+      futbinCheckedAt: result?.checked ?? result?.checkedAt ?? card.futbinCheckedAt ?? null,
       image: card.image || result?.image || null,
       sourceDiffPct: Number.isFinite(diffPct) ? diffPct : null,
       ...evidence,

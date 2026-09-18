@@ -101,7 +101,7 @@ test('v2.3 production status enforces hard 100 slots and sellability-first live 
   assert.match(uvApp, /sellabilityFirstRanking:\s*true/);
   assert.match(uvApp, /qualityFirstDynamicCount:\s*false/);
   assert.match(uvApp, /dynamicPortfolioSize:\s*false/);
-  assert.match(uvApp, /const UV_VERSION = '2\.10\.2'/);
+  assert.match(uvApp, /const UV_VERSION = '2\.10\.4'/);
   assert.ok(ui.includes('PROMO + LIVE MARKET'));
   assert.ok(ui.includes('Markt-Regime'));
   assert.ok(ui.includes('Promo-Heat'));
@@ -177,7 +177,7 @@ test('v2.7 trader consensus + budget tier allocator combine demand, stability, p
   assert.ok(uvApp.includes('endgame300kBase83OrLessMax: 8'));
   assert.ok(uvApp.includes('futtiesDemandPriority: true'));
   assert.ok(uvApp.includes('buildTraderConsensusScore'));
-  assert.ok(uvApp.includes('budget-top100-v2.10-demand-market-fit+market-tradeable-hard-guard+budget-tier-allocator+trader-consensus'));
+  assert.ok(uvApp.includes('budget-top100-v2.10.3-demand-market-fit+resilient-market-tradeable-hard-guard+budget-tier-allocator+trader-consensus'));
   assert.ok(uvApp.includes('budgetTierAllocator: true'));
   assert.ok(uvApp.includes('candidatePoolAllocationSeparation: true'));
   assert.ok(uvApp.includes('buildBudgetTierScore'));
@@ -240,4 +240,17 @@ test('v2.10.2 budget supports manual entry plus quick presets and saving is expl
 test('v2.9 preserves rating-first manual player-list plan lock', () => {
   assert.ok(uvApp.includes('externalTraderPlayerPicksImported: false'));
   assert.ok(trader.includes('const DISCORD_NAMED_TRADE_OFFERS = false;'));
+});
+
+test('FC27 FUTBIN direct API is optional, backoff-safe and exposed in UV status', () => {
+  const futbin = fs.readFileSync(path.join(uvRoot, 'src', 'futbin.js'), 'utf8');
+  const direct = fs.readFileSync(path.join(uvRoot, 'src', 'futbinDirect.js'), 'utf8');
+  assert.ok(futbin.includes("getFutbinDirectStatus"));
+  assert.ok(futbin.includes("FUTBIN direct FC27 API + Parse structured fallback"));
+  assert.ok(uvApp.includes('futbinDirectFc27Api'));
+  assert.ok(uvApp.includes('futbinDirectBackoff'));
+  assert.ok(direct.includes('FUTBIN_FC27_EA_TO_ID'));
+  assert.ok(direct.includes('BLOCKED_BACKOFF_MS'));
+  assert.ok(direct.includes('FUTBIN_DIRECT_DISCOVERY_ENABLED'));
+  assert.ok(futbin.includes("FUTBIN_CATALOG_ENABLED"));
 });

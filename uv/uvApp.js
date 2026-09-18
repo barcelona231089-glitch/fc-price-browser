@@ -252,9 +252,12 @@ app.get('/api/uv/status', (req, res) => {
     futbinExtended,
     currentCapabilities: {
       futggLivePrices: true,
-      futbinCrosscheck: Boolean(process.env.FUTBIN_PARSE_API_KEY),
+      futbinCrosscheck: Boolean(process.env.FUTBIN_PARSE_API_KEY) || Boolean(futbinExtended.directFutbinApi?.configured),
       futbinMarketTrends: Boolean(process.env.FUTBIN_PARSE_API_KEY),
       futbinStructuredEvidenceAdapter: true,
+      futbinDirectFc27Api: Boolean(futbinExtended.directFutbinApi?.configured),
+      futbinDirectBackoff: Boolean(futbinExtended.directFutbinApi?.backoffActive),
+      futbinDirectDiscoveryEnabled: Boolean(futbinExtended.directFutbinApi?.discoveryEnabled),
       postgresHistory: isDbEnabled(), budgetOptimizer100: true, eaTax: true,
       conservativeProfit: true, longTermScore: true, priceActivityProxy: isDbEnabled(),
       sourceRiskFilter: true, adaptiveCardMix: true, specialCardPriority: true, specialCardSoftTarget300k100: 'promo-live-market-adaptive', seasonPhaseRatingGuard: false, calendarPhaseContextOnly: true, promoMarketAdaptive: true, promoInPacksAwareness: true, promoMomentumAwareness: true, dynamicMarketPolicy: true, budgetAwareDynamicRating: true, demandGatedRatingRelaxation: true, budgetFeasibilityFallback: true, balancedLiquidityFallback: true, qualityFirstDynamicCount: false, dynamicPortfolioSize: false, hard100Slots: true, sellabilityFirstRanking: true, demandMarketFitFirstRanker: true, marketTradeableHardGuard: true, confirmedLiveBinRequired: true, marketVerificationFailFast: true, marketMetadataSafeFallback: true, unresolvedSpecialsFailClosed: true, sbcObjectiveRewardHardBlock: true, ratingPrimaryRanker: false, hard100PortfolioSellabilityFallback: true, adaptiveSpecialMix: true, maxExactCardCopies: 2, futggMostUsedDemand: true, futggMomentumDemand: true,
