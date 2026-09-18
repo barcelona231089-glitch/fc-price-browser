@@ -150,10 +150,24 @@ function matchRow(row, items) {
 function isImportant(row) {
   if (!row || positive(row.futbinPrice)) return false;
   if (!positive(row.eaId) || !positive(row.price) || !row.name) return false;
-  if (row.tracked || row.intensiveWatch) return true;
-  if (["JETZT KAUFEN","JETZT VERKAUFEN","VERKAUF PRÜFEN","VERKAUF PRÃœFEN"].includes(String(row.aiAction || ""))) return true;
-  if (row?.aiBuyGuard?.originalAction === "JETZT KAUFEN") return true;
+
+  const rating = Number(row.overall || 0);
+  const action = String(row.aiAction || "");
   const confidence = Number(row.aiConfidence || 0);
+  const originalAction = String(row?.aiBuyGuard?.originalAction || "");
+  const originalConfidence = Number(row?.aiBuyGuard?.originalConfidence || 0);
+  const exactStrongAction = ["JETZT KAUFEN","JETZT VERKAUFEN"].includes(action);
+  const exactStrongGuard = ["JETZT KAUFEN","JETZT VERKAUFEN"].includes(originalAction);
+
+  // Protect scarce Parse credits. Normal low-rated cards are never sampled just
+  // because they are tracked. Sub-82 cards need an exceptional live BUY/SELL.
+  if (rating < 82) {
+    return (exactStrongAction && confidence >= 92) || (exactStrongGuard && originalConfidence >= 92);
+  }
+
+  if (row.tracked || row.intensiveWatch) return true;
+  if (["JETZT KAUFEN","JETZT VERKAUFEN","VERKAUF PRÜFEN","VERKAUF PRÃœFEN"].includes(action)) return true;
+  if (exactStrongGuard) return true;
   const movement = Math.max(Math.abs(Number(row.change5m || 0)), Math.abs(Number(row.change15m || 0)), Math.abs(Number(row.change1h || 0)));
   return confidence >= 90 && movement >= 8;
 }

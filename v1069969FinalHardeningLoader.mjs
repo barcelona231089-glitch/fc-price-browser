@@ -50,15 +50,22 @@ export function calibrateRatingDecisionFullBrainEvidence(stat, ratingRows = []) 
   const mlRows = rows
     .map(row => row?.aiPermanentMl)
     .filter(ml => ml?.available === true && Number(ml?.confidence || 0) >= 24);
-  const bullWeight = mlRows
-    .filter(ml => String(ml.signal).toUpperCase() === "BULLISH")
+  const bullishMlRows = mlRows.filter(ml => String(ml.signal).toUpperCase() === "BULLISH");
+  const bearishMlRows = mlRows.filter(ml => String(ml.signal).toUpperCase() === "BEARISH");
+  const directionalMlRows = [...bullishMlRows, ...bearishMlRows];
+  const neutralMlRows = mlRows.filter(ml => !["BULLISH", "BEARISH"].includes(String(ml.signal).toUpperCase()));
+  const bullWeight = bullishMlRows
     .reduce((sum, ml) => sum + Math.max(1, Number(ml.confidence || 0)), 0);
-  const bearWeight = mlRows
-    .filter(ml => String(ml.signal).toUpperCase() === "BEARISH")
+  const bearWeight = bearishMlRows
+    .reduce((sum, ml) => sum + Math.max(1, Number(ml.confidence || 0)), 0);
+  const neutralWeight = neutralMlRows
     .reduce((sum, ml) => sum + Math.max(1, Number(ml.confidence || 0)), 0);
   const directionalWeight = bullWeight + bearWeight;
+  const totalMlWeight = directionalWeight + neutralWeight;
   const mlBullPct = directionalWeight ? (bullWeight / directionalWeight) * 100 : null;
   const mlBearPct = directionalWeight ? (bearWeight / directionalWeight) * 100 : null;
+  const mlNeutralPct = totalMlWeight ? (neutralWeight / totalMlWeight) * 100 : null;
+  const mlDirectionalCoveragePct = totalMlWeight ? (directionalWeight / totalMlWeight) * 100 : null;
   const twoYearRows = mlRows.filter(ml => {
     const years = new Set((Array.isArray(ml?.sourceYearsUsed) ? ml.sourceYearsUsed : []).map(String));
     return ml?.historicalPriorUsed === true && years.has("25") && years.has("26");
@@ -86,7 +93,7 @@ export function calibrateRatingDecisionFullBrainEvidence(stat, ratingRows = []) 
     confirmations.push("Leak/Promo-Kontext hat messbare Marktreaktion");
   }
 
-  if (baseAction && mlRows.length >= 3 && directionalWeight > 0) {
+  if (baseAction && directionalMlRows.length >= 3 && directionalWeight > 0) {
     if (baseAction === "BUY") {
       if (Number(mlBearPct) >= 60) vetoes.push(`Permanent-ML ist ${Math.round(mlBearPct)}% bearish gewichtet`);
       else if (Number(mlBullPct) >= 60) confirmations.push(`Permanent-ML ist ${Math.round(mlBullPct)}% bullish gewichtet`);
@@ -95,7 +102,7 @@ export function calibrateRatingDecisionFullBrainEvidence(stat, ratingRows = []) 
       else if (Number(mlBearPct) >= 60) confirmations.push(`Permanent-ML ist ${Math.round(mlBearPct)}% bearish gewichtet`);
     }
   } else if (baseAction) {
-    notes.push(`Permanent-ML-Abdeckung ${mlRows.length} Karte(n), noch keine harte Richtungsentscheidung`);
+    notes.push(`Permanent-ML-Abdeckung ${mlRows.length} Karte(n), davon ${directionalMlRows.length} directional; noch keine harte Richtungsentscheidung`);
   }
 
   if (twoYearRows.length >= 3) {
@@ -128,8 +135,12 @@ export function calibrateRatingDecisionFullBrainEvidence(stat, ratingRows = []) 
     leakRows: leakRows.length,
     leakMarketConfirmed,
     permanentMlRows: mlRows.length,
+    permanentMlDirectionalRows: directionalMlRows.length,
+    permanentMlNeutralRows: neutralMlRows.length,
     permanentMlBullPct: mlBullPct == null ? null : Number(mlBullPct.toFixed(1)),
     permanentMlBearPct: mlBearPct == null ? null : Number(mlBearPct.toFixed(1)),
+    permanentMlNeutralPct: mlNeutralPct == null ? null : Number(mlNeutralPct.toFixed(1)),
+    permanentMlDirectionalCoveragePct: mlDirectionalCoveragePct == null ? null : Number(mlDirectionalCoveragePct.toFixed(1)),
     twoYearPriorRows: twoYearRows.length,
     confirmations,
     vetoes,
