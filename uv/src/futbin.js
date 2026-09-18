@@ -9,8 +9,55 @@ const MARKET_CACHE_MS = 10 * 60_000;
 const CATALOG_CACHE_MS = 30 * 60_000;
 const CATALOG_ENABLED = ['1', 'true', 'yes', 'on'].includes(String(process.env.FUTBIN_CATALOG_ENABLED || '').trim().toLowerCase());
 const CATALOG_MAX_PAGES = Math.max(1, Math.min(12, Number(process.env.FUTBIN_CATALOG_MAX_PAGES || 6)));
+const PARSE_RATE_LIMIT_FALLBACK_MS = Math.max(60_000, Number(process.env.FUTBIN_PARSE_RATE_LIMIT_BACKOFF_MS || 60 * 60_000));
+let parseBackoffUntilMs = 0;
+let parseBackoffReason = null;
+let parseBackoffRetryAfterSeconds = null;
 let marketCache = null;
 const catalogCache = new Map();
+
+function parseBackoffActive() {
+  return Number(parseBackoffUntilMs) > Date.now();
+}
+
+function parseRetryAfterSeconds(error) {
+  const message = String(error?.message || error || '');
+  const match = message.match(/retry[_-]?after[^0-9]{0,24}(\d+)/i);
+  const seconds = match ? Number(match[1]) : null;
+  return Number.isFinite(seconds) && seconds > 0 ? seconds : null;
+}
+
+function applyParseBackoff(error) {
+  const message = String(error?.message || error || '');
+  if (!/(?:HTTP\s*429|daily limit exceeded|rate[ -]?limit)/i.test(message)) return false;
+  const retryAfterSeconds = parseRetryAfterSeconds(error);
+  const requestedMs = retryAfterSeconds ? retryAfterSeconds * 1000 : PARSE_RATE_LIMIT_FALLBACK_MS;
+  const backoffMs = Math.max(60_000, Math.min(24 * 60 * 60_000, requestedMs));
+  parseBackoffUntilMs = Date.now() + backoffMs;
+  parseBackoffReason = 'RATE_LIMITED';
+  parseBackoffRetryAfterSeconds = retryAfterSeconds;
+  return true;
+}
+
+export function getFutbinParseBackoffStatus() {
+  return {
+    active: parseBackoffActive(),
+    reason: parseBackoffReason,
+    retryAfterSeconds: parseBackoffRetryAfterSeconds,
+    until: parseBackoffUntilMs > 0 ? new Date(parseBackoffUntilMs).toISOString() : null,
+    fallbackMs: PARSE_RATE_LIMIT_FALLBACK_MS
+  };
+}
+
+export function applyFutbinParseBackoffForTests(error) {
+  return applyParseBackoff(error);
+}
+
+export function resetFutbinParseBackoffForTests() {
+  parseBackoffUntilMs = 0;
+  parseBackoffReason = null;
+  parseBackoffRetryAfterSeconds = null;
+}
 const extendedDataState = {
   gamesObserved: false,
   salesHistoryObserved: false,
@@ -43,6 +90,7 @@ export function getFutbinExtendedDataStatus() {
     directFutbinApi: direct,
     parseCatalogEnabled: CATALOG_ENABLED,
     parseCatalogMaxPages: CATALOG_MAX_PAGES,
+    parseBackoff: getFutbinParseBackoffStatus(),
     directFutbinScrape: false
   };
 }
@@ -165,6 +213,7 @@ function buildMarketContext(json, platform) {
 export async function getFutbinMarketTrends(platform = 'console') {
   const apiKey = String(process.env.FUTBIN_PARSE_API_KEY || '').trim();
   if (!apiKey) return { ok: false, reason: 'FUTBIN_PARSE_API_KEY fehlt', direction: 'unknown', stabilityScore: 55, movers: [] };
+  if (parseBackoffActive()) return { ok: false, reason: 'FUTBIN_PARSE_RATE_LIMIT_BACKOFF', direction: 'unknown', stabilityScore: 55, movers: [] };
   if (marketCache && Date.now() - marketCache.at < MARKET_CACHE_MS && marketCache.platform === platform) return marketCache.value;
   try {
     const url = `${FUTBIN_PARSE_API_BASE}/get_market_trends`;
@@ -175,6 +224,7 @@ export async function getFutbinMarketTrends(platform = 'console') {
   } catch (error) {
     const value = { ok: false, reason: String(error), direction: 'unknown', changePct: null, stabilityScore: 55, movers: [] };
     marketCache = { at: Date.now(), platform, value };
+    applyParseBackoff(error);
     return value;
   }
 }
@@ -199,7 +249,7 @@ export function attachMarketMoverSignals(cards, marketContext) {
 async function loadFutbinCatalog(platform = 'console') {
   if (!CATALOG_ENABLED) return [];
   const apiKey = String(process.env.FUTBIN_PARSE_API_KEY || '').trim();
-  if (!apiKey) return [];
+  if (!apiKey || parseBackoffActive()) return [];
   const gameYear = Math.max(26, Number(process.env.GAME_YEAR || 26));
   const cacheKey = `${gameYear}|${platform}`;
   const cached = catalogCache.get(cacheKey);
@@ -242,6 +292,7 @@ export async function searchFutbinCard(card, platform = 'console') {
   const cacheKey = `${platform}|${normalizeName(card.name)}|${card.overall}|${card.cardType}`;
   const cached = cache.get(cacheKey);
   if (cached && Date.now() - cached.at < CACHE_MS) return cached.value;
+  if (parseBackoffActive()) return { ok: false, reason: 'FUTBIN_PARSE_RATE_LIMIT_BACKOFF' };
 
   try {
     let best = null;
@@ -274,6 +325,7 @@ export async function searchFutbinCard(card, platform = 'console') {
   } catch (error) {
     const value = { ok: false, reason: String(error) };
     cache.set(cacheKey, { at: Date.now(), value });
+    applyParseBackoff(error);
     return value;
   }
 }
