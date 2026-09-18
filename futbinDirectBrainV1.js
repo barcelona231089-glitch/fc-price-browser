@@ -1,3 +1,5 @@
+import { FUTBIN_FC27_EA_TO_ID } from "./futbinIdMapFc27.js";
+
 const DEFAULT_BASE = "https://www.futbin.org/futbin/api";
 const BATCH_SIZE = 11;
 const ID_TTL_MS = Math.max(60_000, Number(process.env.FUTBIN_DIRECT_BRAIN_ID_CACHE_MS || 12 * 60 * 60_000));
@@ -112,6 +114,14 @@ async function resolveIds(cards, year, fetcher) {
     if (cached) {
       resolved.set(String(eaId), cached);
       continue;
+    }
+    if (year === 27) {
+      const staticId = positive(FUTBIN_FC27_EA_TO_ID[String(eaId)]);
+      if (staticId) {
+        writeCache(idCache, `${year}|${eaId}`, staticId);
+        resolved.set(String(eaId), staticId);
+        continue;
+      }
     }
     const rating = positive(card?.overall);
     if (!rating) continue;
@@ -264,6 +274,7 @@ export function getDirectFutbinBrainStatus() {
     batchSize: BATCH_SIZE,
     maxPerRating: MAX_PER_RATING,
     maxImportant: MAX_IMPORTANT,
+    staticMapCount: Object.keys(FUTBIN_FC27_EA_TO_ID).length,
     idCacheMs: ID_TTL_MS,
     priceCacheMs: PRICE_TTL_MS,
     ...state
