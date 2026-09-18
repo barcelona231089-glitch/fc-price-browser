@@ -44,7 +44,8 @@ function directBase() {
 function directEnabled(options = {}) {
   if (typeof options.enabled === 'boolean') return options.enabled;
   const raw = String(process.env.FUTBIN_DIRECT_ENABLED ?? 'false').trim().toLowerCase();
-  return !['0', 'false', 'off', 'no'].includes(raw);
+  const activationConfirmed = String(process.env.FUTBIN_DIRECT_ACTIVATION_CONFIRMED ?? 'false').trim().toLowerCase() === 'true';
+  return activationConfirmed && !['0', 'false', 'off', 'no'].includes(raw);
 }
 
 function discoveryEnabled(options = {}) {

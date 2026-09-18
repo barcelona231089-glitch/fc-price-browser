@@ -249,3 +249,21 @@ test('live-shaped getFilteredPlayers row maps resource_id to FUTBIN ID', async (
   assert.equal(r.missing.length, 0);
   assert.equal(calls.length, 1);
 });
+
+
+test('production env requires a separate explicit FUTBIN direct activation confirmation', () => {
+  const prevEnabled = process.env.FUTBIN_DIRECT_ENABLED;
+  const prevConfirmed = process.env.FUTBIN_DIRECT_ACTIVATION_CONFIRMED;
+  process.env.FUTBIN_DIRECT_ENABLED = 'true';
+  delete process.env.FUTBIN_DIRECT_ACTIVATION_CONFIRMED;
+  try {
+    assert.equal(isDirectFutbinEnabled({ gameYear: 27 }), false);
+    process.env.FUTBIN_DIRECT_ACTIVATION_CONFIRMED = 'true';
+    assert.equal(isDirectFutbinEnabled({ gameYear: 27 }), true);
+  } finally {
+    if (prevEnabled === undefined) delete process.env.FUTBIN_DIRECT_ENABLED;
+    else process.env.FUTBIN_DIRECT_ENABLED = prevEnabled;
+    if (prevConfirmed === undefined) delete process.env.FUTBIN_DIRECT_ACTIVATION_CONFIRMED;
+    else process.env.FUTBIN_DIRECT_ACTIVATION_CONFIRMED = prevConfirmed;
+  }
+});
