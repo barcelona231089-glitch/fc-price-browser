@@ -20,6 +20,134 @@ function replaceBlock(source, startAnchor, nextAnchor, replacement, label) {
 function clamp(value, min, max) {
   return Math.max(min, Math.min(max, Number(value)));
 }
+
+export function calibrateRatingDecisionFullBrainEvidence(stat, ratingRows = []) {
+  if (!stat || typeof stat !== "object") return stat;
+  const rows = Array.isArray(ratingRows) ? ratingRows : [];
+  const base = stat.fullBrainBase || {
+    marketAdvice: String(stat.marketAdvice || "BEOBACHTEN"),
+    marketSignal: String(stat.marketSignal || "NEUTRAL"),
+    confidence: Number(stat.confidence || 0),
+    reason: String(stat.reason || "")
+  };
+  stat.fullBrainBase = base;
+  stat.marketAdvice = base.marketAdvice;
+  stat.marketSignal = base.marketSignal;
+  stat.confidence = base.confidence;
+  stat.reason = base.reason;
+
+  const compared = rows.filter(row => Number(row?.futbinPrice) > 0 && ["MATCH", "DIVERGENCE", "OUTLIER"].includes(String(row?.futbinCrossCheck || "")));
+  const matchCount = compared.filter(row => row.futbinCrossCheck === "MATCH").length;
+  const divergentCount = compared.filter(row => row.futbinCrossCheck === "DIVERGENCE").length;
+  const outlierCount = compared.filter(row => row.futbinCrossCheck === "OUTLIER").length;
+  const futbinMatchPct = compared.length ? (matchCount / compared.length) * 100 : null;
+  const futbinRiskPct = compared.length ? ((divergentCount + outlierCount) / compared.length) * 100 : null;
+
+  const leakRows = rows.filter(row => row?.aiLeakIntel?.active);
+  const leakMarketConfirmed = leakRows.some(row => row?.aiLeakIntel?.marketReaction === true);
+  const leakUnconfirmed = leakRows.length > 0 && !leakMarketConfirmed;
+
+  const mlRows = rows
+    .map(row => row?.aiPermanentMl)
+    .filter(ml => ml?.available === true && Number(ml?.confidence || 0) >= 24);
+  const bullWeight = mlRows
+    .filter(ml => String(ml.signal).toUpperCase() === "BULLISH")
+    .reduce((sum, ml) => sum + Math.max(1, Number(ml.confidence || 0)), 0);
+  const bearWeight = mlRows
+    .filter(ml => String(ml.signal).toUpperCase() === "BEARISH")
+    .reduce((sum, ml) => sum + Math.max(1, Number(ml.confidence || 0)), 0);
+  const directionalWeight = bullWeight + bearWeight;
+  const mlBullPct = directionalWeight ? (bullWeight / directionalWeight) * 100 : null;
+  const mlBearPct = directionalWeight ? (bearWeight / directionalWeight) * 100 : null;
+  const twoYearRows = mlRows.filter(ml => {
+    const years = new Set((Array.isArray(ml?.sourceYearsUsed) ? ml.sourceYearsUsed : []).map(String));
+    return ml?.historicalPriorUsed === true && years.has("25") && years.has("26");
+  });
+
+  const confirmations = [];
+  const vetoes = [];
+  const notes = [];
+  const baseAction = base.marketAdvice === "JETZT KAUFEN"
+    ? "BUY"
+    : base.marketAdvice === "JETZT VERKAUFEN"
+      ? "SELL"
+      : null;
+
+  if (compared.length >= 3) {
+    if (Number(futbinRiskPct) >= 50) vetoes.push(`FUTBIN/FUT.GG widersprechen sich bei ${Math.round(futbinRiskPct)}% der geprueften Karten`);
+    else if (Number(futbinMatchPct) >= 60) confirmations.push(`FUTBIN bestaetigt ${Math.round(futbinMatchPct)}% der geprueften Karten`);
+  } else {
+    notes.push(`FUTBIN-Abdeckung ${compared.length} Karte(n), noch zu klein fuer ein Veto`);
+  }
+
+  if (baseAction === "BUY" && leakUnconfirmed) {
+    vetoes.push("aktiver Leak/Promo-Kontext noch ohne messbare Marktreaktion");
+  } else if (leakMarketConfirmed) {
+    confirmations.push("Leak/Promo-Kontext hat messbare Marktreaktion");
+  }
+
+  if (baseAction && mlRows.length >= 3 && directionalWeight > 0) {
+    if (baseAction === "BUY") {
+      if (Number(mlBearPct) >= 60) vetoes.push(`Permanent-ML ist ${Math.round(mlBearPct)}% bearish gewichtet`);
+      else if (Number(mlBullPct) >= 60) confirmations.push(`Permanent-ML ist ${Math.round(mlBullPct)}% bullish gewichtet`);
+    } else if (baseAction === "SELL") {
+      if (Number(mlBullPct) >= 60) vetoes.push(`Permanent-ML ist ${Math.round(mlBullPct)}% bullish gewichtet`);
+      else if (Number(mlBearPct) >= 60) confirmations.push(`Permanent-ML ist ${Math.round(mlBearPct)}% bearish gewichtet`);
+    }
+  } else if (baseAction) {
+    notes.push(`Permanent-ML-Abdeckung ${mlRows.length} Karte(n), noch keine harte Richtungsentscheidung`);
+  }
+
+  if (twoYearRows.length >= 3) {
+    notes.push(`2-Jahres-Prior FC25+FC26 aktiv bei ${twoYearRows.length} Karte(n); Richtung wird nur ueber validiertes Permanent-ML gewertet`);
+  } else if (baseAction) {
+    notes.push(`2-Jahres-Prior FC25+FC26 nur bei ${twoYearRows.length} Karte(n) belastbar`);
+  }
+
+  let finalAction = null;
+  if (baseAction && vetoes.length) {
+    stat.marketAdvice = baseAction === "BUY" ? "NOCH WARTEN" : "HALTEN";
+    stat.marketSignal = "FULL_BRAIN_VETO";
+    stat.confidence = Math.min(Number(base.confidence || 0), 74);
+  } else if (baseAction) {
+    finalAction = baseAction === "BUY" ? "KAUFEN" : "VERKAUFEN";
+    stat.confidence = Math.min(95, Number(base.confidence || 0) + Math.min(6, confirmations.length * 2));
+  }
+
+  stat.fullBrainFinalAction = finalAction;
+  stat.fullBrainEvidence = {
+    version: "10.69.9.6.9-rating-fullbrain",
+    baseAction,
+    finalAction,
+    futbinCompared: compared.length,
+    futbinMatches: matchCount,
+    futbinDivergent: divergentCount,
+    futbinOutliers: outlierCount,
+    futbinMatchPct: futbinMatchPct == null ? null : Number(futbinMatchPct.toFixed(1)),
+    futbinRiskPct: futbinRiskPct == null ? null : Number(futbinRiskPct.toFixed(1)),
+    leakRows: leakRows.length,
+    leakMarketConfirmed,
+    permanentMlRows: mlRows.length,
+    permanentMlBullPct: mlBullPct == null ? null : Number(mlBullPct.toFixed(1)),
+    permanentMlBearPct: mlBearPct == null ? null : Number(mlBearPct.toFixed(1)),
+    twoYearPriorRows: twoYearRows.length,
+    confirmations,
+    vetoes,
+    notes,
+    leakAloneCannotBuy: true,
+    mlAloneCannotBuy: true,
+    syntheticPrices: false
+  };
+
+  const evidenceText = [
+    ...confirmations.map(text => `+ ${text}`),
+    ...vetoes.map(text => `VETO ${text}`),
+    ...notes.map(text => `Info ${text}`)
+  ].join(" | ");
+  if (evidenceText) stat.reason = `${base.reason} Full-Brain: ${evidenceText}`.slice(0, 1800);
+  return stat;
+}
+
 const REGIME_SOURCE = `function brainLearningMarketRegime(input) {
   let data = input || {};
   if (typeof data === "string") {
@@ -422,6 +550,12 @@ function patchServerFinal(source) {
   if (out.includes('FINAL_TRADER_HARDENING_VERSION = "10.69.9.6.9"')) return out;
   out = out.replaceAll('10.69.9.6.5-final', '10.69.9.6.9-final');
 
+  if (!out.includes('./futbinDirectBrainV1.js')) {
+    const importAnchor = 'import { createHaCoordinator } from "./haCoordinator.js";';
+    if (!out.includes(importAnchor)) throw new Error('[6.9] direct FUTBIN import anchor missing');
+    out = out.replace(importAnchor, `${importAnchor}\nimport { enrichRowsWithDirectFutbinBrain, getDirectFutbinBrainStatus } from "./futbinDirectBrainV1.js";`);
+  }
+
   out = out.replace(
     'const MARKET_KNOWLEDGE_MIN_SAMPLES = Math.max(6, Math.min(50, Number(process.env.MARKET_KNOWLEDGE_MIN_SAMPLES || 12)));',
     'const MARKET_KNOWLEDGE_MIN_SAMPLES = Math.max(6, Math.min(50, Number(process.env.MARKET_KNOWLEDGE_MIN_SAMPLES || 18)));'
@@ -433,7 +567,8 @@ function patchServerFinal(source) {
 
   const baseAnchor = 'function baseDecisionFromQuant(quant, confluence) {';
   if (!out.includes(baseAnchor)) throw new Error('[6.9] base decision anchor missing');
-  out = out.replace(baseAnchor, `const FINAL_TRADER_HARDENING_VERSION = "10.69.9.6.9";\n\n${FINAL_HELPERS_SOURCE}\n\n${baseAnchor}`);
+  const ratingFullBrainHelper = calibrateRatingDecisionFullBrainEvidence.toString();
+  out = out.replace(baseAnchor, `const FINAL_TRADER_HARDENING_VERSION = "10.69.9.6.9";\n\n${FINAL_HELPERS_SOURCE}\n\n${ratingFullBrainHelper}\n\n${baseAnchor}`);
 
   out = out.replace(
     '    key_factors: quant.keyFactors,\n    entry_zone: quant.entryZone,',
@@ -519,6 +654,52 @@ ${finalizeAnchor}`);
     '  row.aiHistoricalLearning = decision.historical_learning || null;\n}',
     '  row.aiHistoricalLearning = decision.historical_learning || null;\n  row.aiHistoricalAnalogue = decision.historical_analogue || null;\n}'
   );
+
+  if (!out.includes('v10.69.9.6.9 rating full-brain calibration inside build')) {
+    const ratingBuildAnchor = '  await persistDiscordSignalMarketConfirmations(rows, brainWork);';
+    if (!out.includes(ratingBuildAnchor)) throw new Error('[6.9] rating full-brain build anchor missing');
+    out = out.replace(ratingBuildAnchor, `  // v10.69.9.6.9 rating full-brain calibration inside build.
+  for (const [ratingKey, ratingStat] of Object.entries(ratingStats || {})) {
+    const ratingRows = rows.filter(row => row.cardType === "Base Rare" && Number(row.overall) === Number(ratingKey));
+    calibrateRatingDecisionFullBrainEvidence(ratingStat, ratingRows);
+  }
+
+${ratingBuildAnchor}`);
+  }
+
+  if (!out.includes('v10.69.9.6.9 rating full-brain recalibration after FUTBIN')) {
+    const ratingMonitorAnchor = '      await enrichImportantRowsWithFutbinParse(latestTradingRows, built.brainWork);';
+    if (!out.includes(ratingMonitorAnchor)) throw new Error('[6.9] rating full-brain monitor anchor missing');
+    out = out.replace(ratingMonitorAnchor, `      // v10.69.9.6.9 direct FC27 FUTBIN first; existing Parse path stays fallback for missing cards.
+      if (!HA_ENABLED || haIsLeader()) {
+        await enrichRowsWithDirectFutbinBrain(latestTradingRows, {
+          gameYear: GAME_YEAR,
+          minRating: MAIN_RATING_MIN,
+          maxDiffPct: FUTBIN_MAX_DIFF_PCT,
+          outlierDiffPct: FUTBIN_OUTLIER_DIFF_PCT
+        });
+        for (const directRow of latestTradingRows) {
+          if (!Number.isFinite(Number(directRow.futbinPrice)) || directRow.futbinPrice <= 0) continue;
+          const directWork = built.brainWork?.get?.(String(directRow.eaId));
+          if (!directWork?.input) continue;
+          directWork.input.futbinCrossCheck = {
+            provider: directRow.futbinProvider,
+            price: directRow.futbinPrice,
+            diffPct: directRow.futbinDiffPct,
+            status: directRow.futbinCrossCheck,
+            matchConfidence: directRow.futbinMatchConfidence,
+            checkedAt: directRow.futbinCheckedAt
+          };
+        }
+      }
+${ratingMonitorAnchor}
+      // v10.69.9.6.9 rating full-brain recalibration after FUTBIN/Parse enrichment.
+      for (const [ratingKey, ratingStat] of Object.entries(latestRatingStats || {})) {
+        const ratingRows = latestTradingRows.filter(row => row.cardType === "Base Rare" && Number(row.overall) === Number(ratingKey));
+        calibrateRatingDecisionFullBrainEvidence(ratingStat, ratingRows);
+      }`);
+  }
+
   if (!out.includes('v10.69.9.6.9 final evidence/event/liquidity guard')) {
     const marker = '      // v10.69 attach supplemental evidence: Games + Sales History + Popular Rank.';
     const start = out.indexOf(marker);
@@ -579,6 +760,11 @@ app.get("/api/trades/closed", async (req, res) => {
 
 `;
   if (!out.includes('/api/position/:eaId/close')) out = out.replace(lifecycleRouteAnchor, lifecycleRoutes + lifecycleRoutes2 + lifecycleRouteAnchor);
+  const directStatusAnchor = '    permanentMl: getPermanentMlStatusV106996(),\n    ratingStats: latestRatingStats';
+  if (out.includes(directStatusAnchor) && !out.includes('futbinDirectBrain: getDirectFutbinBrainStatus()')) {
+    out = out.replace(directStatusAnchor, '    permanentMl: getPermanentMlStatusV106996(),\n    futbinDirectBrain: getDirectFutbinBrainStatus(),\n    ratingStats: latestRatingStats');
+  }
+
   const healthAnchor = '    decisionPerformanceLab: {';
   if (out.includes(healthAnchor) && !out.includes('ownTradeLifecycle: {')) {
     out = out.replace(healthAnchor, `    finalTraderHardening: {
@@ -616,6 +802,12 @@ ${healthAnchor}`);
     '/api/position/:eaId/close',
     'fc_own_trade_lifecycle_v1',
     'v10.69.9.6.9 final evidence/event/liquidity guard',
+    'v10.69.9.6.9 rating full-brain calibration inside build',
+    'v10.69.9.6.9 rating full-brain recalibration after FUTBIN',
+    'calibrateRatingDecisionFullBrainEvidence',
+    './futbinDirectBrainV1.js',
+    'enrichRowsWithDirectFutbinBrain',
+    'futbinDirectBrain: getDirectFutbinBrainStatus()',
     'copyDuplicateCount',
     'avgFirstReactionMinutes',
     'leakAloneCannotBuy: true',
