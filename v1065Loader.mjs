@@ -68,6 +68,7 @@ export function patchRatingOnly(source) {
   }
 
   // Mark the only allowed automatic public payload: the aggregate rating alert.
+  // v10.65.1: ONLY an explicit Full-Brain final action may become BUY/SELL.
   if (!out.includes('__v1065RatingOnly')) {
     out = out.replace(
       '        await sendDiscordPayload(buildRatingDiscordPayload(stat));',
@@ -76,10 +77,10 @@ export function patchRatingOnly(source) {
         '          __v1065RatingOnly: true,\n' +
         '          __v1065Rating: Number(stat.rating),\n' +
         '          __v1065Action: (() => {\n' +
-        '            const a = String(stat.marketAdvice || "").toUpperCase();\n' +
-        '            const m = String(stat.marketSignal || "").toUpperCase();\n' +
-        '            if (a.includes("VERKAUF") || m === "VERKAUFSZONE") return "VERKAUFEN";\n' +
-        '            if ((a.includes("KAUF") && !a.includes("NICHT")) || m === "KAUFZONE") return "KAUFEN";\n' +
+        '            // v10.65.1: public Discord may use ONLY the explicit Full-Brain final action.\n' +
+        '            // Market advice/signal alone must never manufacture BUY/SELL.\n' +
+        '            const f = String(stat.fullBrainFinalAction || "").toUpperCase();\n' +
+        '            if (f === "KAUFEN" || f === "VERKAUFEN") return f;\n' +
         '            return "";\n' +
         '          })()\n' +
         '        });'
@@ -155,14 +156,15 @@ export async function load(url, context, defaultLoad) {
     'v10.65 FINAL RATING-ONLY Discord choke point',
     '__v1065RatingOnly',
     'v10.65 hard player-card public block',
-    'v10.65 source-health Discord disabled'
+    'v10.65 source-health Discord disabled',
+    'public Discord may use ONLY the explicit Full-Brain final action'
   ];
   const missing = required.filter(marker => !final.source.includes(marker));
   if (missing.length) {
     throw new Error('[v10.65] final patch incomplete: ' + missing.join(', '));
   }
 
-  console.log('[v10.65] FINAL patch active: Rating-only Discord + v10.64 Market/FUTBIN/FC26 base.');
+  console.log('[v10.65] FINAL patch active: Rating-only Discord + Full-Brain final-action lock.');
 
   return {
     format: result.format,
