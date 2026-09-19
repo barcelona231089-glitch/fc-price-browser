@@ -571,6 +571,11 @@ function patchServerFinal(source) {
     if (!out.includes(directImportAnchor)) throw new Error('[6.9] Parse FUTBIN fallback import anchor missing');
     out = out.replace(directImportAnchor, `${directImportAnchor}\nimport { enrichImportantRowsWithParseFutbinBrain, getParseFutbinBrainFallbackStatus } from "./futbinParseBrainFallbackV1.js";`);
   }
+  if (!out.includes('./worldMaxForecastV1.js')) {
+    const fallbackImportAnchor = 'import { enrichImportantRowsWithParseFutbinBrain, getParseFutbinBrainFallbackStatus } from "./futbinParseBrainFallbackV1.js";';
+    if (!out.includes(fallbackImportAnchor)) throw new Error('[6.9] World-Max import anchor missing');
+    out = out.replace(fallbackImportAnchor, `${fallbackImportAnchor}\nimport { enrichRowsWithWorldMaxForecast, applyWorldMaxDecisionLayer, getWorldMaxForecastStatus } from "./worldMaxForecastV1.js";`);
+  }
 
   out = out.replace(
     'const MARKET_KNOWLEDGE_MIN_SAMPLES = Math.max(6, Math.min(50, Number(process.env.MARKET_KNOWLEDGE_MIN_SAMPLES || 12)));',
@@ -732,6 +737,22 @@ ${directInsertAnchor}`);
 ${postFutbinAnchor}`);
   }
 
+  if (!out.includes('v10.69.9.6.9 World-Max ensemble layer')) {
+    const worldMaxAnchor = '      await automaticTraderBrain(latestTradingRows, built.brainWork);';
+    if (!out.includes(worldMaxAnchor)) throw new Error('[6.9] World-Max runtime anchor missing');
+    out = out.replace(worldMaxAnchor, `${worldMaxAnchor}
+      // v10.69.9.6.9 World-Max ensemble layer. External foundation models start in shadow mode.
+      if (!HA_ENABLED || haIsLeader()) {
+        await enrichRowsWithWorldMaxForecast({
+          rows: latestTradingRows,
+          brainWork: built.brainWork,
+          pool: dbEnabled ? pool : null,
+          gameYear: GAME_YEAR
+        });
+        for (const worldRow of latestTradingRows) applyWorldMaxDecisionLayer(worldRow);
+      }`);
+  }
+
   if (!out.includes('v10.69.9.6.9 final evidence/event/liquidity guard')) {
     const marker = '      // v10.69 attach supplemental evidence: Games + Sales History + Popular Rank.';
     const start = out.indexOf(marker);
@@ -801,7 +822,8 @@ app.get("/api/trades/closed", async (req, res) => {
 
   const healthAnchor = '    decisionPerformanceLab: {';
   if (out.includes(healthAnchor) && !out.includes('ownTradeLifecycle: {')) {
-    out = out.replace(healthAnchor, `    finalTraderHardening: {
+    out = out.replace(healthAnchor, `    worldMaxForecast: getWorldMaxForecastStatus(),
+    finalTraderHardening: {
       version: FINAL_TRADER_HARDENING_VERSION,
       marketKnowledgeMinSamples: MARKET_KNOWLEDGE_MIN_SAMPLES,
       regimes: ["NORMAL","FLAT","CRASH","PUMP","RECOVERY","SUPPLY","PROMO","SBC","EVO","THIN"],
@@ -845,6 +867,11 @@ ${healthAnchor}`);
     './futbinParseBrainFallbackV1.js',
     'enrichImportantRowsWithParseFutbinBrain',
     'futbinParseBrainFallback: getParseFutbinBrainFallbackStatus()',
+    './worldMaxForecastV1.js',
+    'enrichRowsWithWorldMaxForecast',
+    'applyWorldMaxDecisionLayer',
+    'worldMaxForecast: getWorldMaxForecastStatus()',
+    'v10.69.9.6.9 World-Max ensemble layer',
     'copyDuplicateCount',
     'avgFirstReactionMinutes',
     'leakAloneCannotBuy: true',
