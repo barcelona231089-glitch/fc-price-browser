@@ -5,7 +5,7 @@ from typing import Any
 
 import numpy as np
 import pandas as pd
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 
 APP_VERSION = "1.0.0"
 DEVICE = os.getenv("WORLD_MAX_DEVICE", "auto").strip().lower()
@@ -18,6 +18,7 @@ if DEVICE == "auto":
 ENABLE_CHRONOS2 = os.getenv("ENABLE_CHRONOS2", "1").lower() in {"1", "true", "yes", "on"}
 ENABLE_TIMESFM3_SHADOW = os.getenv("ENABLE_TIMESFM3_SHADOW", "0").lower() in {"1", "true", "yes", "on"}
 ALLOW_TIMESFM3_NONCOMMERCIAL = os.getenv("ALLOW_TIMESFM3_NONCOMMERCIAL", "0").lower() in {"1", "true", "yes", "on"}
+WORKER_TOKEN = os.getenv("WORLD_MAX_ML_WORKER_TOKEN", "").strip()
 
 app = FastAPI(title="FC World-Max Forecast Worker", version=APP_VERSION)
 
@@ -154,6 +155,14 @@ def timesfm3_forecasts(item: dict[str, Any], horizons: list[int]) -> list[dict[s
             },
         })
     return out
+def require_token(request: Request) -> None:
+    if not WORKER_TOKEN:
+        return
+    supplied = request.headers.get("authorization", "")
+    if supplied != f"Bearer {WORKER_TOKEN}":
+        raise HTTPException(status_code=401, detail="UNAUTHORIZED")
+
+
 @app.get("/health")
 def health():
     return {
@@ -173,7 +182,8 @@ def health():
         },
     }
 @app.post("/v1/forecast/batch")
-def forecast_batch(payload: dict[str, Any]):
+def forecast_batch(payload: dict[str, Any], request: Request):
+    require_token(request)
     items = payload.get("items") or []
     horizons = [int(x) for x in (payload.get("horizonsMinutes") or [60, 360, 1440])]
     quantiles = [float(x) for x in (payload.get("quantiles") or [0.1, 0.5, 0.9])]
