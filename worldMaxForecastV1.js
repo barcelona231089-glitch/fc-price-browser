@@ -50,8 +50,8 @@ function selectWorkerRuntime({ envUrl = "", registryUrl = "", dbUrl = "" } = {})
   const normalizedEnv = String(envUrl || "").trim().replace(/\/$/, "");
   const normalizedRegistry = String(registryUrl || "").trim().replace(/\/$/, "");
   const normalizedDb = String(dbUrl || "").trim().replace(/\/$/, "");
-  if (normalizedEnv) return { workerUrl: normalizedEnv, source: "ENV" };
   if (normalizedRegistry) return { workerUrl: normalizedRegistry, source: "PUBLIC_DYNAMIC_REGISTRY" };
+  if (normalizedEnv) return { workerUrl: normalizedEnv, source: "ENV" };
   if (normalizedDb) return { workerUrl: normalizedDb, source: "POSTGRES_RUNTIME_CONFIG" };
   return { workerUrl: "", source: "NONE" };
 }

@@ -33,9 +33,9 @@ test('forecast normalization and ensemble use only positive real forecasts', () 
   assert.ok(ensemble.horizons[0].quality > 0);
 });
 
-test('dynamic main registry outranks PostgreSQL worker config while DB remains fallback', () => {
+test('dynamic main registry outranks stale ENV and PostgreSQL worker URLs', () => {
   const urls = {
-    envUrl: '',
+    envUrl: 'https://stale-static-worker.example/',
     registryUrl: 'https://main-worker.trycloudflare.com/',
     dbUrl: 'https://standby-worker.trycloudflare.com/'
   };
@@ -43,8 +43,8 @@ test('dynamic main registry outranks PostgreSQL worker config while DB remains f
     workerUrl: 'https://main-worker.trycloudflare.com',
     source: 'PUBLIC_DYNAMIC_REGISTRY'
   });
-  assert.deepEqual(__test.selectWorkerRuntime({ ...urls, envUrl: 'https://explicit-worker.example/' }), {
-    workerUrl: 'https://explicit-worker.example',
+  assert.deepEqual(__test.selectWorkerRuntime({ ...urls, registryUrl: '' }), {
+    workerUrl: 'https://stale-static-worker.example',
     source: 'ENV'
   });
   assert.deepEqual(__test.selectWorkerRuntime({ dbUrl: urls.dbUrl }), {
