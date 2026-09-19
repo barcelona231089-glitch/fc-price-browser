@@ -222,17 +222,22 @@ function normalizeForecast(raw, currentPrice) {
   let p10 = finite(raw?.p10 ?? raw?.q10);
   let p90 = finite(raw?.p90 ?? raw?.q90);
   if (p10 != null && p90 != null && p10 > p90) [p10, p90] = [p90, p10];
+  const quantilePriceFloorApplied = (p10 != null && p10 <= 0) || (p90 != null && p90 <= 0);
+  if (p10 != null) p10 = Math.max(1, Math.min(p10, p50));
+  if (p90 != null) p90 = Math.max(p50, p90);
   const probabilityUp = finite(raw?.probabilityUp);
+  const metadata = raw?.metadata && typeof raw.metadata === "object" ? { ...raw.metadata } : {};
+  if (quantilePriceFloorApplied) metadata.quantilePriceFloorApplied = true;
 
   return {
     model,
     horizonMinutes,
-    p10: p10 != null && p10 > 0 ? p10 : null,
+    p10,
     p50,
-    p90: p90 != null && p90 > 0 ? p90 : null,
+    p90,
     probabilityUp: probabilityUp == null ? null : clamp(probabilityUp, 0, 1),
     currentPrice,
-    metadata: raw?.metadata && typeof raw.metadata === "object" ? raw.metadata : {}
+    metadata
   };
 }
 function perfKey(model, horizonMinutes, regime) {

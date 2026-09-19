@@ -33,6 +33,31 @@ test('forecast normalization and ensemble use only positive real forecasts', () 
   assert.ok(ensemble.horizons[0].quality > 0);
 });
 
+test('forecast normalization floors non-positive price quantiles without inventing missing ones', () => {
+  const floored = __test.normalizeForecast({
+    model: 'chronos2',
+    horizonMinutes: 10080,
+    p10: -250,
+    p50: 1000,
+    p90: 1600,
+    metadata: { checkpoint: 'amazon/chronos-2' }
+  }, 1000);
+  assert.equal(floored.p10, 1);
+  assert.equal(floored.p50, 1000);
+  assert.equal(floored.p90, 1600);
+  assert.equal(floored.metadata.checkpoint, 'amazon/chronos-2');
+  assert.equal(floored.metadata.quantilePriceFloorApplied, true);
+
+  const missing = __test.normalizeForecast({
+    model: 'chronos2',
+    horizonMinutes: 60,
+    p50: 1000,
+    p90: 1200
+  }, 1000);
+  assert.equal(missing.p10, null);
+  assert.equal(missing.metadata.quantilePriceFloorApplied, undefined);
+});
+
 test('dynamic main registry outranks stale ENV and PostgreSQL worker URLs', () => {
   const urls = {
     envUrl: 'https://stale-static-worker.example/',
