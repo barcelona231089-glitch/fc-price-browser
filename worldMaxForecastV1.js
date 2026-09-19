@@ -352,7 +352,7 @@ async function refreshRemoteRegistry() {
     if (!response.ok) throw new Error(`HTTP_${response.status}`);
     const body = await response.json();
     const workerUrl = String(body?.workerUrl || "").trim().replace(/\/$/, "");
-    if (!/^https:\/\/[a-z0-9-]+\.trycloudflare\.com$/i.test(workerUrl)) {
+    if (!/^https:\/\/(?:[a-z0-9-]+\.trycloudflare\.com|[a-z0-9-]+\.loca\.lt)$/i.test(workerUrl)) {
       throw new Error("INVALID_REGISTRY_URL");
     }
     state.remoteRegistry = {
@@ -519,6 +519,9 @@ async function callWorker(workerUrl, timeoutMs, payload, workerToken = "") {
 
   try {
     const headers = { "content-type": "application/json" };
+    if (/\.loca\.lt$/i.test(new URL(workerUrl).hostname)) {
+      headers["bypass-tunnel-reminder"] = "true";
+    }
     const token = String(workerToken || "").trim();
     if (token) headers.authorization = `Bearer ${token}`;
 
