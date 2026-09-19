@@ -33,7 +33,7 @@ function Stop-OldTunnels {
 function Start-WorldMaxTunnel {
   Stop-OldTunnels
   Remove-Item $TunnelOut,$TunnelErr -Force -ErrorAction SilentlyContinue
-  $p = Start-Process -FilePath $Cloudflared -ArgumentList @('tunnel','--url',"http://127.0.0.1:$Port",'--protocol','http2','--no-autoupdate') -WindowStyle Hidden -RedirectStandardOutput $TunnelOut -RedirectStandardError $TunnelErr -PassThru
+  $p = Start-Process -FilePath $Cloudflared -ArgumentList @('tunnel','--url',"http://127.0.0.1:$Port",'--protocol','http2','--region','us','--edge-ip-version','4','--no-autoupdate') -WindowStyle Hidden -RedirectStandardOutput $TunnelOut -RedirectStandardError $TunnelErr -PassThru
   $deadline = (Get-Date).AddSeconds(30)
   do {
     Start-Sleep -Seconds 1
