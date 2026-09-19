@@ -47,22 +47,52 @@ function config() {
   const dbCfg = state.runtimeConfig || {};
   const registryCfg = state.remoteRegistry || {};
   const envUrl = String(process.env.WORLD_MAX_ML_WORKER_URL || "").trim();
-  const workerUrl = String(registryCfg.workerUrl || envUrl || dbCfg.workerUrl || "").trim().replace(/\/$/, "");
+  const dbUrl = String(dbCfg.workerUrl || "").trim();
+  const registryUrl = String(registryCfg.workerUrl || "").trim();
+  const workerUrl = String(dbUrl || envUrl || registryUrl || "").trim().replace(/\/$/, "");
+  const usingDbRuntime = Boolean(dbUrl);
+
   const envEnabledSet = process.env.WORLD_MAX_ML_ENABLED != null && String(process.env.WORLD_MAX_ML_ENABLED).trim() !== "";
-  const enabled = (registryCfg.workerUrl ? registryCfg.enabled !== false : envEnabledSet ? boolEnv("WORLD_MAX_ML_ENABLED", false) : Boolean(dbCfg.enabled)) && Boolean(workerUrl);
+  const enabled = (
+    usingDbRuntime ? dbCfg.enabled !== false :
+    envEnabledSet ? boolEnv("WORLD_MAX_ML_ENABLED", false) :
+    registryUrl ? registryCfg.enabled !== false :
+    Boolean(dbCfg.enabled)
+  ) && Boolean(workerUrl);
+
   const envProductionSet = process.env.WORLD_MAX_ML_PRODUCTION_CONFIRMED != null && String(process.env.WORLD_MAX_ML_PRODUCTION_CONFIRMED).trim() !== "";
-  const explicitProduction = envProductionSet ? boolEnv("WORLD_MAX_ML_PRODUCTION_CONFIRMED", false) : registryCfg.workerUrl ? Boolean(registryCfg.productionConfirmed) : Boolean(dbCfg.productionConfirmed);
+  const explicitProduction = envProductionSet
+    ? boolEnv("WORLD_MAX_ML_PRODUCTION_CONFIRMED", false)
+    : usingDbRuntime
+      ? Boolean(dbCfg.productionConfirmed)
+      : registryUrl
+        ? Boolean(registryCfg.productionConfirmed)
+        : false;
   const productionConfirmed = Boolean(explicitProduction || state.autoPromotionEligible);
+
   const envShadowSet = process.env.WORLD_MAX_ML_SHADOW != null && String(process.env.WORLD_MAX_ML_SHADOW).trim() !== "";
-  const requestedShadow = envShadowSet ? boolEnv("WORLD_MAX_ML_SHADOW", true) : registryCfg.workerUrl ? registryCfg.shadowMode !== false : dbCfg.shadowMode !== false;
+  const requestedShadow = envShadowSet
+    ? boolEnv("WORLD_MAX_ML_SHADOW", true)
+    : usingDbRuntime
+      ? dbCfg.shadowMode !== false
+      : registryUrl
+        ? registryCfg.shadowMode !== false
+        : true;
   const shadowMode = !productionConfirmed || requestedShadow;
+
   return {
     workerUrl,
-    workerToken: String(process.env.WORLD_MAX_ML_WORKER_TOKEN || registryCfg.workerToken || dbCfg.workerToken || "").trim(),
+    workerToken: String(process.env.WORLD_MAX_ML_WORKER_TOKEN || (usingDbRuntime ? dbCfg.workerToken : "") || registryCfg.workerToken || "").trim(),
     enabled,
     productionConfirmed,
     shadowMode,
-    configSource: envUrl || envEnabledSet || envProductionSet || envShadowSet ? "ENV" : registryCfg.workerUrl ? "PUBLIC_DYNAMIC_REGISTRY" : state.runtimeConfig ? "POSTGRES_RUNTIME_CONFIG" : "NONE",
+    configSource: usingDbRuntime
+      ? "POSTGRES_RUNTIME_CONFIG"
+      : envUrl || envEnabledSet || envProductionSet || envShadowSet
+        ? "ENV"
+        : registryUrl
+          ? "PUBLIC_DYNAMIC_REGISTRY"
+          : "NONE",
     timeoutMs: clamp(Number(process.env.WORLD_MAX_ML_TIMEOUT_MS || 8000), 500, 15000),
     maxRows: Math.round(clamp(Number(process.env.WORLD_MAX_ML_MAX_ROWS || 10), 1, 40)),
     minCycleMs: clamp(Number(process.env.WORLD_MAX_ML_MIN_CYCLE_MS || 900000), 60000, 3600000)
