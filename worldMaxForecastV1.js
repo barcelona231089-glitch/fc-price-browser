@@ -20,10 +20,15 @@ const state = {
   lastRuntimeConfigRefreshAt: 0,
   runtimeConfig: null,
   runtimeConfigSource: "ENV_ONLY",
+  remoteRegistry: null,
+  lastRemoteRegistryRefreshAt: 0,
+  remoteRegistryError: null,
   autoPromotionEligible: false,
   autoPromotionReason: "INSUFFICIENT_EVIDENCE",
   performanceProfiles: new Map()
 };
+
+const WORLD_MAX_REGISTRY_URL = "https://raw.githubusercontent.com/barcelona231089-glitch/fc-price-browser/worldmax-registry/worker-registry.json";
 
 const boolEnv = (name, fallback = false) => {
   const raw = process.env[name];
@@ -40,23 +45,24 @@ function clamp(value, min, max) {
 
 function config() {
   const dbCfg = state.runtimeConfig || {};
+  const registryCfg = state.remoteRegistry || {};
   const envUrl = String(process.env.WORLD_MAX_ML_WORKER_URL || "").trim();
-  const workerUrl = String(envUrl || dbCfg.workerUrl || "").trim().replace(/\/$/, "");
+  const workerUrl = String(registryCfg.workerUrl || envUrl || dbCfg.workerUrl || "").trim().replace(/\/$/, "");
   const envEnabledSet = process.env.WORLD_MAX_ML_ENABLED != null && String(process.env.WORLD_MAX_ML_ENABLED).trim() !== "";
-  const enabled = (envEnabledSet ? boolEnv("WORLD_MAX_ML_ENABLED", false) : Boolean(dbCfg.enabled)) && Boolean(workerUrl);
+  const enabled = (registryCfg.workerUrl ? registryCfg.enabled !== false : envEnabledSet ? boolEnv("WORLD_MAX_ML_ENABLED", false) : Boolean(dbCfg.enabled)) && Boolean(workerUrl);
   const envProductionSet = process.env.WORLD_MAX_ML_PRODUCTION_CONFIRMED != null && String(process.env.WORLD_MAX_ML_PRODUCTION_CONFIRMED).trim() !== "";
-  const explicitProduction = envProductionSet ? boolEnv("WORLD_MAX_ML_PRODUCTION_CONFIRMED", false) : Boolean(dbCfg.productionConfirmed);
+  const explicitProduction = envProductionSet ? boolEnv("WORLD_MAX_ML_PRODUCTION_CONFIRMED", false) : registryCfg.workerUrl ? Boolean(registryCfg.productionConfirmed) : Boolean(dbCfg.productionConfirmed);
   const productionConfirmed = Boolean(explicitProduction || state.autoPromotionEligible);
   const envShadowSet = process.env.WORLD_MAX_ML_SHADOW != null && String(process.env.WORLD_MAX_ML_SHADOW).trim() !== "";
-  const requestedShadow = envShadowSet ? boolEnv("WORLD_MAX_ML_SHADOW", true) : dbCfg.shadowMode !== false;
+  const requestedShadow = envShadowSet ? boolEnv("WORLD_MAX_ML_SHADOW", true) : registryCfg.workerUrl ? registryCfg.shadowMode !== false : dbCfg.shadowMode !== false;
   const shadowMode = !productionConfirmed || requestedShadow;
   return {
     workerUrl,
-    workerToken: String(process.env.WORLD_MAX_ML_WORKER_TOKEN || dbCfg.workerToken || "").trim(),
+    workerToken: String(process.env.WORLD_MAX_ML_WORKER_TOKEN || registryCfg.workerToken || dbCfg.workerToken || "").trim(),
     enabled,
     productionConfirmed,
     shadowMode,
-    configSource: envUrl || envEnabledSet || envProductionSet || envShadowSet ? "ENV" : state.runtimeConfig ? "POSTGRES_RUNTIME_CONFIG" : "NONE",
+    configSource: envUrl || envEnabledSet || envProductionSet || envShadowSet ? "ENV" : registryCfg.workerUrl ? "PUBLIC_DYNAMIC_REGISTRY" : state.runtimeConfig ? "POSTGRES_RUNTIME_CONFIG" : "NONE",
     timeoutMs: clamp(Number(process.env.WORLD_MAX_ML_TIMEOUT_MS || 8000), 500, 15000),
     maxRows: Math.round(clamp(Number(process.env.WORLD_MAX_ML_MAX_ROWS || 10), 1, 40)),
     minCycleMs: clamp(Number(process.env.WORLD_MAX_ML_MIN_CYCLE_MS || 900000), 60000, 3600000)
@@ -305,6 +311,36 @@ async function ensureSchema(pool) {
   `);
 }
 
+async function refreshRemoteRegistry() {
+  if (Date.now() - state.lastRemoteRegistryRefreshAt < 60_000) return;
+  state.lastRemoteRegistryRefreshAt = Date.now();
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 3000);
+  timer.unref?.();
+  try {
+    const response = await fetch(`${WORLD_MAX_REGISTRY_URL}?t=${Date.now()}`, { signal: controller.signal, cache: "no-store" });
+    if (!response.ok) throw new Error(`HTTP_${response.status}`);
+    const body = await response.json();
+    const workerUrl = String(body?.workerUrl || "").trim().replace(/\/$/, "");
+    if (!/^https:\/\/[a-z0-9-]+\.trycloudflare\.com$/i.test(workerUrl)) {
+      throw new Error("INVALID_REGISTRY_URL");
+    }
+    state.remoteRegistry = {
+      workerUrl,
+      workerToken: "",
+      enabled: body?.enabled !== false,
+      shadowMode: body?.shadowMode !== false,
+      productionConfirmed: false,
+      updatedAt: body?.updatedAt || null
+    };
+    state.remoteRegistryError = null;
+  } catch (error) {
+    state.remoteRegistryError = String(error?.message || error);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 async function refreshRuntimeConfig(pool, gameYear) {
   if (!pool || Date.now() - state.lastRuntimeConfigRefreshAt < 60_000) return;
   try {
@@ -474,6 +510,7 @@ export async function enrichRowsWithWorldMaxForecast({
   pool = null,
   gameYear = "27"
 } = {}) {
+  await refreshRemoteRegistry();
   if (pool) {
     await ensureSchema(pool).catch(error => {
       state.lastError = `schema: ${String(error?.message || error)}`;
@@ -643,6 +680,9 @@ export function getWorldMaxForecastStatus() {
     productionConfirmed: cfg.productionConfirmed,
     configSource: cfg.configSource,
     runtimeConfigUpdatedAt: state.runtimeConfig?.updatedAt || null,
+    remoteRegistryLoaded: Boolean(state.remoteRegistry?.workerUrl),
+    remoteRegistryUpdatedAt: state.remoteRegistry?.updatedAt || null,
+    remoteRegistryError: state.remoteRegistryError,
     autoPromotionEligible: state.autoPromotionEligible,
     autoPromotionReason: state.autoPromotionReason,
     requestedModels: requestedModelsFor(cfg),
