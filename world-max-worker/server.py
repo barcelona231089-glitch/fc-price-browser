@@ -69,7 +69,12 @@ def clean_series(item: dict[str, Any]) -> tuple[np.ndarray, list[pd.Timestamp]]:
     for point in points:
         try:
             price = float(point["price"])
-            stamp = pd.Timestamp(point["at"], tz="UTC")
+            stamp = pd.Timestamp(point["at"])
+            if stamp.tzinfo is None:
+                stamp = stamp.tz_localize("UTC")
+            else:
+                stamp = stamp.tz_convert("UTC")
+            stamp = stamp.tz_localize(None)
             if math.isfinite(price) and price > 0:
                 values.append(price)
                 stamps.append(stamp)
