@@ -65,7 +65,7 @@ def timesfm3_pipeline():
 
 def clean_series(item: dict[str, Any]) -> tuple[np.ndarray, list[pd.Timestamp]]:
     points = item.get("series") or []
-    values, stamps = [], []
+    observed: list[tuple[pd.Timestamp, float]] = []
     for point in points:
         try:
             price = float(point["price"])
@@ -76,13 +76,15 @@ def clean_series(item: dict[str, Any]) -> tuple[np.ndarray, list[pd.Timestamp]]:
                 stamp = stamp.tz_convert("UTC")
             stamp = stamp.tz_localize(None)
             if math.isfinite(price) and price > 0:
-                values.append(price)
-                stamps.append(stamp)
+                observed.append((stamp, price))
         except Exception:
             continue
-    if len(values) < 32:
+    observed.sort(key=lambda x: x[0])
+    if len(observed) < 32:
         raise ValueError("INSUFFICIENT_REAL_SERIES")
-    return np.asarray(values, dtype=np.float32), stamps
+    stamps = [x[0] for x in observed]
+    values = np.asarray([x[1] for x in observed], dtype=np.float32)
+    return values, stamps
 
 
 def requested_steps(item: dict[str, Any], horizons: list[int]) -> dict[int, int]:
@@ -98,10 +100,20 @@ def chronos_forecasts(item: dict[str, Any], horizons: list[int], quantiles: list
     values, stamps = clean_series(item)
     steps = requested_steps(item, horizons)
     prediction_length = max(steps.values())
+    step_minutes = max(1, int(item.get("stepMinutes") or 60))
+    freq = f"{step_minutes}min"
 
+    # Chronos-2 requires a regular timestamp grid. Preserve every real observed
+    # price value in chronological order and normalize only the timestamp grid
+    # to the declared stepMinutes. No synthetic prices or interpolated values.
+    regular_stamps = pd.date_range(
+        end=max(stamps),
+        periods=len(values),
+        freq=freq,
+    )
     context = pd.DataFrame({
         "id": str(item["eaId"]),
-        "timestamp": stamps,
+        "timestamp": regular_stamps,
         "target": values.astype(float),
     })
     pred = pipe.predict_df(
@@ -111,6 +123,7 @@ def chronos_forecasts(item: dict[str, Any], horizons: list[int], quantiles: list
         id_column="id",
         timestamp_column="timestamp",
         target="target",
+        freq=freq,
     ).sort_values("timestamp").reset_index(drop=True)
 
     out = []
@@ -123,7 +136,12 @@ def chronos_forecasts(item: dict[str, Any], horizons: list[int], quantiles: list
             "p10": float(row["0.1"]) if "0.1" in row else None,
             "p50": p50,
             "p90": float(row["0.9"]) if "0.9" in row else None,
-            "metadata": {"checkpoint": "amazon/chronos-2", "realObservedSeriesOnly": True},
+            "metadata": {
+                "checkpoint": "amazon/chronos-2",
+                "realObservedSeriesOnly": True,
+                "timestampGridNormalized": True,
+                "stepMinutes": step_minutes,
+            },
         })
     return out
 def timesfm3_forecasts(item: dict[str, Any], horizons: list[int]) -> list[dict[str, Any]]:
