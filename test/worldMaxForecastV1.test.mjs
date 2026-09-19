@@ -59,6 +59,21 @@ test('final loader wires World-Max shadow ensemble into the production brain', (
     assert.ok(loader.includes(marker), marker);
   }
 });
+test('Chronos worker normalizes only the timestamp grid and never interpolates prices', () => {
+  const worker = fs.readFileSync(path.join(root, 'world-max-worker', 'server.py'), 'utf8');
+  for (const marker of [
+    'pd.date_range(',
+    'freq=freq',
+    'timestampGridNormalized',
+    'No synthetic prices or interpolated values'
+  ]) {
+    assert.ok(worker.includes(marker), marker);
+  }
+  assert.equal(worker.includes('.interpolate('), false);
+  assert.equal(worker.includes('.ffill('), false);
+  assert.equal(worker.includes('.bfill('), false);
+});
+
 test('forecast input uses only explicitly supplied observed price points', () => {
   const observed = [
     { at: '2026-09-18T20:00:00Z', price: 10000 },
