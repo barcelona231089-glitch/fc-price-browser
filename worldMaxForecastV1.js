@@ -57,7 +57,7 @@ function config() {
     productionConfirmed,
     shadowMode,
     configSource: envUrl || envEnabledSet || envProductionSet || envShadowSet ? "ENV" : state.runtimeConfig ? "POSTGRES_RUNTIME_CONFIG" : "NONE",
-    timeoutMs: clamp(Number(process.env.WORLD_MAX_ML_TIMEOUT_MS || 2500), 500, 10000),
+    timeoutMs: clamp(Number(process.env.WORLD_MAX_ML_TIMEOUT_MS || 8000), 500, 15000),
     maxRows: Math.round(clamp(Number(process.env.WORLD_MAX_ML_MAX_ROWS || 10), 1, 40)),
     minCycleMs: clamp(Number(process.env.WORLD_MAX_ML_MIN_CYCLE_MS || 900000), 60000, 3600000)
   };
