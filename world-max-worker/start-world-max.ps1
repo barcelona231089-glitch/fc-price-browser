@@ -9,6 +9,7 @@ $WorkerOut = Join-Path $WorkerDir 'worker.stdout.log'
 $WorkerErr = Join-Path $WorkerDir 'worker.stderr.log'
 $TunnelOut = Join-Path $WorkerDir 'tunnel.stdout.log'
 $TunnelErr = Join-Path $WorkerDir 'tunnel.stderr.log'
+$PublicFailureThreshold = 3
 
 function Test-WorkerHealth {
   try {
@@ -32,7 +33,7 @@ function Stop-OldTunnels {
 function Start-WorldMaxTunnel {
   Stop-OldTunnels
   Remove-Item $TunnelOut,$TunnelErr -Force -ErrorAction SilentlyContinue
-  $p = Start-Process -FilePath $Cloudflared -ArgumentList @('tunnel','--url',"http://127.0.0.1:$Port",'--no-autoupdate') -WindowStyle Hidden -RedirectStandardOutput $TunnelOut -RedirectStandardError $TunnelErr -PassThru
+  $p = Start-Process -FilePath $Cloudflared -ArgumentList @('tunnel','--url',"http://127.0.0.1:$Port",'--protocol','http2','--no-autoupdate') -WindowStyle Hidden -RedirectStandardOutput $TunnelOut -RedirectStandardError $TunnelErr -PassThru
   $deadline = (Get-Date).AddSeconds(30)
   do {
     Start-Sleep -Seconds 1
@@ -47,10 +48,42 @@ function Start-WorldMaxTunnel {
 }
 
 function Test-PublicTunnel([string]$Url) {
+  if ([string]::IsNullOrWhiteSpace($Url)) { return $false }
   try {
     $r = Invoke-RestMethod -Uri "$Url/health" -TimeoutSec 8
+    if ($r.ok -and $r.device -eq 'cuda' -and $r.chronos2.enabled) { return $true }
+  } catch {}
+
+  try {
+    $uri = [Uri]$Url
+    $hostName = $uri.Host
+    $ip = Resolve-DnsName $hostName -Server 1.1.1.1 -Type A -ErrorAction Stop |
+      Where-Object { $_.IPAddress } |
+      Select-Object -First 1 -ExpandProperty IPAddress
+    if ([string]::IsNullOrWhiteSpace($ip)) { return $false }
+    $raw = & curl.exe -sS --max-time 10 --resolve "$hostName`:443`:$ip" "$Url/health"
+    if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($raw)) { return $false }
+    $r = $raw | ConvertFrom-Json
     return [bool]($r.ok -and $r.device -eq 'cuda' -and $r.chronos2.enabled)
   } catch { return $false }
+}
+
+function Start-VerifiedWorldMaxTunnel {
+  $candidate = Start-WorldMaxTunnel
+  $deadline = (Get-Date).AddSeconds(120)
+  do {
+    if (Test-PublicTunnel $candidate.Url) {
+      Publish-Registry $candidate.Url
+      return $candidate
+    }
+    try {
+      if ($candidate.Process.HasExited) { break }
+    } catch { break }
+    Start-Sleep -Seconds 2
+  } while ((Get-Date) -lt $deadline)
+
+  try { Stop-Process -Id $candidate.Process.Id -Force -ErrorAction SilentlyContinue } catch {}
+  throw 'Cloudflare quick tunnel URL never became publicly healthy'
 }
 function Publish-Registry([string]$Url) {
   git -C $RegistryRepo fetch origin worldmax-registry | Out-Null
@@ -78,20 +111,36 @@ while (-not (Test-WorkerHealth)) {
   Start-Sleep -Seconds 2
 }
 
-$tunnel = Start-WorldMaxTunnel
-Publish-Registry $tunnel.Url
+$tunnel = Start-VerifiedWorldMaxTunnel
+$publicFailures = 0
 while ($true) {
   Start-Sleep -Seconds 30
   if (-not (Test-WorkerHealth)) {
     $null = Start-WorldMaxWorker
-    Start-Sleep -Seconds 10
+    $workerDeadline = (Get-Date).AddSeconds(90)
+    while (-not (Test-WorkerHealth)) {
+      if ((Get-Date) -gt $workerDeadline) { throw 'World-Max worker failed recovery health check' }
+      Start-Sleep -Seconds 2
+    }
+    $publicFailures = 0
   }
 
   $tunnelDead = $false
   try { $tunnelDead = $tunnel.Process.HasExited } catch { $tunnelDead = $true }
   if ($tunnelDead) {
-    $tunnel = Start-WorldMaxTunnel
-    Publish-Registry $tunnel.Url
+    $tunnel = Start-VerifiedWorldMaxTunnel
+    $publicFailures = 0
     continue
+  }
+
+  if (Test-PublicTunnel $tunnel.Url) {
+    $publicFailures = 0
+    continue
+  }
+
+  $publicFailures += 1
+  if ($publicFailures -ge $PublicFailureThreshold) {
+    $tunnel = Start-VerifiedWorldMaxTunnel
+    $publicFailures = 0
   }
 }
