@@ -1,4 +1,4 @@
-import os
+﻿import os
 import math
 from functools import lru_cache
 from typing import Any
@@ -238,3 +238,4 @@ def forecast_batch(payload: dict[str, Any], request: Request):
             "timesfm3ResearchShadowOnly": True,
         },
     }
+
