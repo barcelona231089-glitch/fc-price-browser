@@ -25,7 +25,10 @@ const state = {
   remoteRegistryError: null,
   autoPromotionEligible: false,
   autoPromotionReason: "INSUFFICIENT_EVIDENCE",
-  performanceProfiles: new Map()
+  performanceProfiles: new Map(),
+  forecastCache: new Map(),
+  cacheHits: 0,
+  lastCacheApplyAt: null
 };
 
 const WORLD_MAX_REGISTRY_URL = "https://raw.githubusercontent.com/barcelona231089-glitch/fc-price-browser/worldmax-registry/worker-registry.json";
@@ -79,6 +82,12 @@ function config() {
         ? registryCfg.shadowMode !== false
         : true;
   const shadowMode = !productionConfirmed || requestedShadow;
+  const minCycleMs = clamp(Number(process.env.WORLD_MAX_ML_MIN_CYCLE_MS || 900000), 60000, 3600000);
+  const cacheMaxAgeMs = clamp(
+    Number(process.env.WORLD_MAX_ML_CACHE_MAX_AGE_MS || Math.max(1800000, minCycleMs * 2)),
+    minCycleMs,
+    21600000
+  );
 
   return {
     workerUrl,
@@ -95,7 +104,8 @@ function config() {
           : "NONE",
     timeoutMs: clamp(Number(process.env.WORLD_MAX_ML_TIMEOUT_MS || 8000), 500, 15000),
     maxRows: Math.round(clamp(Number(process.env.WORLD_MAX_ML_MAX_ROWS || 10), 1, 40)),
-    minCycleMs: clamp(Number(process.env.WORLD_MAX_ML_MIN_CYCLE_MS || 900000), 60000, 3600000)
+    minCycleMs,
+    cacheMaxAgeMs
   };
 }
 
@@ -296,6 +306,91 @@ function ensembleForecast(forecasts, regime) {
   horizons.sort((a, b) => a.horizonMinutes - b.horizonMinutes);
   return { regime, horizons, models: [...new Set(forecasts.map(x => x.model))] };
 }
+
+function forecastSnapshot(forecasts = []) {
+  return forecasts.map(f => ({
+    model: f.model,
+    horizonMinutes: f.horizonMinutes,
+    p10: f.p10,
+    p50: f.p50,
+    p90: f.p90,
+    probabilityUp: f.probabilityUp,
+    metadata: f.metadata && typeof f.metadata === "object" ? f.metadata : {}
+  }));
+}
+
+function buildForecastEnvelope(row, work, rawForecasts, cfg, generatedAt = null, cacheHit = false, nowMs = Date.now()) {
+  const allowedModels = new Set(requestedModelsFor(cfg).map(model => String(model).toLowerCase()));
+  const forecasts = (Array.isArray(rawForecasts) ? rawForecasts : [])
+    .map(raw => normalizeForecast(raw, Number(row?.price)))
+    .filter(forecast => forecast && allowedModels.has(String(forecast.model).toLowerCase()));
+  if (!forecasts.length) return null;
+
+  const regime = regimeFor(row, work);
+  const ensemble = ensembleForecast(forecasts, regime);
+  if (!ensemble?.horizons?.length) return null;
+
+  const effectiveGeneratedAt = generatedAt || new Date(nowMs).toISOString();
+  const generatedMs = Date.parse(effectiveGeneratedAt);
+  return {
+    version: WORLD_MAX_FORECAST_VERSION,
+    mode: state.mode,
+    shadow: cfg.shadowMode,
+    productionConfirmed: cfg.productionConfirmed,
+    ensemble,
+    modelForecasts: forecasts.map(f => ({
+      model: f.model,
+      horizonMinutes: f.horizonMinutes,
+      p10: f.p10,
+      p50: f.p50,
+      p90: f.p90,
+      probabilityUp: f.probabilityUp
+    })),
+    advisoryOnly: true,
+    synthetic: false,
+    generatedAt: effectiveGeneratedAt,
+    cacheHit: Boolean(cacheHit),
+    cacheAgeSeconds: Number.isFinite(generatedMs)
+      ? Math.max(0, Math.round((nowMs - generatedMs) / 1000))
+      : null
+  };
+}
+
+function applyCachedForecasts(rows, brainWork, cfg, nowMs = Date.now()) {
+  if (!Array.isArray(rows) || !rows.length || !state.forecastCache.size) return 0;
+
+  for (const [eaId, entry] of state.forecastCache) {
+    const storedAt = Number(entry?.storedAt || Date.parse(entry?.generatedAt || ""));
+    if (!Number.isFinite(storedAt) || nowMs - storedAt > cfg.cacheMaxAgeMs) {
+      state.forecastCache.delete(eaId);
+    }
+  }
+
+  let hits = 0;
+  for (const row of rows) {
+    const entry = state.forecastCache.get(String(row?.eaId || ""));
+    if (!entry) continue;
+    const envelope = buildForecastEnvelope(
+      row,
+      brainWork?.get?.(String(row.eaId)),
+      entry.forecasts,
+      cfg,
+      entry.generatedAt,
+      true,
+      nowMs
+    );
+    if (!envelope) continue;
+    row.aiWorldMaxForecast = envelope;
+    hits += 1;
+  }
+
+  if (hits > 0) {
+    state.cacheHits += hits;
+    state.lastCacheApplyAt = new Date(nowMs).toISOString();
+  }
+  return hits;
+}
+
 async function ensureSchema(pool) {
   if (!pool) return;
 
@@ -562,10 +657,14 @@ export async function enrichRowsWithWorldMaxForecast({
   state.mode = !cfg.enabled ? "DISABLED" : cfg.shadowMode ? "SHADOW" : "PRODUCTION_GUARDED";
 
   if (!cfg.enabled || !Array.isArray(rows) || !rows.length) {
-    return { ok: true, skipped: true, reason: "NOT_ENABLED" };
+    return { ok: true, skipped: true, reason: "NOT_ENABLED", cachedRows: 0 };
   }
+
+  // Keep the latest real-history forecast attached between throttled worker calls.
+  // Each cache hit is re-normalized against the row's current observed price.
+  const cachedRows = applyCachedForecasts(rows, brainWork, cfg);
   if (Date.now() - state.lastCycleAt < cfg.minCycleMs) {
-    return { ok: true, skipped: true, reason: "CYCLE_THROTTLED" };
+    return { ok: true, skipped: true, reason: "CYCLE_THROTTLED", cachedRows };
   }
   state.lastCycleAt = Date.now();
 
@@ -626,26 +725,16 @@ export async function enrichRowsWithWorldMaxForecast({
 
       const work = brainWork?.get?.(String(row.eaId));
       const regime = regimeFor(row, work);
-      const ensemble = ensembleForecast(forecasts, regime);
-
-      row.aiWorldMaxForecast = {
-        version: WORLD_MAX_FORECAST_VERSION,
-        mode: state.mode,
-        shadow: cfg.shadowMode,
-        productionConfirmed: cfg.productionConfirmed,
-        ensemble,
-        modelForecasts: forecasts.map(f => ({
-          model: f.model,
-          horizonMinutes: f.horizonMinutes,
-          p10: f.p10,
-          p50: f.p50,
-          p90: f.p90,
-          probabilityUp: f.probabilityUp
-        })),
-        advisoryOnly: true,
-        synthetic: false,
-        generatedAt: new Date().toISOString()
-      };
+      const generatedAt = new Date().toISOString();
+      const cachedForecasts = forecastSnapshot(forecasts);
+      state.forecastCache.set(String(row.eaId), {
+        forecasts: cachedForecasts,
+        generatedAt,
+        storedAt: Date.now()
+      });
+      const envelope = buildForecastEnvelope(row, work, cachedForecasts, cfg, generatedAt, false);
+      if (!envelope) continue;
+      row.aiWorldMaxForecast = envelope;
 
       state.rowsForecast += 1;
       await persistForecasts(pool, gameYear, row, regime, forecasts).catch(error => {
@@ -727,6 +816,10 @@ export function getWorldMaxForecastStatus() {
     successes: state.successes,
     failures: state.failures,
     rowsForecast: state.rowsForecast,
+    cachedForecasts: state.forecastCache.size,
+    cacheHits: state.cacheHits,
+    cacheMaxAgeMs: cfg.cacheMaxAgeMs,
+    lastCacheApplyAt: state.lastCacheApplyAt,
     evaluations: state.evaluations,
     performanceProfiles: state.performanceProfiles.size,
     lastCallAt: state.lastCallAt,
@@ -744,7 +837,8 @@ export function getWorldMaxForecastStatus() {
       postgresRuntimeConfigFallback: true,
       fcYearsSeparated: true,
       realObservedOutcomesOnly: true,
-      noSyntheticPrices: true
+      noSyntheticPrices: true,
+      forecastCacheRepricesAgainstCurrentPrice: true
     }
   };
 }
@@ -753,6 +847,8 @@ export const __test = {
   normalizeForecast,
   ensembleForecast,
   buildForecastInput,
+  buildForecastEnvelope,
+  forecastSnapshot,
   candidateScore,
   performanceWeight
 };

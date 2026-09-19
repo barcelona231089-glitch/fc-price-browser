@@ -33,6 +33,59 @@ test('forecast normalization and ensemble use only positive real forecasts', () 
   assert.ok(ensemble.horizons[0].quality > 0);
 });
 
+test('cached World-Max forecast is repriced against the latest observed market price', () => {
+  const generatedAt = '2026-09-19T19:10:00.000Z';
+  const raw = [{ model: 'chronos2', horizonMinutes: 360, p10: 10000, p50: 11000, p90: 12000 }];
+  const cfg = { shadowMode: true, productionConfirmed: false };
+  const fresh = __test.buildForecastEnvelope(
+    { eaId: '123', price: 10000 },
+    { input: {} },
+    raw,
+    cfg,
+    generatedAt,
+    false,
+    Date.parse(generatedAt)
+  );
+  const cached = __test.buildForecastEnvelope(
+    { eaId: '123', price: 11000 },
+    { input: {} },
+    __test.forecastSnapshot(fresh.modelForecasts),
+    cfg,
+    generatedAt,
+    true,
+    Date.parse(generatedAt) + 60000
+  );
+
+  assert.equal(Number(fresh.ensemble.horizons[0].edgePct.toFixed(2)), 10);
+  assert.equal(Number(cached.ensemble.horizons[0].edgePct.toFixed(2)), 0);
+  assert.equal(cached.generatedAt, generatedAt);
+  assert.equal(cached.cacheHit, true);
+  assert.equal(cached.cacheAgeSeconds, 60);
+  assert.equal(cached.synthetic, false);
+
+  const guardedProduction = __test.buildForecastEnvelope(
+    { eaId: '123', price: 11000 },
+    { input: {} },
+    [...raw, { model: 'timesfm3', horizonMinutes: 360, p10: 9000, p50: 9500, p90: 10000 }],
+    { shadowMode: false, productionConfirmed: true },
+    generatedAt,
+    true,
+    Date.parse(generatedAt) + 60000
+  );
+  assert.deepEqual(guardedProduction.ensemble.models, ['chronos2']);
+});
+
+test('throttled World-Max cycles reattach the latest non-stale forecast cache', () => {
+  const source = fs.readFileSync(path.join(root, 'worldMaxForecastV1.js'), 'utf8');
+  for (const marker of [
+    'const cachedRows = applyCachedForecasts(rows, brainWork, cfg);',
+    'reason: "CYCLE_THROTTLED", cachedRows',
+    'forecastCacheRepricesAgainstCurrentPrice: true'
+  ]) {
+    assert.ok(source.includes(marker), marker);
+  }
+});
+
 test('production decision layer can veto an existing entry but never invent one', () => {
   const forecast = {
     shadow: false,
