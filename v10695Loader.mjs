@@ -109,9 +109,10 @@ export async function load(url, context, nextLoad) {
   const result = await nextLoad(url, context, nextLoad);
   if (result.format !== 'module') return result;
 
-  const raw = typeof result.source === 'string'
+  const rawSource = typeof result.source === 'string'
     ? result.source
     : Buffer.from(result.source).toString('utf8');
+  const raw = rawSource.replace(/\r\n/g, '\n');
 
   if (url.endsWith('/marketEvidenceV1069.js')) {
     const patched = patchMarketEvidenceV10695(raw);

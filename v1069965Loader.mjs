@@ -478,8 +478,9 @@ export function patchServerV1069965(source) {
 export async function load(url, context, nextLoad) {
   const result = await nextLoad(url, context, nextLoad);
   if (result?.format !== "module") return result;
-  const raw = sourceText(result.source);
-  if (raw == null) return result;
+  const rawSource = sourceText(result.source);
+  if (rawSource == null) return result;
+  const raw = rawSource.replace(/\r\n/g, "\n");
 
   if (url.endsWith("/server.js")) {
     try {

@@ -77,7 +77,8 @@ export function patchServerV106996(source) {
 }
 
 export function patchTraderBrainV106996(source) {
-  let out = String(source || "");
+  // Normalize Windows CRLF before exact multi-line 24m/Gemini anchors.
+  let out = String(source || "").replace(/\r\n/g, "\n");
 
   if (!out.includes('const permanentMl = input.permanentMl || null;')) {
     const anchor = '  const marketContext = input.marketContext || {};';

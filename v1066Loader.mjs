@@ -5,7 +5,8 @@ export const V1066_BOOTSTRAP_VERSION = '10.69.4-market365-futbin-liquidity';
 
 export function patchFutbinBridgeV1066(source) {
   const original = String(source || '');
-  let out = original;
+  // Normalize CRLF so exact multi-line production anchors behave identically on Windows and Linux.
+  let out = original.replace(/\r\n/g, '\n');
 
   if (!out.includes('./futbinBridgeV1066.js')) {
     out = out.replace(
@@ -132,7 +133,9 @@ export function patchFutbinBridgeV1066(source) {
 
 
 function patchTraderBrainFutbinV10673(source) {
-  let out = String(source || '');
+  // Normalize Windows checkouts before exact multi-line source-anchor patches.
+  // Without this, CRLF can silently skip the FUTBIN extended-evidence inserts.
+  let out = String(source || '').replace(/\r\n/g, '\n');
 
   if (!out.includes('./traderFutbinExtendedV10673.js')) {
     out = out.replace(
@@ -367,7 +370,8 @@ function patchOwnMarketApiV1068(source) {
 }
 
 function patchUvAppV2105(source) {
-  let out = String(source || '');
+  // Normalize Windows CRLF before exact multi-line ÜV source patches.
+  let out = String(source || '').replace(/\r\n/g, '\n');
   out = out.replace("const UV_VERSION = '2.10.4';", "const UV_VERSION = '2.10.12';");
   out = out.replace(
     '  const futbinPriceCoverage = rows.filter(r => Number.isFinite(Number(r.fresh?.futbinPrice))).length;',
@@ -1319,7 +1323,9 @@ export async function load(url, context, defaultLoad) {
   const result = await defaultLoad(url, context, defaultLoad);
   if (result.format !== 'module') return result;
 
-  const raw = typeof result.source === 'string' ? result.source : Buffer.from(result.source).toString('utf8');
+  const rawSource = typeof result.source === 'string' ? result.source : Buffer.from(result.source).toString('utf8');
+  // One canonical newline format for every exact source patch in this loader chain.
+  const raw = rawSource.replace(/\r\n/g, '\n');
 
   if (url.endsWith('/uv/uvApp.js')) {
     const patched = patchUvAppV2105(raw);
