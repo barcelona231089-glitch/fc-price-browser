@@ -200,6 +200,7 @@ def health():
         "ok": True,
         "version": APP_VERSION,
         "device": DEVICE,
+        "auth_required": bool(WORKER_TOKEN),
         "chronos2": {
             "enabled": ENABLE_CHRONOS2,
             "loaded": runtime["chronos2_loaded"],

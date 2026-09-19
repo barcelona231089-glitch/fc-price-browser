@@ -9,6 +9,7 @@ $WorkerOut = Join-Path $WorkerDir 'worker.stdout.log'
 $WorkerErr = Join-Path $WorkerDir 'worker.stderr.log'
 $TunnelOut = Join-Path $WorkerDir 'tunnel.stdout.log'
 $TunnelErr = Join-Path $WorkerDir 'tunnel.stderr.log'
+$WorkerTokenFile = 'C:\Users\barce\FC-Trader-WorldMax\worker.token'
 $PublicFailureThreshold = 3
 
 function Test-WorkerHealth {
@@ -22,6 +23,10 @@ function Start-WorldMaxWorker {
   if (Test-WorkerHealth) { return $null }
   $env:ENABLE_CHRONOS2 = '1'
   $env:ENABLE_TIMESFM3_SHADOW = '0'
+  if (-not (Test-Path $WorkerTokenFile)) { throw 'World-Max worker token file is missing' }
+  $workerToken = (Get-Content $WorkerTokenFile -Raw).Trim()
+  if ([string]::IsNullOrWhiteSpace($workerToken)) { throw 'World-Max worker token file is empty' }
+  $env:WORLD_MAX_ML_WORKER_TOKEN = $workerToken
   return Start-Process -FilePath $Python -ArgumentList @('-m','uvicorn','server:app','--host','127.0.0.1','--port',"$Port") -WorkingDirectory $WorkerDir -WindowStyle Hidden -RedirectStandardOutput $WorkerOut -RedirectStandardError $WorkerErr -PassThru
 }
 function Stop-OldTunnels {

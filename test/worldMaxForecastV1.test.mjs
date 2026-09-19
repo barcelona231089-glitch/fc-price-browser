@@ -78,6 +78,19 @@ test('dynamic main registry outranks stale ENV and PostgreSQL worker URLs', () =
   });
 });
 
+test('worker auth token can come from PostgreSQL while public registry supplies the live URL', () => {
+  assert.equal(__test.selectWorkerToken({
+    envToken: '',
+    dbToken: 'db-secret',
+    registryToken: ''
+  }), 'db-secret');
+  assert.equal(__test.selectWorkerToken({
+    envToken: 'env-secret',
+    dbToken: 'db-secret',
+    registryToken: 'registry-secret'
+  }), 'env-secret');
+});
+
 test('cached World-Max forecast is repriced against the latest observed market price', () => {
   const generatedAt = '2026-09-19T19:10:00.000Z';
   const raw = [{ model: 'chronos2', horizonMinutes: 360, p10: 10000, p50: 11000, p90: 12000 }];

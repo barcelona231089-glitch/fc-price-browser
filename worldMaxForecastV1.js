@@ -56,6 +56,10 @@ function selectWorkerRuntime({ envUrl = "", registryUrl = "", dbUrl = "" } = {})
   return { workerUrl: "", source: "NONE" };
 }
 
+function selectWorkerToken({ envToken = "", dbToken = "", registryToken = "" } = {}) {
+  return String(envToken || dbToken || registryToken || "").trim();
+}
+
 function config() {
   const dbCfg = state.runtimeConfig || {};
   const registryCfg = state.remoteRegistry || {};
@@ -102,7 +106,11 @@ function config() {
 
   return {
     workerUrl,
-    workerToken: String(process.env.WORLD_MAX_ML_WORKER_TOKEN || (usingDbRuntime ? dbCfg.workerToken : "") || registryCfg.workerToken || "").trim(),
+    workerToken: selectWorkerToken({
+      envToken: process.env.WORLD_MAX_ML_WORKER_TOKEN,
+      dbToken: dbCfg.workerToken,
+      registryToken: registryCfg.workerToken
+    }),
     enabled,
     productionConfirmed,
     shadowMode,
@@ -811,6 +819,7 @@ export function getWorldMaxForecastStatus() {
     shadowMode: cfg.shadowMode,
     productionConfirmed: cfg.productionConfirmed,
     configSource: cfg.configSource,
+    workerAuthConfigured: Boolean(cfg.workerToken),
     runtimeConfigUpdatedAt: state.runtimeConfig?.updatedAt || null,
     remoteRegistryLoaded: Boolean(state.remoteRegistry?.workerUrl),
     remoteRegistryUpdatedAt: state.remoteRegistry?.updatedAt || null,
@@ -860,6 +869,7 @@ export const __test = {
   buildForecastEnvelope,
   forecastSnapshot,
   selectWorkerRuntime,
+  selectWorkerToken,
   candidateScore,
   performanceWeight
 };
