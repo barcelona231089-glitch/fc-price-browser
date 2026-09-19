@@ -17,6 +17,11 @@ const state = {
   lastError: null,
   lastCycleAt: 0,
   lastPerformanceRefreshAt: 0,
+  lastRuntimeConfigRefreshAt: 0,
+  runtimeConfig: null,
+  runtimeConfigSource: "ENV_ONLY",
+  autoPromotionEligible: false,
+  autoPromotionReason: "INSUFFICIENT_EVIDENCE",
   performanceProfiles: new Map()
 };
 
@@ -34,15 +39,24 @@ function clamp(value, min, max) {
 }
 
 function config() {
-  const workerUrl = String(process.env.WORLD_MAX_ML_WORKER_URL || "").trim().replace(/\/$/, "");
-  const enabled = boolEnv("WORLD_MAX_ML_ENABLED", false) && Boolean(workerUrl);
-  const productionConfirmed = boolEnv("WORLD_MAX_ML_PRODUCTION_CONFIRMED", false);
-  const shadowMode = !productionConfirmed || boolEnv("WORLD_MAX_ML_SHADOW", true);
+  const dbCfg = state.runtimeConfig || {};
+  const envUrl = String(process.env.WORLD_MAX_ML_WORKER_URL || "").trim();
+  const workerUrl = String(envUrl || dbCfg.workerUrl || "").trim().replace(/\/$/, "");
+  const envEnabledSet = process.env.WORLD_MAX_ML_ENABLED != null && String(process.env.WORLD_MAX_ML_ENABLED).trim() !== "";
+  const enabled = (envEnabledSet ? boolEnv("WORLD_MAX_ML_ENABLED", false) : Boolean(dbCfg.enabled)) && Boolean(workerUrl);
+  const envProductionSet = process.env.WORLD_MAX_ML_PRODUCTION_CONFIRMED != null && String(process.env.WORLD_MAX_ML_PRODUCTION_CONFIRMED).trim() !== "";
+  const explicitProduction = envProductionSet ? boolEnv("WORLD_MAX_ML_PRODUCTION_CONFIRMED", false) : Boolean(dbCfg.productionConfirmed);
+  const productionConfirmed = Boolean(explicitProduction || state.autoPromotionEligible);
+  const envShadowSet = process.env.WORLD_MAX_ML_SHADOW != null && String(process.env.WORLD_MAX_ML_SHADOW).trim() !== "";
+  const requestedShadow = envShadowSet ? boolEnv("WORLD_MAX_ML_SHADOW", true) : dbCfg.shadowMode !== false;
+  const shadowMode = !productionConfirmed || requestedShadow;
   return {
     workerUrl,
+    workerToken: String(process.env.WORLD_MAX_ML_WORKER_TOKEN || dbCfg.workerToken || "").trim(),
     enabled,
     productionConfirmed,
     shadowMode,
+    configSource: envUrl || envEnabledSet || envProductionSet || envShadowSet ? "ENV" : state.runtimeConfig ? "POSTGRES_RUNTIME_CONFIG" : "NONE",
     timeoutMs: clamp(Number(process.env.WORLD_MAX_ML_TIMEOUT_MS || 2500), 500, 10000),
     maxRows: Math.round(clamp(Number(process.env.WORLD_MAX_ML_MAX_ROWS || 10), 1, 40)),
     minCycleMs: clamp(Number(process.env.WORLD_MAX_ML_MIN_CYCLE_MS || 900000), 60000, 3600000)
@@ -278,6 +292,61 @@ async function ensureSchema(pool) {
     CREATE INDEX IF NOT EXISTS idx_world_max_perf_v1
     ON fc_world_max_forecasts_v1 (game_year, model_key, horizon_minutes, regime, evaluated_at)
   `);
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS fc_world_max_runtime_config_v1 (
+      game_year VARCHAR(2) PRIMARY KEY,
+      enabled BOOLEAN NOT NULL DEFAULT FALSE,
+      worker_url TEXT,
+      worker_token TEXT,
+      shadow_mode BOOLEAN NOT NULL DEFAULT TRUE,
+      production_confirmed BOOLEAN NOT NULL DEFAULT FALSE,
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+  `);
+}
+
+async function refreshRuntimeConfig(pool, gameYear) {
+  if (!pool || Date.now() - state.lastRuntimeConfigRefreshAt < 60_000) return;
+  try {
+    const result = await pool.query(`
+      SELECT enabled, worker_url, worker_token, shadow_mode, production_confirmed, updated_at
+      FROM fc_world_max_runtime_config_v1
+      WHERE game_year = $1
+      LIMIT 1
+    `, [String(gameYear)]);
+    const row = result.rows?.[0] || null;
+    state.runtimeConfig = row ? {
+      enabled: Boolean(row.enabled),
+      workerUrl: String(row.worker_url || "").trim(),
+      workerToken: String(row.worker_token || "").trim(),
+      shadowMode: row.shadow_mode !== false,
+      productionConfirmed: Boolean(row.production_confirmed),
+      updatedAt: row.updated_at || null
+    } : null;
+    state.runtimeConfigSource = row ? "POSTGRES_RUNTIME_CONFIG" : "ENV_ONLY";
+    state.lastRuntimeConfigRefreshAt = Date.now();
+  } catch (error) {
+    state.lastError = `runtime-config: ${String(error?.message || error)}`;
+  }
+}
+
+function refreshAutoPromotionEligibility() {
+  const profiles = [...state.performanceProfiles.entries()]
+    .map(([key, value]) => ({ key, ...value }))
+    .filter(row => row.key.startsWith("chronos2|") && Number(row.samples || 0) >= 40);
+  const critical = profiles.filter(row => row.key.includes("|360|") || row.key.includes("|1440|"));
+  const totalSamples = critical.reduce((sum, row) => sum + Number(row.samples || 0), 0);
+  if (critical.length < 2 || totalSamples < 200) {
+    state.autoPromotionEligible = false;
+    state.autoPromotionReason = "INSUFFICIENT_EVIDENCE";
+    return;
+  }
+  const weightedDirection = critical.reduce((sum, row) => sum + Number(row.directionAccuracy || 0) * Number(row.samples || 0), 0) / Math.max(1, totalSamples);
+  const weightedMae = critical.reduce((sum, row) => sum + Number(row.maePct || 0) * Number(row.samples || 0), 0) / Math.max(1, totalSamples);
+  state.autoPromotionEligible = weightedDirection >= 0.58 && weightedMae <= 8;
+  state.autoPromotionReason = state.autoPromotionEligible
+    ? `AUTO_GATED_${Math.round(weightedDirection * 100)}PCT_DIR_${weightedMae.toFixed(2)}PCT_MAE`
+    : `QUALITY_GATE_NOT_MET_${Math.round(weightedDirection * 100)}PCT_DIR_${weightedMae.toFixed(2)}PCT_MAE`;
 }
 
 async function evaluateMatured(pool, gameYear) {
@@ -350,6 +419,7 @@ async function refreshPerformance(pool, gameYear) {
     }
 
     state.performanceProfiles = next;
+    refreshAutoPromotionEligibility();
     state.lastPerformanceRefreshAt = Date.now();
   } catch (error) {
     state.lastError = `performance: ${String(error?.message || error)}`;
@@ -376,14 +446,14 @@ async function persistForecasts(pool, gameYear, row, regime, forecasts) {
     ]);
   }
 }
-async function callWorker(workerUrl, timeoutMs, payload) {
+async function callWorker(workerUrl, timeoutMs, payload, workerToken = "") {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   timer.unref?.();
 
   try {
     const headers = { "content-type": "application/json" };
-    const token = String(process.env.WORLD_MAX_ML_WORKER_TOKEN || "").trim();
+    const token = String(workerToken || "").trim();
     if (token) headers.authorization = `Bearer ${token}`;
 
     const response = await fetch(`${workerUrl}/v1/forecast/batch`, {
@@ -404,11 +474,21 @@ export async function enrichRowsWithWorldMaxForecast({
   pool = null,
   gameYear = "27"
 } = {}) {
+  if (pool) {
+    await ensureSchema(pool).catch(error => {
+      state.lastError = `schema: ${String(error?.message || error)}`;
+    });
+    await refreshRuntimeConfig(pool, gameYear);
+    await evaluateMatured(pool, gameYear);
+    await refreshPerformance(pool, gameYear);
+  }
+
   const cfg = config();
   state.configured = Boolean(cfg.workerUrl);
   state.enabled = cfg.enabled;
   state.shadowMode = cfg.shadowMode;
   state.productionConfirmed = cfg.productionConfirmed;
+  state.runtimeConfigSource = cfg.configSource;
   state.mode = !cfg.enabled ? "DISABLED" : cfg.shadowMode ? "SHADOW" : "PRODUCTION_GUARDED";
 
   if (!cfg.enabled || !Array.isArray(rows) || !rows.length) {
@@ -418,13 +498,6 @@ export async function enrichRowsWithWorldMaxForecast({
     return { ok: true, skipped: true, reason: "CYCLE_THROTTLED" };
   }
   state.lastCycleAt = Date.now();
-  if (pool) {
-    await ensureSchema(pool).catch(error => {
-      state.lastError = `schema: ${String(error?.message || error)}`;
-    });
-    await evaluateMatured(pool, gameYear);
-    await refreshPerformance(pool, gameYear);
-  }
 
   const selected = [...rows]
     .filter(row => Number(row?.price) > 0 && /^\d+$/.test(String(row?.eaId || "")))
@@ -466,7 +539,7 @@ export async function enrichRowsWithWorldMaxForecast({
       horizonsMinutes: [60, 360, 1440, 10080],
       quantiles: [0.1, 0.5, 0.9],
       items
-    });
+    }, cfg.workerToken);
 
     const byEaId = new Map(
       (Array.isArray(body?.items) ? body.items : [])
@@ -568,6 +641,10 @@ export function getWorldMaxForecastStatus() {
     mode: !cfg.enabled ? "DISABLED" : cfg.shadowMode ? "SHADOW" : "PRODUCTION_GUARDED",
     shadowMode: cfg.shadowMode,
     productionConfirmed: cfg.productionConfirmed,
+    configSource: cfg.configSource,
+    runtimeConfigUpdatedAt: state.runtimeConfig?.updatedAt || null,
+    autoPromotionEligible: state.autoPromotionEligible,
+    autoPromotionReason: state.autoPromotionReason,
     requestedModels: requestedModelsFor(cfg),
     timesfm3ResearchShadowOnly: true,
     localSpecialistOutsideWorker: true,
@@ -590,6 +667,8 @@ export function getWorldMaxForecastStatus() {
       regimeSpecificCalibration: true,
       probabilisticQuantiles: true,
       automaticMaturedOutcomeEvaluation: true,
+      automaticShadowToProductionGate: true,
+      postgresRuntimeConfigFallback: true,
       fcYearsSeparated: true,
       realObservedOutcomesOnly: true,
       noSyntheticPrices: true
