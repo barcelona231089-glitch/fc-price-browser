@@ -849,6 +849,18 @@ app.get("/api/trades/closed", async (req, res) => {
 ${healthAnchor}`);
   }
 
+  if (!out.includes('v10.69.9.6.9 startup initDb timeout guard')) {
+    const fnStart = out.indexOf('async function initializeRuntime()');
+    const fnEnd = fnStart >= 0 ? out.indexOf('\nfunction sleep(', fnStart) : -1;
+    const initAnchor = '    await initDb();';
+    const initPos = fnStart >= 0 ? out.indexOf(initAnchor, fnStart) : -1;
+    if (fnStart < 0 || fnEnd < 0 || initPos < 0 || initPos >= fnEnd) {
+      throw new Error('[6.9] startup initDb guard anchor missing');
+    }
+    const guardedInit = `    // v10.69.9.6.9 startup initDb timeout guard. Mature production schema must not\n    // keep HA/readiness in STARTING forever because one idempotent DDL/backfill waits on a DB lock.\n    const initDbStartupPromise = Promise.resolve()\n      .then(() => initDb())\n      .then(() => ({ ok: true, timeout: false, error: null }))\n      .catch(error => ({ ok: false, timeout: false, error }));\n    const initDbStartupResult = await Promise.race([\n      initDbStartupPromise,\n      new Promise(resolve => {\n        const timer = setTimeout(() => resolve({ ok: false, timeout: true, error: null }), 20000);\n        timer.unref?.();\n      })\n    ]);\n    if (initDbStartupResult?.timeout) {\n      console.warn('[v10.69.9.6.9] DB init still running after 20s; continuing HA startup while schema init finishes in background.');\n      void initDbStartupPromise.then(result => {\n        if (result?.ok) console.log('[v10.69.9.6.9] Background DB init completed.');\n        else console.error('[v10.69.9.6.9] Background DB init failed:', result?.error?.message || result?.error || 'UNKNOWN');\n      });\n    } else if (!initDbStartupResult?.ok) {\n      throw initDbStartupResult?.error || new Error('DB_INIT_FAILED');\n    }`;
+    out = out.slice(0, initPos) + guardedInit + out.slice(initPos + initAnchor.length);
+  }
+
   const required = [
     'FINAL_TRADER_HARDENING_VERSION = "10.69.9.6.9"',
     'MARKET_KNOWLEDGE_MIN_SAMPLES || 18',
@@ -872,6 +884,7 @@ ${healthAnchor}`);
     'applyWorldMaxDecisionLayer',
     'worldMaxForecast: getWorldMaxForecastStatus()',
     'v10.69.9.6.9 World-Max ensemble layer',
+    'v10.69.9.6.9 startup initDb timeout guard',
     'copyDuplicateCount',
     'avgFirstReactionMinutes',
     'leakAloneCannotBuy: true',
