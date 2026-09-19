@@ -79,13 +79,7 @@ while (-not (Test-WorkerHealth)) {
 }
 
 $tunnel = Start-WorldMaxTunnel
-$publicDeadline = (Get-Date).AddSeconds(60)
-while (-not (Test-PublicTunnel $tunnel.Url)) {
-  if ((Get-Date) -gt $publicDeadline) { throw 'Public World-Max tunnel failed health check' }
-  Start-Sleep -Seconds 5
-}
 Publish-Registry $tunnel.Url
-$failures = 0
 while ($true) {
   Start-Sleep -Seconds 30
   if (-not (Test-WorkerHealth)) {
@@ -98,19 +92,6 @@ while ($true) {
   if ($tunnelDead) {
     $tunnel = Start-WorldMaxTunnel
     Publish-Registry $tunnel.Url
-    $failures = 0
     continue
-  }
-
-  if (Test-PublicTunnel $tunnel.Url) {
-    $failures = 0
-  } else {
-    $failures += 1
-    if ($failures -ge 3) {
-      try { Stop-Process -Id $tunnel.Process.Id -Force -ErrorAction SilentlyContinue } catch {}
-      $tunnel = Start-WorldMaxTunnel
-      Publish-Registry $tunnel.Url
-      $failures = 0
-    }
   }
 }
