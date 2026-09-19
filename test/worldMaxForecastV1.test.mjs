@@ -33,6 +33,26 @@ test('forecast normalization and ensemble use only positive real forecasts', () 
   assert.ok(ensemble.horizons[0].quality > 0);
 });
 
+test('dynamic main registry outranks PostgreSQL worker config while DB remains fallback', () => {
+  const urls = {
+    envUrl: '',
+    registryUrl: 'https://main-worker.trycloudflare.com/',
+    dbUrl: 'https://standby-worker.trycloudflare.com/'
+  };
+  assert.deepEqual(__test.selectWorkerRuntime(urls), {
+    workerUrl: 'https://main-worker.trycloudflare.com',
+    source: 'PUBLIC_DYNAMIC_REGISTRY'
+  });
+  assert.deepEqual(__test.selectWorkerRuntime({ ...urls, envUrl: 'https://explicit-worker.example/' }), {
+    workerUrl: 'https://explicit-worker.example',
+    source: 'ENV'
+  });
+  assert.deepEqual(__test.selectWorkerRuntime({ dbUrl: urls.dbUrl }), {
+    workerUrl: 'https://standby-worker.trycloudflare.com',
+    source: 'POSTGRES_RUNTIME_CONFIG'
+  });
+});
+
 test('cached World-Max forecast is repriced against the latest observed market price', () => {
   const generatedAt = '2026-09-19T19:10:00.000Z';
   const raw = [{ model: 'chronos2', horizonMinutes: 360, p10: 10000, p50: 11000, p90: 12000 }];

@@ -46,21 +46,32 @@ function clamp(value, min, max) {
   return Math.max(min, Math.min(max, Number(value)));
 }
 
+function selectWorkerRuntime({ envUrl = "", registryUrl = "", dbUrl = "" } = {}) {
+  const normalizedEnv = String(envUrl || "").trim().replace(/\/$/, "");
+  const normalizedRegistry = String(registryUrl || "").trim().replace(/\/$/, "");
+  const normalizedDb = String(dbUrl || "").trim().replace(/\/$/, "");
+  if (normalizedEnv) return { workerUrl: normalizedEnv, source: "ENV" };
+  if (normalizedRegistry) return { workerUrl: normalizedRegistry, source: "PUBLIC_DYNAMIC_REGISTRY" };
+  if (normalizedDb) return { workerUrl: normalizedDb, source: "POSTGRES_RUNTIME_CONFIG" };
+  return { workerUrl: "", source: "NONE" };
+}
+
 function config() {
   const dbCfg = state.runtimeConfig || {};
   const registryCfg = state.remoteRegistry || {};
   const envUrl = String(process.env.WORLD_MAX_ML_WORKER_URL || "").trim();
   const dbUrl = String(dbCfg.workerUrl || "").trim();
   const registryUrl = String(registryCfg.workerUrl || "").trim();
-  const workerUrl = String(dbUrl || envUrl || registryUrl || "").trim().replace(/\/$/, "");
-  const usingDbRuntime = Boolean(dbUrl);
+  const runtime = selectWorkerRuntime({ envUrl, registryUrl, dbUrl });
+  const workerUrl = runtime.workerUrl;
+  const usingDbRuntime = runtime.source === "POSTGRES_RUNTIME_CONFIG";
 
   const envEnabledSet = process.env.WORLD_MAX_ML_ENABLED != null && String(process.env.WORLD_MAX_ML_ENABLED).trim() !== "";
   const enabled = (
     usingDbRuntime ? dbCfg.enabled !== false :
     envEnabledSet ? boolEnv("WORLD_MAX_ML_ENABLED", false) :
-    registryUrl ? registryCfg.enabled !== false :
-    Boolean(dbCfg.enabled)
+    runtime.source === "PUBLIC_DYNAMIC_REGISTRY" ? registryCfg.enabled !== false :
+    runtime.source === "ENV"
   ) && Boolean(workerUrl);
 
   const envProductionSet = process.env.WORLD_MAX_ML_PRODUCTION_CONFIRMED != null && String(process.env.WORLD_MAX_ML_PRODUCTION_CONFIRMED).trim() !== "";
@@ -68,7 +79,7 @@ function config() {
     ? boolEnv("WORLD_MAX_ML_PRODUCTION_CONFIRMED", false)
     : usingDbRuntime
       ? Boolean(dbCfg.productionConfirmed)
-      : registryUrl
+      : runtime.source === "PUBLIC_DYNAMIC_REGISTRY"
         ? Boolean(registryCfg.productionConfirmed)
         : false;
   const productionConfirmed = Boolean(explicitProduction || state.autoPromotionEligible);
@@ -78,7 +89,7 @@ function config() {
     ? boolEnv("WORLD_MAX_ML_SHADOW", true)
     : usingDbRuntime
       ? dbCfg.shadowMode !== false
-      : registryUrl
+      : runtime.source === "PUBLIC_DYNAMIC_REGISTRY"
         ? registryCfg.shadowMode !== false
         : true;
   const shadowMode = !productionConfirmed || requestedShadow;
@@ -95,13 +106,7 @@ function config() {
     enabled,
     productionConfirmed,
     shadowMode,
-    configSource: usingDbRuntime
-      ? "POSTGRES_RUNTIME_CONFIG"
-      : envUrl || envEnabledSet || envProductionSet || envShadowSet
-        ? "ENV"
-        : registryUrl
-          ? "PUBLIC_DYNAMIC_REGISTRY"
-          : "NONE",
+    configSource: runtime.source,
     timeoutMs: clamp(Number(process.env.WORLD_MAX_ML_TIMEOUT_MS || 8000), 500, 15000),
     maxRows: Math.round(clamp(Number(process.env.WORLD_MAX_ML_MAX_ROWS || 10), 1, 40)),
     minCycleMs,
@@ -849,6 +854,7 @@ export const __test = {
   buildForecastInput,
   buildForecastEnvelope,
   forecastSnapshot,
+  selectWorkerRuntime,
   candidateScore,
   performanceWeight
 };
