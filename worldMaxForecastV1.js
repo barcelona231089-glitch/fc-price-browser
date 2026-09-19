@@ -56,7 +56,10 @@ function selectWorkerRuntime({ envUrl = "", registryUrl = "", dbUrl = "" } = {})
   return { workerUrl: "", source: "NONE" };
 }
 
-function selectWorkerToken({ envToken = "", dbToken = "", registryToken = "" } = {}) {
+function selectWorkerToken({ envToken = "", dbToken = "", registryToken = "", runtimeSource = "" } = {}) {
+  if (runtimeSource === "PUBLIC_DYNAMIC_REGISTRY" && String(dbToken || "").trim()) {
+    return String(dbToken).trim();
+  }
   return String(envToken || dbToken || registryToken || "").trim();
 }
 
@@ -109,7 +112,8 @@ function config() {
     workerToken: selectWorkerToken({
       envToken: process.env.WORLD_MAX_ML_WORKER_TOKEN,
       dbToken: dbCfg.workerToken,
-      registryToken: registryCfg.workerToken
+      registryToken: registryCfg.workerToken,
+      runtimeSource: runtime.source
     }),
     enabled,
     productionConfirmed,
