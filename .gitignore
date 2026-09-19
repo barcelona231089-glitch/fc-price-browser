@@ -1,0 +1,4 @@
+world-max-worker/.venv/
+world-max-worker/__pycache__/
+world-max-worker/.worldmax.local
+*.pyc

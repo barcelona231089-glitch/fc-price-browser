@@ -163,6 +163,14 @@ def require_token(request: Request) -> None:
         raise HTTPException(status_code=401, detail="UNAUTHORIZED")
 
 
+@app.on_event("startup")
+def warm_models_on_startup():
+    # Warm the production-safe Chronos model without inventing any price series.
+    # Forecast requests then spend their timeout budget on inference, not model loading.
+    if ENABLE_CHRONOS2:
+        chronos_pipeline()
+
+
 @app.get("/health")
 def health():
     return {
