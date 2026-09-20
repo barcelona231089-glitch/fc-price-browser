@@ -1,5 +1,6 @@
 import pg from 'pg';
 const { Pool } = pg;
+import { GAME_YEAR } from './config.js';
 
 export let pool = null;
 let ownsPool = false;
@@ -39,12 +40,14 @@ export async function initDb() {
     CREATE TABLE IF NOT EXISTS uv_price_history (
       ea_id BIGINT NOT NULL,
       platform VARCHAR(20) NOT NULL,
+      game_year SMALLINT,
       price INTEGER NOT NULL,
       source VARCHAR(30) NOT NULL DEFAULT 'FUT.GG',
       recorded_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     )
   `);
-  await pool.query(`CREATE INDEX IF NOT EXISTS idx_uv_price_history_card_time ON uv_price_history (ea_id, platform, recorded_at DESC)`);
+  await pool.query(`ALTER TABLE uv_price_history ADD COLUMN IF NOT EXISTS game_year SMALLINT`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_uv_price_history_card_year_time ON uv_price_history (ea_id, platform, game_year, recorded_at DESC)`);
   await pool.query(`
     CREATE TABLE IF NOT EXISTS uv_cards (
       ea_id BIGINT PRIMARY KEY,
@@ -64,6 +67,7 @@ export async function initDb() {
     CREATE TABLE IF NOT EXISTS uv_market_snapshots (
       id BIGSERIAL PRIMARY KEY,
       platform VARCHAR(20) NOT NULL,
+      game_year SMALLINT,
       direction VARCHAR(20),
       change_pct NUMERIC(12,4),
       stability_score NUMERIC(6,2),
@@ -77,6 +81,7 @@ export async function initDb() {
     CREATE TABLE IF NOT EXISTS uv_demand_snapshots (
       id BIGSERIAL PRIMARY KEY,
       platform VARCHAR(20) NOT NULL,
+      game_year SMALLINT,
       most_used_ok BOOLEAN NOT NULL DEFAULT FALSE,
       momentum_ok BOOLEAN NOT NULL DEFAULT FALSE,
       most_used_matches INTEGER NOT NULL DEFAULT 0,
@@ -91,6 +96,7 @@ export async function initDb() {
       id BIGSERIAL PRIMARY KEY,
       budget INTEGER NOT NULL,
       platform VARCHAR(20) NOT NULL,
+      game_year SMALLINT,
       card_count SMALLINT NOT NULL,
       total_buy INTEGER NOT NULL,
       total_expected_profit INTEGER NOT NULL,
@@ -98,6 +104,9 @@ export async function initDb() {
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     )
   `);
+  await pool.query(`ALTER TABLE uv_market_snapshots ADD COLUMN IF NOT EXISTS game_year SMALLINT`);
+  await pool.query(`ALTER TABLE uv_demand_snapshots ADD COLUMN IF NOT EXISTS game_year SMALLINT`);
+  await pool.query(`ALTER TABLE uv_generated_lists ADD COLUMN IF NOT EXISTS game_year SMALLINT`);
   await pool.query(`
     CREATE TABLE IF NOT EXISTS uv_list_items (
       list_id BIGINT NOT NULL REFERENCES uv_generated_lists(id) ON DELETE CASCADE,
@@ -164,10 +173,10 @@ export async function recordSnapshot(cards, platform, limit = 700) {
   let i = 1;
   for (const card of sample) {
     if (!Number.isFinite(card.eaId) || !Number.isFinite(card.price)) continue;
-    placeholders.push(`($${i++}, $${i++}, $${i++}, 'FUT.GG', NOW())`);
-    values.push(card.eaId, platform, card.price);
+    placeholders.push(`($${i++}, $${i++}, $${i++}, $${i++}, 'FUT.GG', NOW())`);
+    values.push(card.eaId, platform, GAME_YEAR, card.price);
   }
-  if (placeholders.length) await pool.query(`INSERT INTO uv_price_history (ea_id, platform, price, source, recorded_at) VALUES ${placeholders.join(',')}`, values);
+  if (placeholders.length) await pool.query(`INSERT INTO uv_price_history (ea_id, platform, game_year, price, source, recorded_at) VALUES ${placeholders.join(',')}`, values);
 }
 
 export async function upsertCards(cards) {
@@ -203,6 +212,7 @@ export async function loadHistoryFeatures(eaIds, platform) {
         LAG(price) OVER (PARTITION BY ea_id ORDER BY recorded_at) AS prev_price
       FROM uv_price_history
       WHERE platform=$1
+        AND game_year=$3
         AND ea_id = ANY($2::bigint[])
         AND recorded_at > NOW() - INTERVAL '24 hours'
     )
@@ -223,7 +233,7 @@ export async function loadHistoryFeatures(eaIds, platform) {
       MAX(recorded_at) AS last_at
     FROM history
     GROUP BY ea_id
-  `, [platform, eaIds]);
+  `, [platform, eaIds, GAME_YEAR]);
   for (const row of result.rows) {
     const avg = Number(row.avg_price || 0);
     const sd = Number(row.stddev_price || 0);
@@ -264,9 +274,9 @@ export async function saveGeneratedList(result) {
     delete summaryPayload.cards;
     delete summaryPayload.listId;
     const head = await client.query(`
-      INSERT INTO uv_generated_lists (budget, platform, card_count, total_buy, total_expected_profit, avg_uv_score, summary_payload)
-      VALUES ($1,$2,$3,$4,$5,$6,$7::jsonb) RETURNING id
-    `, [result.budget, result.platform, result.cards.length, result.totalBuy, result.totalExpectedProfit, result.avgUvScore, JSON.stringify(summaryPayload)]);
+      INSERT INTO uv_generated_lists (budget, platform, game_year, card_count, total_buy, total_expected_profit, avg_uv_score, summary_payload)
+      VALUES ($1,$2,$3,$4,$5,$6,$7,$8::jsonb) RETURNING id
+    `, [result.budget, result.platform, GAME_YEAR, result.cards.length, result.totalBuy, result.totalExpectedProfit, result.avgUvScore, JSON.stringify(summaryPayload)]);
     const listId = head.rows[0].id;
     for (let slot = 0; slot < result.cards.length; slot++) {
       const c = result.cards[slot];
@@ -287,9 +297,9 @@ export async function saveGeneratedList(result) {
 export async function recordMarketSnapshot(context, platform) {
   if (!pool || !context) return;
   await pool.query(`
-    INSERT INTO uv_market_snapshots (platform, direction, change_pct, stability_score, mover_count, payload)
-    VALUES ($1,$2,$3,$4,$5,$6::jsonb)
-  `, [platform, context.direction || null, Number.isFinite(context.changePct) ? context.changePct : null,
+    INSERT INTO uv_market_snapshots (platform, game_year, direction, change_pct, stability_score, mover_count, payload)
+    VALUES ($1,$2,$3,$4,$5,$6,$7::jsonb)
+  `, [platform, GAME_YEAR, context.direction || null, Number.isFinite(context.changePct) ? context.changePct : null,
       Number.isFinite(context.stabilityScore) ? context.stabilityScore : null,
       Array.isArray(context.movers) ? context.movers.length : 0, JSON.stringify(context)]);
 }
@@ -298,9 +308,9 @@ export async function recordMarketSnapshot(context, platform) {
 export async function recordDemandSnapshot(context, platform) {
   if (!pool || !context) return;
   await pool.query(`
-    INSERT INTO uv_demand_snapshots (platform, most_used_ok, momentum_ok, most_used_matches, momentum_matches, payload)
-    VALUES ($1,$2,$3,$4,$5,$6::jsonb)
-  `, [platform, Boolean(context.mostUsedOk), Boolean(context.momentumOk),
+    INSERT INTO uv_demand_snapshots (platform, game_year, most_used_ok, momentum_ok, most_used_matches, momentum_matches, payload)
+    VALUES ($1,$2,$3,$4,$5,$6,$7::jsonb)
+  `, [platform, GAME_YEAR, Boolean(context.mostUsedOk), Boolean(context.momentumOk),
       Number(context.mostUsedMatches || 0), Number(context.momentumMatches || 0), JSON.stringify(context)]);
 }
 
@@ -309,9 +319,9 @@ export async function loadWatchPlatforms() {
   const result = await pool.query(`
     SELECT DISTINCT platform
     FROM uv_generated_lists
-    WHERE created_at > NOW() - INTERVAL '14 days'
+    WHERE game_year=$1 AND created_at > NOW() - INTERVAL '14 days'
     ORDER BY platform
-  `);
+  `, [GAME_YEAR]);
   return result.rows.map(r => r.platform).filter(Boolean);
 }
 
@@ -323,12 +333,12 @@ export async function loadWatchedEaIds(platform, limit = 350) {
       SELECT li.ea_id, MAX(gl.created_at) AS last_seen
       FROM uv_list_items li
       JOIN uv_generated_lists gl ON gl.id = li.list_id
-      WHERE gl.platform=$1 AND gl.created_at > NOW() - INTERVAL '14 days'
+      WHERE gl.platform=$1 AND gl.game_year=$3 AND gl.created_at > NOW() - INTERVAL '14 days'
       GROUP BY li.ea_id
       ORDER BY last_seen DESC
       LIMIT $2
     ) watched
-  `, [platform, limit]);
+  `, [platform, limit, GAME_YEAR]);
   return result.rows.map(r => Number(r.ea_id)).filter(Number.isFinite);
 }
 
@@ -340,9 +350,9 @@ export async function recordSmartSnapshot(cards, platform, limit = 350, heartbea
   const latest = await pool.query(`
     SELECT DISTINCT ON (ea_id) ea_id, price, recorded_at
     FROM uv_price_history
-    WHERE platform=$1 AND ea_id = ANY($2::bigint[])
+    WHERE platform=$1 AND game_year=$3 AND ea_id = ANY($2::bigint[])
     ORDER BY ea_id, recorded_at DESC
-  `, [platform, ids]);
+  `, [platform, ids, GAME_YEAR]);
   const byId = new Map(latest.rows.map(r => [String(r.ea_id), { price: Number(r.price), at: new Date(r.recorded_at).getTime() }]));
   const cutoff = Date.now() - heartbeatMinutes * 60_000;
   const chosen = sample.filter(c => {
@@ -355,10 +365,10 @@ export async function recordSmartSnapshot(cards, platform, limit = 350, heartbea
   const placeholders = [];
   let i = 1;
   for (const card of chosen) {
-    placeholders.push(`($${i++}, $${i++}, $${i++}, 'FUT.GG', NOW())`);
-    values.push(card.eaId, platform, card.price);
+    placeholders.push(`($${i++}, $${i++}, $${i++}, $${i++}, 'FUT.GG', NOW())`);
+    values.push(card.eaId, platform, GAME_YEAR, card.price);
   }
-  await pool.query(`INSERT INTO uv_price_history (ea_id, platform, price, source, recorded_at) VALUES ${placeholders.join(',')}`, values);
+  await pool.query(`INSERT INTO uv_price_history (ea_id, platform, game_year, price, source, recorded_at) VALUES ${placeholders.join(',')}`, values);
   return { inserted: chosen.length, considered: sample.length };
 }
 
@@ -383,6 +393,7 @@ export async function evaluateGeneratedLists(platform, limit = 1200) {
         SELECT price, recorded_at
         FROM uv_price_history
         WHERE platform = gl.platform
+          AND game_year = $3
           AND ea_id = li.ea_id
           AND recorded_at >= gl.created_at + make_interval(hours => h.hours)
         ORDER BY recorded_at ASC
@@ -391,6 +402,7 @@ export async function evaluateGeneratedLists(platform, limit = 1200) {
       LEFT JOIN uv_list_evaluations e
         ON e.list_id = gl.id AND e.slot = li.slot AND e.horizon_hours = h.hours
       WHERE gl.platform=$1
+        AND gl.game_year=$3
         AND gl.created_at > NOW() - INTERVAL '30 days'
         AND gl.created_at <= NOW() - INTERVAL '1 hour'
         AND e.list_id IS NULL
@@ -403,7 +415,7 @@ export async function evaluateGeneratedLists(platform, limit = 1200) {
     FROM pending
     ON CONFLICT (list_id, slot, horizon_hours) DO NOTHING
     RETURNING 1
-  `, [platform, limit]);
+  `, [platform, limit, GAME_YEAR]);
   return { inserted: result.rowCount || 0 };
 }
 
@@ -818,8 +830,8 @@ export async function loadGeneratedList(listId) {
   const head = await pool.query(`
     SELECT id, budget, platform, card_count, total_buy, total_expected_profit, avg_uv_score, summary_payload, last_recheck_at, last_recheck_summary, created_at
     FROM uv_generated_lists
-    WHERE id=$1
-  `, [id]);
+    WHERE id=$1 AND game_year=$2
+  `, [id, GAME_YEAR]);
   if (!head.rowCount) throw new Error('Liste nicht gefunden.');
   const items = await pool.query(`
     SELECT slot, ea_id, buy_price, start_price, sell_price, ea_tax, net_profit, uv_score, payload, last_recheck
@@ -858,9 +870,9 @@ export async function loadGeneratedList(listId) {
 export async function listGeneratedLists(platform = null, limit = 25) {
   if (!pool) return [];
   const safeLimit = Math.max(1, Math.min(100, Math.floor(Number(limit || 25))));
-  const values = [];
-  let where = "WHERE COALESCE((gl.summary_payload->>'transientRecheckOnly')::boolean, false) = false";
-  if (platform) { values.push(platform); where += ' AND gl.platform=$1'; }
+  const values = [GAME_YEAR];
+  let where = "WHERE gl.game_year=$1 AND COALESCE((gl.summary_payload->>'transientRecheckOnly')::boolean, false) = false";
+  if (platform) { values.push(platform); where += ' AND gl.platform=$2'; }
   values.push(safeLimit);
   const limitPos = values.length;
   const result = await pool.query(`
@@ -890,4 +902,40 @@ export async function listGeneratedLists(platform = null, limit = 25) {
     feedbackCount: Number(r.feedback_count || 0),
     soldCount: Number(r.sold_count || 0)
   }));
+}
+
+
+export async function loadRealMarketRegimeRows(platform) {
+  if (!pool) return [];
+  const result = await pool.query(`
+    WITH latest AS (
+      SELECT DISTINCT ON (ea_id) ea_id, price, recorded_at
+      FROM uv_price_history
+      WHERE platform=$1 AND game_year=$2
+        AND recorded_at > NOW() - INTERVAL '75 minutes'
+      ORDER BY ea_id, recorded_at DESC
+    )
+    SELECT l.ea_id, l.price,
+      p5.price AS price_5m, p15.price AS price_15m, p60.price AS price_1h
+    FROM latest l
+    LEFT JOIN LATERAL (
+      SELECT price FROM uv_price_history h
+      WHERE h.platform=$1 AND h.game_year=$2 AND h.ea_id=l.ea_id
+        AND h.recorded_at <= l.recorded_at - INTERVAL '5 minutes'
+      ORDER BY h.recorded_at DESC LIMIT 1
+    ) p5 ON TRUE
+    LEFT JOIN LATERAL (
+      SELECT price FROM uv_price_history h
+      WHERE h.platform=$1 AND h.game_year=$2 AND h.ea_id=l.ea_id
+        AND h.recorded_at <= l.recorded_at - INTERVAL '15 minutes'
+      ORDER BY h.recorded_at DESC LIMIT 1
+    ) p15 ON TRUE
+    LEFT JOIN LATERAL (
+      SELECT price FROM uv_price_history h
+      WHERE h.platform=$1 AND h.game_year=$2 AND h.ea_id=l.ea_id
+        AND h.recorded_at <= l.recorded_at - INTERVAL '60 minutes'
+      ORDER BY h.recorded_at DESC LIMIT 1
+    ) p60 ON TRUE
+  `, [platform, GAME_YEAR]);
+  return result.rows;
 }

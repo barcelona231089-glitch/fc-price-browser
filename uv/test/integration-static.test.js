@@ -101,7 +101,7 @@ test('v2.3 production status enforces hard 100 slots and sellability-first live 
   assert.match(uvApp, /sellabilityFirstRanking:\s*true/);
   assert.match(uvApp, /qualityFirstDynamicCount:\s*false/);
   assert.match(uvApp, /dynamicPortfolioSize:\s*false/);
-  assert.match(uvApp, /const UV_VERSION = '2\.10\.4'/);
+  assert.match(uvApp, /const UV_VERSION = '2\.10\.5'/);
   assert.ok(ui.includes('PROMO + LIVE MARKET'));
   assert.ok(ui.includes('Markt-Regime'));
   assert.ok(ui.includes('Promo-Heat'));
@@ -133,7 +133,7 @@ test('v2.4 saved lists are reopenable and persist the last live recheck', () => 
   assert.ok(db.includes('last_recheck_summary JSONB'));
   assert.ok(db.includes('last_recheck JSONB'));
   assert.ok(db.includes('export async function saveListRecheck'));
-  assert.ok(db.includes("WHERE COALESCE((gl.summary_payload->>'transientRecheckOnly')::boolean, false) = false"));
+  assert.ok(db.includes("WHERE gl.game_year=$1 AND COALESCE((gl.summary_payload->>'transientRecheckOnly')::boolean, false) = false"));
 });
 
 test('v2.4 exposes budget Top-100 ranking without weakening hard 100 or rating floor', () => {

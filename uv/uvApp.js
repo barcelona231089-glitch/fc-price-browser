@@ -5,9 +5,10 @@ import { GAME_YEAR, HISTORY_SAMPLE_LIMIT, HISTORY_MONITOR_MS, HISTORY_MONITOR_MA
 import { getLiveFutggCards as fetchLiveFutggCards, confirmTradeableMarketCards } from './src/futgg.js';
 import { crosscheckFutbin, getFutbinMarketTrends, attachMarketMoverSignals, getFutbinExtendedDataStatus } from './src/futbin.js';
 import { attachFutggDemandSignals, attachCachedFutggDemandSignals } from './src/demand.js';
-import { initDb, configureDbPool, closeDb, isDbEnabled, recordSnapshot, upsertCards, loadHistoryFeatures, loadPerformanceFeatures, loadTraderRulePerformance, loadTargetSupportPerformance, recordTradeFeedback, getTradeFeedbackStatus, saveGeneratedList, saveListRecheck, recordMarketSnapshot, recordDemandSnapshot, loadWatchPlatforms, loadWatchedEaIds, recordSmartSnapshot, evaluateGeneratedLists, getLearningStatus, loadGeneratedList, listGeneratedLists } from './src/db.js';
+import { initDb, configureDbPool, closeDb, isDbEnabled, recordSnapshot, upsertCards, loadHistoryFeatures, loadPerformanceFeatures, loadTraderRulePerformance, loadTargetSupportPerformance, recordTradeFeedback, getTradeFeedbackStatus, saveGeneratedList, saveListRecheck, recordMarketSnapshot, recordDemandSnapshot, loadWatchPlatforms, loadWatchedEaIds, recordSmartSnapshot, evaluateGeneratedLists, getLearningStatus, loadGeneratedList, listGeneratedLists, loadRealMarketRegimeRows } from './src/db.js';
 import { buildCandidatePool, scoreCard, buildBuyPlan, buildTradingEconomics, buildSelectionScore, buildSellabilityScore, buildBudgetTop100Score, buildPublicTraderEndgameScore, buildTraderConsensusScore, buildBudgetTierScore, buildDemandMarketFitScore, optimizeList, maxAffordablePortfolioCount, filterConservativeCandidates, buildPortfolioSummary, capitalBandForPrice, targetProfitCandidates, specialTargetRatioForBudget } from './src/uvEngine.js';
 import { buildRebalanceSeed, rebalancePortfolio } from './src/rebalance.js';
+import { buildRealMarketRegime } from './src/marketRegime.js';
 import { buildTraderKnowledge, TRADER_KNOWLEDGE_SOURCES } from './src/traderKnowledge.js';
 import { attachTargetLearningProfiles } from './src/targetLearning.js';
 import { buildRecommendationLifecycle, recheckRecommendation } from './src/lifecycle.js';
@@ -15,7 +16,25 @@ import { runCandidatePipeline, deriveAdaptiveMarketPolicy, buildHard100Sellabili
 import { buildReportedOutcomeScore } from './src/outcomeLearning.js';
 
 export const uvRouter = express.Router();
-const UV_VERSION = '2.10.4';
+const UV_VERSION = '2.10.5';
+
+async function getUvMarketContext(platform) {
+  const [futbinContext, realRows] = await Promise.all([
+    getFutbinMarketTrends(platform),
+    loadRealMarketRegimeRows(platform).catch(() => [])
+  ]);
+  const real = buildRealMarketRegime(realRows);
+  if (!real.ok) return { ...futbinContext, realRegime: real, source: futbinContext?.ok ? 'FUTBIN/Parse fallback' : 'neutral fallback' };
+  return {
+    ...futbinContext,
+    ...real,
+    futbinContext,
+    source: 'real FC27 price history',
+    direction: real.mood,
+    stabilityScore: real.stabilityScore
+  };
+}
+
 let uvActive = true;
 const app = uvRouter;
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -626,7 +645,7 @@ async function performLiveRecheck(listId, job = null) {
   });
 
   if (job) job.phase = 'MARKET_CONTEXT';
-  const marketContext = await getFutbinMarketTrends(platform);
+  const marketContext = await getUvMarketContext(platform);
   current = attachMarketMoverSignals(current, marketContext);
 
   // FUTBIN remains the secondary confirmation source for Games, popularity,
@@ -927,7 +946,7 @@ app.post('/api/uv/rebalance/:listId', async (req, res) => {
 
     const [live, marketContext] = await Promise.all([
       getLiveFutggCards(platform),
-      getFutbinMarketTrends(platform)
+      getUvMarketContext(platform)
     ]);
     const { pool: rawPool, ideal, minPrice, maxPrice, tierProfile } = buildCandidatePool(live.cards, budget, count);
     const oldIds = new Set(stored.items.map(item => String(item.eaId)));
@@ -1155,7 +1174,7 @@ app.post('/api/uv/generate', async (req, res) => {
 
     const [live, marketContext] = await Promise.all([
       getLiveFutggCards(platform, { allowRecentSafeSnapshot: true }),
-      getFutbinMarketTrends(platform)
+      getUvMarketContext(platform)
     ]);
 
     const { pool: rawPool, ideal, minPrice, maxPrice, tierProfile } = buildCandidatePool(live.cards, budget, count);
