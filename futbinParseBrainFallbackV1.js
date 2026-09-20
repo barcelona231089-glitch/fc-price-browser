@@ -1,4 +1,6 @@
-const DEFAULT_PARSE_BASE = "https://api.parse.bot/scraper/21963078-8a17-40ff-a896-9b0b0ec3e828";
+import { FUTBIN_FC27_EA_TO_ID } from "./futbinIdMapFc27.js";
+
+const DEFAULT_PARSE_BASE = "https://api.parse.bot/scraper/1b6234f9-0dfb-4cca-99b4-2d6d37aec6a7";
 const DEFAULT_DAILY_BUDGET = 6;
 const DEFAULT_MIN_INTERVAL_MS = 60 * 60_000;
 const DEFAULT_CARD_CACHE_MS = 6 * 60 * 60_000;
@@ -266,23 +268,28 @@ export async function enrichImportantRowsWithParseFutbinBrain(rows = [], brainWo
     return state.lastRun;
   }
 
-  const row = candidates.find(candidate => {
+  const uncached = candidates.filter(candidate => {
     const cached = cardCache.get(String(candidate.eaId));
     return !(cached && now - cached.at < ttl);
   });
+  const batch = uncached
+    .map(row => ({ row, futbinId: Number(row.futbinId || FUTBIN_FC27_EA_TO_ID?.[String(row.eaId)] || 0) }))
+    .filter(entry => Number.isInteger(entry.futbinId) && entry.futbinId > 0)
+    .slice(0, 500);
 
-  if (!row) {
+  if (!batch.length) {
     state.applied += applied;
-    state.lastRun = { ok: true, reason: "CACHE_ONLY", gameYear, candidates: candidates.length, applied, callsToday: state.callsToday, dailyBudget: budget, remaining };
+    state.lastRun = { ok: true, reason: "CACHE_OR_UNMAPPED", gameYear, candidates: candidates.length, applied, callsToday: state.callsToday, dailyBudget: budget, remaining };
     return state.lastRun;
   }
 
-  const endpoint = "search_players_fc27";
-  const url = `${baseUrl(options)}/${endpoint}?query=${encodeURIComponent(row.name)}`;
+  const endpoint = "get_fc27_market_snapshot";
+  const ids = batch.map(entry => entry.futbinId).join(",");
+  const url = `${baseUrl(options)}/${endpoint}?player_ids=${encodeURIComponent(ids)}&platform=ps&year=27`;
   const fetcher = options.fetcher || fetch;
   state.callsToday += 1;
   state.lastCallAt = new Date().toISOString();
-  state.lastPlayer = row.name;
+  state.lastPlayer = `BATCH:${batch.length}`;
 
   try {
     const response = await fetcher(url, {
@@ -294,11 +301,18 @@ export async function enrichImportantRowsWithParseFutbinBrain(rows = [], brainWo
     });
     if (response && "ok" in response && !response.ok) throw new Error(`Parse FUTBIN HTTP ${response.status}`);
     const payload = typeof response?.json === "function" ? await response.json() : response;
-    const match = matchRow(row, rowsFrom(payload));
-    if (!match) throw new Error("NO_SAFE_FUTBIN_MATCH");
-
-    cardCache.set(String(row.eaId), { at: Date.now(), match });
-    if (applyMatch(row, match, brainWork, options)) applied += 1;
+    const snapshotRows = payload?.players ?? payload?.data?.players ?? [];
+    const byId = new Map((Array.isArray(snapshotRows) ? snapshotRows : []).map(item => [Number(item?.player_id ?? item?.id), item]));
+    let matched = 0;
+    for (const entry of batch) {
+      const item = byId.get(entry.futbinId);
+      const price = positive(item?.price);
+      if (!price) continue;
+      const match = { price, futbinId: entry.futbinId, matchConfidence: 100, version: entry.row?.rarityName ?? entry.row?.cardType ?? null };
+      cardCache.set(String(entry.row.eaId), { at: Date.now(), match });
+      if (applyMatch(entry.row, match, brainWork, options)) { applied += 1; matched += 1; }
+    }
+    if (!matched) throw new Error("NO_SAFE_FUTBIN_SNAPSHOT_PRICES");
     state.successes += 1;
     state.lastSuccessAt = new Date().toISOString();
     state.lastError = null;
@@ -338,7 +352,8 @@ export function getParseFutbinBrainFallbackStatus(options = {}) {
     configured: Boolean(configuredKey(options)),
     provider: "PARSE_FUTBIN_FC27",
     gameYear: 27,
-    endpoint: "search_players_fc27",
+    endpoint: "get_fc27_market_snapshot",
+    batchSize: 500,
     importantOnly: true,
     noSyntheticPrices: true,
     minIntervalMinutes: Math.round(minIntervalMs(options) / 60_000),
