@@ -822,7 +822,9 @@ app.get("/api/trades/closed", async (req, res) => {
 
   const healthAnchor = '    decisionPerformanceLab: {';
   if (out.includes(healthAnchor) && !out.includes('ownTradeLifecycle: {')) {
-    out = out.replace(healthAnchor, `    worldMaxForecast: getWorldMaxForecastStatus(),
+    out = out.replace(healthAnchor, `    futbinDirectBrain: getDirectFutbinBrainStatus(),
+    futbinParseBrainFallback: getParseFutbinBrainFallbackStatus(),
+    worldMaxForecast: getWorldMaxForecastStatus(),
     finalTraderHardening: {
       version: FINAL_TRADER_HARDENING_VERSION,
       marketKnowledgeMinSamples: MARKET_KNOWLEDGE_MIN_SAMPLES,
