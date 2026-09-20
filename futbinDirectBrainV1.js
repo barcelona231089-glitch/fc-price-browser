@@ -9,7 +9,8 @@ const MAX_FILTER_PAGES = Math.max(1, Math.min(20, Number(process.env.FUTBIN_DIRE
 const MAX_PER_RATING = Math.max(3, Math.min(12, Number(process.env.FUTBIN_DIRECT_BRAIN_PER_RATING || 6)));
 const MAX_IMPORTANT = Math.max(0, Math.min(40, Number(process.env.FUTBIN_DIRECT_BRAIN_IMPORTANT || 20)));
 const ERROR_BACKOFF_MS = Math.max(60_000, Number(process.env.FUTBIN_DIRECT_BRAIN_ERROR_BACKOFF_MS || 10 * 60_000));
-const BLOCKED_BACKOFF_MS = Math.max(ERROR_BACKOFF_MS, Number(process.env.FUTBIN_DIRECT_BRAIN_BLOCKED_BACKOFF_MS || 60 * 60_000));
+const BLOCKED_BACKOFF_MS = Math.max(ERROR_BACKOFF_MS, Number(process.env.FUTBIN_DIRECT_BRAIN_BLOCKED_BACKOFF_MS || 6 * 60 * 60_000));
+const RATE_LIMIT_BACKOFF_MS = Math.max(ERROR_BACKOFF_MS, Number(process.env.FUTBIN_DIRECT_BRAIN_RATE_LIMIT_BACKOFF_MS || 2 * 60 * 60_000));
 
 const idCache = new Map();
 const pageCache = new Map();
@@ -20,7 +21,7 @@ const state = {
   calls: 0, successes: 0, failures: 0, mappingCalls: 0, priceCalls: 0,
   ipv4FallbackAttempts: 0, ipv4FallbackSuccesses: 0,
   cacheHits: 0, enriched: 0, lastSuccessAt: null, lastFailureAt: null,
-  lastError: null, lastRunAt: null, lastRun: null, disabledUntil: null
+  lastError: null, lastRunAt: null, lastRun: null, disabledUntil: null, circuitReason: null
 };
 
 function enabled() {
@@ -307,6 +308,7 @@ export async function enrichRowsWithDirectFutbinBrain(rows = [], options = {}) {
 
     state.enriched += enriched;
     state.disabledUntil = null;
+    state.circuitReason = null;
     state.lastRun = {
       ok: true, year, selected: selected.length, enriched, missingIds, missingPrices,
       durationMs: Date.now() - started
@@ -314,12 +316,14 @@ export async function enrichRowsWithDirectFutbinBrain(rows = [], options = {}) {
     return state.lastRun;
   } catch (error) {
     const message = String(error?.message || error);
-    const blocked = /(?:HTTP\s*403|non-JSON)/i.test(message);
-    const backoffMs = blocked ? BLOCKED_BACKOFF_MS : ERROR_BACKOFF_MS;
+    const blocked = /(?:HTTP\s*401|HTTP\s*403|non-JSON)/i.test(message);
+    const rateLimited = /HTTP\s*429/i.test(message);
+    const backoffMs = blocked ? BLOCKED_BACKOFF_MS : rateLimited ? RATE_LIMIT_BACKOFF_MS : ERROR_BACKOFF_MS;
     state.disabledUntil = new Date(Date.now() + backoffMs).toISOString();
+    state.circuitReason = blocked ? "ACCESS_BLOCKED" : rateLimited ? "RATE_LIMITED" : "UPSTREAM_ERROR";
     state.lastRun = {
       ok: false, year, selected: selected.length, enriched: 0,
-      error: message, blocked, backoffMs, durationMs: Date.now() - started,
+      error: message, blocked, rateLimited, circuitReason: state.circuitReason, backoffMs, durationMs: Date.now() - started,
       disabledUntil: state.disabledUntil
     };
     return state.lastRun;
@@ -345,7 +349,7 @@ export function resetDirectFutbinBrainForTests() {
   priceCache.clear();
   inflightPages.clear();
   for (const key of Object.keys(state)) {
-    if (["lastSuccessAt","lastFailureAt","lastError","lastRunAt","lastRun","disabledUntil"].includes(key)) state[key] = null;
+    if (["lastSuccessAt","lastFailureAt","lastError","lastRunAt","lastRun","disabledUntil","circuitReason"].includes(key)) state[key] = null;
     else state[key] = 0;
   }
 }

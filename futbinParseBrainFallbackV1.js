@@ -16,7 +16,9 @@ const state = {
   lastError: null,
   lastPlayer: null,
   lastRunAt: null,
-  lastRun: null
+  lastRun: null,
+  disabledUntil: null,
+  circuitReason: null
 };
 
 function positive(value) {
@@ -226,6 +228,11 @@ export async function enrichImportantRowsWithParseFutbinBrain(rows = [], brainWo
     return state.lastRun;
   }
 
+  if (state.disabledUntil && now < Date.parse(state.disabledUntil)) {
+    state.lastRun = { ok: false, reason: "CIRCUIT_OPEN", gameYear, applied: 0, disabledUntil: state.disabledUntil, circuitReason: state.circuitReason };
+    return state.lastRun;
+  }
+
   const candidates = (Array.isArray(rows) ? rows : [])
     .filter(isImportant)
     .sort((a, b) => priority(b) - priority(a));
@@ -295,10 +302,19 @@ export async function enrichImportantRowsWithParseFutbinBrain(rows = [], brainWo
     state.successes += 1;
     state.lastSuccessAt = new Date().toISOString();
     state.lastError = null;
+    state.disabledUntil = null;
+    state.circuitReason = null;
   } catch (error) {
     state.failures += 1;
     state.lastFailureAt = new Date().toISOString();
     state.lastError = String(error?.message || error);
+    if (/HTTP\s*429/i.test(state.lastError)) {
+      state.disabledUntil = new Date(Date.now() + 6 * 60 * 60_000).toISOString();
+      state.circuitReason = "RATE_LIMITED";
+    } else if (/HTTP\s*(?:401|403)/i.test(state.lastError)) {
+      state.disabledUntil = new Date(Date.now() + 6 * 60 * 60_000).toISOString();
+      state.circuitReason = "ACCESS_BLOCKED";
+    }
   }
 
   state.applied += applied;
