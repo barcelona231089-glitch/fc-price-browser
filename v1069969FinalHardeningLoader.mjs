@@ -564,7 +564,7 @@ function patchServerFinal(source) {
   if (!out.includes('./futbinDirectBrainV1.js')) {
     const importAnchor = 'import { createHaCoordinator } from "./haCoordinator.js";';
     if (!out.includes(importAnchor)) throw new Error('[6.9] direct FUTBIN import anchor missing');
-    out = out.replace(importAnchor, `${importAnchor}\nimport { enrichRowsWithDirectFutbinBrain, getDirectFutbinBrainStatus } from "./futbinDirectBrainV1.js";`);
+    out = out.replace(importAnchor, `${importAnchor}\nimport { enrichRowsWithDirectFutbinBrain, getDirectFutbinBrainStatus } from "./futbinDirectBrainV1.js";\nimport { enrichRowsWithSnapshotFutbinBrain } from "./futbinSnapshotReaderV1.js";`);
   }
   if (!out.includes('./futbinParseBrainFallbackV1.js')) {
     const directImportAnchor = 'import { enrichRowsWithDirectFutbinBrain, getDirectFutbinBrainStatus } from "./futbinDirectBrainV1.js";';
@@ -702,7 +702,15 @@ ${ratingBuildAnchor}`);
       if (!HA_ENABLED || haIsLeader()) {
         await enrichRowsWithDirectFutbinBrain(latestTradingRows, {
           gameYear: GAME_YEAR,
+          pool: dbEnabled ? pool : null,
           minRating: MAIN_RATING_MIN,
+          maxDiffPct: FUTBIN_MAX_DIFF_PCT,
+          outlierDiffPct: FUTBIN_OUTLIER_DIFF_PCT
+        });
+        await enrichRowsWithSnapshotFutbinBrain(latestTradingRows, {
+          gameYear: GAME_YEAR,
+          pool: dbEnabled ? pool : null,
+          maxAgeSeconds: 5400,
           maxDiffPct: FUTBIN_MAX_DIFF_PCT,
           outlierDiffPct: FUTBIN_OUTLIER_DIFF_PCT
         });
