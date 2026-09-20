@@ -50,7 +50,8 @@ export async function initDb() {
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_uv_price_history_card_year_time ON uv_price_history (ea_id, platform, game_year, recorded_at DESC)`);
   await pool.query(`
     CREATE TABLE IF NOT EXISTS uv_cards (
-      ea_id BIGINT PRIMARY KEY,
+      ea_id BIGINT NOT NULL,
+      game_year SMALLINT NOT NULL,
       name VARCHAR(180),
       rating SMALLINT,
       version VARCHAR(120),
@@ -59,9 +60,15 @@ export async function initDb() {
       club VARCHAR(180),
       league VARCHAR(180),
       futgg_url TEXT,
-      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      PRIMARY KEY (ea_id, game_year)
     )
   `);
+  // Legacy uv_cards used ea_id alone as its primary key. Migrate additively:
+  // legacy rows remain unassigned (NULL year) and are never read as current-season evidence.
+  await pool.query(`ALTER TABLE uv_cards ADD COLUMN IF NOT EXISTS game_year SMALLINT`);
+  await pool.query(`ALTER TABLE uv_cards DROP CONSTRAINT IF EXISTS uv_cards_pkey`);
+  await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_uv_cards_card_year ON uv_cards (ea_id, game_year) WHERE game_year IS NOT NULL`);
 
   await pool.query(`
     CREATE TABLE IF NOT EXISTS uv_market_snapshots (
@@ -186,12 +193,12 @@ export async function upsertCards(cards) {
     await client.query('BEGIN');
     for (const c of cards.slice(0, 1000)) {
       await client.query(`
-        INSERT INTO uv_cards (ea_id, name, rating, version, card_type, position, club, league, futgg_url, updated_at)
-        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,NOW())
-        ON CONFLICT (ea_id) DO UPDATE SET
+        INSERT INTO uv_cards (ea_id, game_year, name, rating, version, card_type, position, club, league, futgg_url, updated_at)
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,NOW())
+        ON CONFLICT (ea_id, game_year) WHERE game_year IS NOT NULL DO UPDATE SET
           name=EXCLUDED.name, rating=EXCLUDED.rating, version=EXCLUDED.version, card_type=EXCLUDED.card_type,
           position=EXCLUDED.position, club=EXCLUDED.club, league=EXCLUDED.league, futgg_url=EXCLUDED.futgg_url, updated_at=NOW()
-      `, [c.eaId, c.name, c.overall, c.rarityName || c.cardType, c.cardType, c.position, c.club, c.league, c.url]);
+      `, [c.eaId, GAME_YEAR, c.name, c.overall, c.rarityName || c.cardType, c.cardType, c.position, c.club, c.league, c.url]);
     }
     await client.query('COMMIT');
   } catch (e) {
@@ -431,9 +438,11 @@ export async function loadPerformanceFeatures(eaIds, platform) {
         AVG(CASE WHEN survived THEN 1.0 ELSE 0.0 END)::numeric AS survival_rate,
         AVG(price_change_pct)::numeric AS avg_change_pct,
         MAX(evaluated_at) AS last_evaluated_at
-      FROM uv_list_evaluations
-      WHERE platform=$1
-        AND ea_id = ANY($2::bigint[])
+      FROM uv_list_evaluations e
+      JOIN uv_generated_lists gl ON gl.id=e.list_id
+      WHERE e.platform=$1
+        AND gl.game_year=$3
+        AND e.ea_id = ANY($2::bigint[])
         AND evaluated_at > NOW() - INTERVAL '30 days'
       GROUP BY ea_id, horizon_hours
     ), ranked AS (
@@ -444,7 +453,7 @@ export async function loadPerformanceFeatures(eaIds, platform) {
       FROM agg
     )
     SELECT * FROM ranked WHERE rn=1
-  `, [platform, eaIds]);
+  `, [platform, eaIds, GAME_YEAR]);
 
   for (const row of result.rows) {
     const evalCount = Number(row.eval_count || 0);
@@ -479,10 +488,12 @@ export async function loadTraderRulePerformance(platform) {
       FROM uv_list_evaluations e
       JOIN uv_list_items li
         ON li.list_id = e.list_id AND li.slot = e.slot
+      JOIN uv_generated_lists gl ON gl.id=e.list_id
       CROSS JOIN LATERAL jsonb_array_elements_text(
         COALESCE(li.payload->'traderKnowledge'->'ruleTags', '[]'::jsonb)
       ) AS tag(value)
       WHERE e.platform=$1
+        AND gl.game_year=$2
         AND e.evaluated_at > NOW() - INTERVAL '30 days'
         AND e.horizon_hours IN (6, 24)
     )
@@ -493,7 +504,7 @@ export async function loadTraderRulePerformance(platform) {
       AVG(price_change_pct)::numeric AS avg_change_pct
     FROM tagged
     GROUP BY rule_tag
-  `, [platform]);
+  `, [platform, GAME_YEAR]);
 
   for (const row of result.rows) {
     const samples = Number(row.samples || 0);
@@ -522,8 +533,10 @@ export async function getLearningStatus() {
       COUNT(DISTINCT ea_id)::int AS cards,
       COUNT(DISTINCT list_id)::int AS lists,
       MAX(evaluated_at) AS last_evaluated_at
-    FROM uv_list_evaluations
-  `);
+    FROM uv_list_evaluations e
+    JOIN uv_generated_lists gl ON gl.id=e.list_id
+    WHERE gl.game_year=$1
+  `, [GAME_YEAR]);
   const row = result.rows[0] || {};
   return {
     enabled: true,
@@ -596,11 +609,13 @@ export async function loadTargetSupportPerformance(platform) {
       AVG(CASE WHEN e.observed_price >= li.sell_price * 0.98 THEN 1.0 ELSE 0.0 END)::numeric AS market_support_rate
     FROM uv_list_evaluations e
     JOIN uv_list_items li ON li.list_id=e.list_id AND li.slot=e.slot
+    JOIN uv_generated_lists gl ON gl.id=e.list_id
     WHERE e.platform=$1
+      AND gl.game_year=$2
       AND e.evaluated_at > NOW() - INTERVAL '45 days'
       AND e.horizon_hours IN (6,24)
     GROUP BY 1,2,3,4,5
-  `, [platform]);
+  `, [platform, GAME_YEAR]);
 
   for (const row of market.rows) {
     const samples = Number(row.samples || 0);
@@ -650,9 +665,10 @@ export async function loadTargetSupportPerformance(platform) {
     JOIN uv_list_items li ON li.list_id=f.list_id AND li.slot=f.slot
     JOIN uv_generated_lists gl ON gl.id=f.list_id
     WHERE gl.platform=$1
+      AND gl.game_year=$2
       AND f.resolved_at > NOW() - INTERVAL '90 days'
     GROUP BY 1,2,3,4,5
-  `, [platform]);
+  `, [platform, GAME_YEAR]);
 
   for (const row of feedback.rows) {
     const key = [row.price_band, row.profit_band, row.card_type_band, row.demand_band, row.supply_band].join('|');
@@ -727,8 +743,8 @@ export async function recordTradeFeedback({ listId, slot, outcome, soldPrice = n
     SELECT gl.platform, li.ea_id, li.buy_price, li.sell_price
     FROM uv_list_items li
     JOIN uv_generated_lists gl ON gl.id=li.list_id
-    WHERE li.list_id=$1 AND li.slot=$2
-  `, [id, s]);
+    WHERE li.list_id=$1 AND li.slot=$2 AND gl.game_year=$3
+  `, [id, s, GAME_YEAR]);
   if (!exists.rowCount) throw new Error('Listenposition nicht gefunden.');
   const sp = Number(soldPrice);
   const safeSoldPrice = Number.isFinite(sp) && sp > 0 ? Math.round(sp) : null;
@@ -746,9 +762,9 @@ export async function recordTradeFeedback({ listId, slot, outcome, soldPrice = n
 
 export async function getTradeFeedbackStatus(platform = null) {
   if (!pool) return { enabled: false, total: 0, sold: 0, reportedSellRate: null };
-  const values = [];
-  let where = '';
-  if (platform) { values.push(platform); where = 'WHERE gl.platform=$1'; }
+  const values = [GAME_YEAR];
+  let where = 'WHERE gl.game_year=$1';
+  if (platform) { values.push(platform); where += ' AND gl.platform=$2'; }
   const result = await pool.query(`
     SELECT
       COUNT(*)::int AS total,
@@ -798,6 +814,8 @@ export async function saveListRecheck(listId, rows = [], summary = {}, checkedAt
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
+    const current = await client.query(`SELECT 1 FROM uv_generated_lists WHERE id=$1 AND game_year=$2 FOR UPDATE`, [id, GAME_YEAR]);
+    if (!current.rowCount) throw new Error('Liste nicht gefunden.');
     let saved = 0;
     if (payloadRows.length) {
       const result = await client.query(`
