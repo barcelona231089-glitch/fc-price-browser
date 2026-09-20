@@ -6,7 +6,7 @@ export async function buildFutbinSecondaryIntelligence(pool,{gameYear=27,limit=1
   const q=await pool.query(`WITH x AS (
    SELECT futbin_id,name,rating,observed_at,price_console,popular_rank,
     lag(price_console) OVER(PARTITION BY futbin_id ORDER BY observed_at) prev
-   FROM fc_futbin_fc27_snapshots WHERE observed_at>=NOW()-INTERVAL '24 hours' AND price_console>0
+   FROM fc_futbin_fc27_snapshots WHERE observed_at>=NOW()-INTERVAL '26 hours' AND price_console>0
   ), a AS (
    SELECT futbin_id,max(name) name,max(rating) rating,max(observed_at) last_seen,count(*) samples,
     min(price_console) low,max(price_console) high,avg(price_console)::numeric avg_price,
@@ -15,7 +15,7 @@ export async function buildFutbinSecondaryIntelligence(pool,{gameYear=27,limit=1
     (array_agg(price_console ORDER BY observed_at DESC) FILTER(WHERE observed_at<=NOW()-INTERVAL '30 minutes'))[1] p30m,
     (array_agg(price_console ORDER BY observed_at DESC) FILTER(WHERE observed_at<=NOW()-INTERVAL '1 hour'))[1] p1h,
     (array_agg(price_console ORDER BY observed_at DESC) FILTER(WHERE observed_at<=NOW()-INTERVAL '6 hours'))[1] p6h,
-    (array_agg(price_console ORDER BY observed_at DESC) FILTER(WHERE observed_at<=NOW()-INTERVAL '24 hours'))[1] p24h
+    (array_agg(price_console ORDER BY observed_at DESC) FILTER(WHERE observed_at BETWEEN NOW()-INTERVAL '26 hours' AND NOW()-INTERVAL '24 hours'))[1] p24h
    FROM x GROUP BY futbin_id
   ) SELECT *,round((100.0*(high-low)/NULLIF(avg_price,0))::numeric,2) range_pct
   FROM a WHERE last_seen>=NOW()-INTERVAL '90 minutes'
