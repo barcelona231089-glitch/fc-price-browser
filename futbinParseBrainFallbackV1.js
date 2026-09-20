@@ -1,6 +1,6 @@
 import { FUTBIN_FC27_EA_TO_ID } from "./futbinIdMapFc27.js";
 
-const DEFAULT_PARSE_BASE = "https://api.parse.bot/scraper/1b6234f9-0dfb-4cca-99b4-2d6d37aec6a7";
+const DEFAULT_PARSE_BASE = "https://api.parse.bot/scraper/21963078-8a17-40ff-a896-9b0b0ec3e828";
 const DEFAULT_DAILY_BUDGET = 6;
 const DEFAULT_MIN_INTERVAL_MS = 60 * 60_000;
 const DEFAULT_CARD_CACHE_MS = 6 * 60 * 60_000;
