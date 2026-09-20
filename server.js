@@ -13,6 +13,7 @@ import {
 } from "./traderBrain.js";
 import { uvRouter, initUvBrain, shutdownUvBrain, getUvRuntimeStatus, setUvBrainActive } from "./uv/uvApp.js";
 import { createHaCoordinator } from "./haCoordinator.js";
+import { validIngestToken, ingestFutbinSnapshot, futbinSnapshotHealth } from "./futbinSnapshotIngestV1.js";
 
 const { Pool } = pg;
 
@@ -11968,6 +11969,20 @@ app.get("/api/readiness", (req, res) => {
     readiness,
     note: "HA-aware: READY = aktiver Leader produktionsbereit; STANDBY_READY = passive Ersatzinstanz mit gesundem PostgreSQL-Lease, absichtlich ohne Marktloop/Discord-Schreibbetrieb."
   });
+});
+
+app.post("/api/futbin-fc27-snapshot", async (req, res) => {
+  if (GAME_YEAR !== "27") return res.status(409).json({ ok:false, error:"FC27_ONLY" });
+  if (!validIngestToken(req)) return res.status(401).json({ ok:false, error:"UNAUTHORIZED" });
+  try {
+    const result=await ingestFutbinSnapshot(pool, Array.isArray(req.body?.rows)?req.body.rows:[]);
+    res.json({ok:true,...result});
+  } catch (error) { res.status(500).json({ok:false,error:String(error?.message||error)}); }
+});
+
+app.get("/api/futbin-fc27-snapshot-health", async (req,res) => {
+  try { res.json({ok:true,...await futbinSnapshotHealth(pool)}); }
+  catch (error) { res.status(500).json({ok:false,error:String(error?.message||error)}); }
 });
 
 app.get("/health", (req, res) => {
