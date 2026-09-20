@@ -60,8 +60,7 @@ export async function initDb() {
       club VARCHAR(180),
       league VARCHAR(180),
       futgg_url TEXT,
-      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-      PRIMARY KEY (ea_id, game_year)
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     )
   `);
   // Legacy uv_cards used ea_id alone as its primary key. Migrate additively:
