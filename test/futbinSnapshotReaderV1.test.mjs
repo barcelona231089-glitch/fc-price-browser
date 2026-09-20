@@ -35,3 +35,13 @@ test('snapshot reader reports exact row coverage and enriches mapped card', asyn
   assert.equal(rows[0].futbinCrossCheck, 'MATCH');
   assert.equal(rows[0].futbinMatchConfidence, 100);
 });
+
+test('snapshot reader resolves encoded EA base rare resource ids through verified base id', async () => {
+  const pool = { query: async () => ({ rows: [{ futbin_id: 2076, observed_at: new Date().toISOString(), price_console: 1200, price_pc: null, popular_rank: 50 }] }) };
+  const rows = [{ eaId: 50591793, price: 1200, cardType: 'Base Rare' }];
+  const out = await enrichRowsWithSnapshotFutbinBrain(rows, { pool, gameYear: 27 });
+  assert.equal(out.ok, true);
+  assert.equal(out.resolvedRows, 1);
+  assert.equal(out.unmapped, 0);
+  assert.equal(rows[0].futbinId, 2076);
+});
