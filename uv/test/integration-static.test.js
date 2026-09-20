@@ -136,6 +136,16 @@ test('v2.4 saved lists are reopenable and persist the last live recheck', () => 
   assert.ok(db.includes("WHERE gl.game_year=$1 AND COALESCE((gl.summary_payload->>'transientRecheckOnly')::boolean, false) = false"));
 });
 
+test('UV market context is real-history first and only calls FUTBIN as fallback', () => {
+  const start = uvApp.indexOf('async function getUvMarketContext');
+  const end = uvApp.indexOf('let uvActive', start);
+  const block = uvApp.slice(start, end);
+  assert.ok(block.indexOf('loadRealMarketRegimeRows(platform)') < block.indexOf('getFutbinMarketTrends(platform)'));
+  assert.ok(block.includes('if (real.ok) return'));
+  assert.ok(block.indexOf('getFutbinMarketTrends(platform)') > block.indexOf('if (real.ok) return'));
+  assert.equal(block.includes('Promise.all(['), false);
+});
+
 test('FC-season isolation covers UV cards, learning, feedback and rechecks', () => {
   const db = fs.readFileSync(path.join(uvRoot, 'src', 'db.js'), 'utf8');
   assert.ok(db.includes('INSERT INTO uv_cards (ea_id, game_year'));

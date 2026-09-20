@@ -19,20 +19,20 @@ export const uvRouter = express.Router();
 const UV_VERSION = '2.10.5';
 
 async function getUvMarketContext(platform, liveCards = []) {
-  const [futbinContext, realRows] = await Promise.all([
-    getFutbinMarketTrends(platform),
-    loadRealMarketRegimeRows(platform).catch(() => [])
-  ]);
+  const realRows = await loadRealMarketRegimeRows(platform).catch(() => []);
   const real = buildRealMarketRegime(realRows, liveCards);
-  if (!real.ok) return { ...futbinContext, realRegime: real, source: futbinContext?.ok ? 'FUTBIN/Parse fallback' : 'neutral fallback' };
-  return {
-    ...futbinContext,
+  if (real.ok) return {
     ...real,
-    futbinContext,
+    futbinContext: null,
     source: 'real FC' + GAME_YEAR + ' price history',
     direction: real.mood,
     stabilityScore: real.stabilityScore
   };
+
+  // Real FC observations are authoritative. FUTBIN/Parse is queried only when
+  // current-season history is too thin to classify the market safely.
+  const futbinContext = await getFutbinMarketTrends(platform);
+  return { ...futbinContext, realRegime: real, source: futbinContext?.ok ? 'FUTBIN/Parse fallback' : 'neutral fallback' };
 }
 
 let uvActive = true;
