@@ -19,8 +19,16 @@ function windowOf(rows, field) {
     fallingPct: Number((moves.filter(v => v <= -.5).length / moves.length * 100).toFixed(1))
   };
 }
-export function buildRealMarketRegime(dbRows = []) {
-  const rows = dbRows.map(r => ({
+export function buildRealMarketRegime(dbRows = [], liveCards = []) {
+  const meta = new Map((Array.isArray(liveCards) ? liveCards : []).map(c => [String(c?.eaId), c]));
+  const eligibleDbRows = dbRows.filter(r => {
+    const c = meta.get(String(r?.ea_id));
+    if (!c) return false;
+    const type = String(c.cardType || c.rarityName || '').trim();
+    const rating = Number(c.overall);
+    return type === 'Base Rare' && Number.isFinite(rating) && (GAME_YEAR < 27 || rating >= 82);
+  });
+  const rows = eligibleDbRows.map(r => ({
     change5m: pct(Number(r.price), Number(r.price_5m)),
     change15m: pct(Number(r.price), Number(r.price_15m)),
     change1h: pct(Number(r.price), Number(r.price_1h))
@@ -48,7 +56,9 @@ export function buildRealMarketRegime(dbRows = []) {
   ), 10, 90);
   return {
     ok: w5m.measuredCards >= 25, gameYear: GAME_YEAR, source: 'uv-real-price-history',
-    mood, direction: mood, packSupplyActive, measuredCards: rows.length, confidence,
+    mood, direction: mood, packSupplyActive,
+    packSupplyInference: packSupplyActive ? 'broad observed Base Rare decline' : null,
+    measuredCards: rows.length, confidence,
     stabilityScore, windows: { m5: w5m, m15: w15m, h1: w1h }
   };
 }

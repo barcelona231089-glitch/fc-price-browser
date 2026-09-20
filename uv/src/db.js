@@ -922,18 +922,21 @@ export async function loadRealMarketRegimeRows(platform) {
       SELECT price FROM uv_price_history h
       WHERE h.platform=$1 AND h.game_year=$2 AND h.ea_id=l.ea_id
         AND h.recorded_at <= l.recorded_at - INTERVAL '5 minutes'
+        AND h.recorded_at >= l.recorded_at - INTERVAL '10 minutes'
       ORDER BY h.recorded_at DESC LIMIT 1
     ) p5 ON TRUE
     LEFT JOIN LATERAL (
       SELECT price FROM uv_price_history h
       WHERE h.platform=$1 AND h.game_year=$2 AND h.ea_id=l.ea_id
         AND h.recorded_at <= l.recorded_at - INTERVAL '15 minutes'
+        AND h.recorded_at >= l.recorded_at - INTERVAL '25 minutes'
       ORDER BY h.recorded_at DESC LIMIT 1
     ) p15 ON TRUE
     LEFT JOIN LATERAL (
       SELECT price FROM uv_price_history h
       WHERE h.platform=$1 AND h.game_year=$2 AND h.ea_id=l.ea_id
         AND h.recorded_at <= l.recorded_at - INTERVAL '60 minutes'
+        AND h.recorded_at >= l.recorded_at - INTERVAL '75 minutes'
       ORDER BY h.recorded_at DESC LIMIT 1
     ) p60 ON TRUE
   `, [platform, GAME_YEAR]);
