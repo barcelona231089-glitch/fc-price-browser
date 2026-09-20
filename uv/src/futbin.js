@@ -257,7 +257,8 @@ async function loadFutbinCatalog(platform = 'console') {
 
   const rows = [];
   for (let page = 1; page <= CATALOG_MAX_PAGES; page++) {
-    const yearFlag = gameYear === 27 ? '&fc27_only=true' : '&fc26_only=true';
+    const yearFlag = gameYear === 27 ? '&fc27_only=true' : gameYear === 26 ? '&fc26_only=true' : '';
+    if (!yearFlag) return [];
     const url = `${FUTBIN_PARSE_API_BASE}/get_players?page=${page}${yearFlag}`;
     const json = await fetchJson(url, { headers: { 'X-API-Key': apiKey } });
     const pageRows = extractRows(json);
