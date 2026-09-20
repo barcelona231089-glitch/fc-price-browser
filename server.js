@@ -7012,7 +7012,8 @@ async function monitorOnce() {
       }
       if (HA_ENABLED && !haIsLeader()) return;
       await processIntensiveWatchAlerts(latestTradingRows, cycleAlertBudget);
-      await processTraderConfluenceAlerts(latestTradingRows, latestRatingStats, built.brainWork, cycleAlertBudget);
+      // External trader/leak signals remain available to the Brain as evidence,
+      // but must never create their own Discord confluence notifications.
       await processBrainStateChangeAlerts(latestTradingRows, cycleAlertBudget);
       await processDiscordAlerts(latestTradingRows, latestRatingStats, cycleAlertBudget);
       await evaluatePendingDecisions();
