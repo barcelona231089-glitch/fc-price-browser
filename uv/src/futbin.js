@@ -1,4 +1,5 @@
 import { FUTBIN_PARSE_API_BASE, FUTBIN_CROSSCHECK_LIMIT, FUTBIN_SEARCH_ENDPOINT } from './config.js';
+import { GAME_YEAR } from './config.js';
 import { clamp, fetchJson, mapLimit, normalizeName } from './utils.js';
 import { extractFutbinStructuredEvidence } from './futbinEvidence.js';
 import { getDirectFutbinCards, getFutbinDirectStatus, isDirectFutbinEnabled } from './futbinDirect.js';
@@ -250,7 +251,7 @@ async function loadFutbinCatalog(platform = 'console') {
   if (!CATALOG_ENABLED) return [];
   const apiKey = String(process.env.FUTBIN_PARSE_API_KEY || '').trim();
   if (!apiKey || parseBackoffActive()) return [];
-  const gameYear = Math.max(26, Number(process.env.GAME_YEAR || 26));
+  const gameYear = GAME_YEAR;
   const cacheKey = `${gameYear}|${platform}`;
   const cached = catalogCache.get(cacheKey);
   if (cached && Date.now() - cached.at < CATALOG_CACHE_MS) return cached.rows;
