@@ -14,6 +14,7 @@ import { attachTargetLearningProfiles } from './src/targetLearning.js';
 import { buildRecommendationLifecycle, recheckRecommendation } from './src/lifecycle.js';
 import { runCandidatePipeline, deriveAdaptiveMarketPolicy, buildHard100SellabilityFallback, buildBudgetAdaptiveSellabilityFallback, buildBudgetSafetyReserveFallback } from './src/candidatePipeline.js';
 import { buildReportedOutcomeScore } from './src/outcomeLearning.js';
+import { attachLocalFutbinFc27 } from './src/futbinLocalFc27.js';
 
 export const uvRouter = express.Router();
 const UV_VERSION = '2.10.5';
@@ -658,6 +659,7 @@ async function performLiveRecheck(listId, job = null) {
   // their previous structured evidence instead of being erased.
   if (job) job.phase = 'FUTBIN_CROSSCHECK';
   current = await crosscheckFutbin(current, platform);
+  current = attachLocalFutbinFc27(current, platform);
 
   const liveById = new Map(current.map(c => [String(c.eaId), c]));
   const ids = items.map(i => i.eaId);
@@ -1247,6 +1249,7 @@ app.post('/api/uv/generate', async (req, res) => {
     // FUTBIN cross-check happens BEFORE the final 100-card optimizer,
     // so confirmed source agreement can influence which cards make the list.
     scored = await crosscheckFutbin(scored, platform);
+    scored = attachLocalFutbinFc27(scored, platform);
     scored = await generationCpuSafeMap(scored, card => {
       const history = historyMap.get(String(card.eaId)) || null;
       const learning = performanceMap.get(String(card.eaId)) || card.learning || null;
