@@ -6,6 +6,7 @@ export const MAX_PAGES = 60;
 export const META_CONCURRENCY = 3;
 export const RATING_MIN = 75;
 export const RATING_MAX = 99;
+export const MAIN_RATING_MIN = Math.max(RATING_MIN, Math.min(RATING_MAX, Number(process.env.MAIN_RATING_MIN || (GAME_YEAR >= 27 ? 82 : RATING_MIN))));
 export const HISTORY_SAMPLE_LIMIT = Math.max(100, Math.min(2000, Number(process.env.HISTORY_SAMPLE_LIMIT || 700)));
 export const FUTBIN_CROSSCHECK_LIMIT = Math.max(0, Math.min(50, Number(process.env.FUTBIN_CROSSCHECK_LIMIT || 12)));
 export const FUTBIN_PARSE_API_BASE = String(process.env.FUTBIN_PARSE_API_BASE || "https://api.parse.bot/scraper/21963078-8a17-40ff-a896-9b0b0ec3e828").replace(/\/$/, "");

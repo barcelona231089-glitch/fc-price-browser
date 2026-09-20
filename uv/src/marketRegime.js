@@ -1,4 +1,4 @@
-import { GAME_YEAR } from './config.js';
+import { GAME_YEAR, MAIN_RATING_MIN } from './config.js';
 
 const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
 const pct = (now, before) => Number.isFinite(now) && now > 0 && Number.isFinite(before) && before > 0
@@ -26,7 +26,7 @@ export function buildRealMarketRegime(dbRows = [], liveCards = []) {
     if (!c) return false;
     const type = String(c.cardType || c.rarityName || '').trim();
     const rating = Number(c.overall);
-    return type === 'Base Rare' && Number.isFinite(rating) && (GAME_YEAR < 27 || rating >= 82);
+    return type === 'Base Rare' && Number.isFinite(rating) && rating >= MAIN_RATING_MIN;
   });
   const rows = eligibleDbRows.map(r => ({
     change5m: pct(Number(r.price), Number(r.price_5m)),
