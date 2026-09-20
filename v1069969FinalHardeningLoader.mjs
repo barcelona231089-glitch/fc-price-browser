@@ -564,7 +564,7 @@ function patchServerFinal(source) {
   if (!out.includes('./futbinDirectBrainV1.js')) {
     const importAnchor = 'import { createHaCoordinator } from "./haCoordinator.js";';
     if (!out.includes(importAnchor)) throw new Error('[6.9] direct FUTBIN import anchor missing');
-    out = out.replace(importAnchor, `${importAnchor}\nimport { enrichRowsWithDirectFutbinBrain, getDirectFutbinBrainStatus } from "./futbinDirectBrainV1.js";\nimport { enrichRowsWithSnapshotFutbinBrain } from "./futbinSnapshotReaderV1.js";`);
+    out = out.replace(importAnchor, `${importAnchor}\nimport { enrichRowsWithDirectFutbinBrain, getDirectFutbinBrainStatus } from "./futbinDirectBrainV1.js";\nimport { enrichRowsWithSnapshotFutbinBrain, getSnapshotFutbinBrainStatus } from "./futbinSnapshotReaderV1.js";`);
   }
   if (!out.includes('./futbinParseBrainFallbackV1.js')) {
     const directImportAnchor = 'import { enrichRowsWithDirectFutbinBrain, getDirectFutbinBrainStatus } from "./futbinDirectBrainV1.js";';
@@ -823,7 +823,7 @@ app.get("/api/trades/closed", async (req, res) => {
   if (!out.includes('/api/position/:eaId/close')) out = out.replace(lifecycleRouteAnchor, lifecycleRoutes + lifecycleRoutes2 + lifecycleRouteAnchor);
   const directStatusAnchor = '    ratingStats: latestRatingStats';
   if (out.includes(directStatusAnchor) && !out.includes('futbinDirectBrain: getDirectFutbinBrainStatus()')) {
-    out = out.replace(directStatusAnchor, '    futbinDirectBrain: getDirectFutbinBrainStatus(),\n    futbinParseBrainFallback: getParseFutbinBrainFallbackStatus(),\n    ratingStats: latestRatingStats');
+    out = out.replace(directStatusAnchor, '    futbinDirectBrain: getDirectFutbinBrainStatus(),\n    futbinSnapshotBrain: getSnapshotFutbinBrainStatus(),\n    futbinParseBrainFallback: getParseFutbinBrainFallbackStatus(),\n    ratingStats: latestRatingStats');
   } else if (out.includes('futbinDirectBrain: getDirectFutbinBrainStatus()') && !out.includes('futbinParseBrainFallback: getParseFutbinBrainFallbackStatus()')) {
     out = out.replace('    futbinDirectBrain: getDirectFutbinBrainStatus(),', '    futbinDirectBrain: getDirectFutbinBrainStatus(),\n    futbinParseBrainFallback: getParseFutbinBrainFallbackStatus(),');
   }
@@ -831,6 +831,7 @@ app.get("/api/trades/closed", async (req, res) => {
   const healthAnchor = '    decisionPerformanceLab: {';
   if (out.includes(healthAnchor) && !out.includes('ownTradeLifecycle: {')) {
     out = out.replace(healthAnchor, `    futbinDirectBrain: getDirectFutbinBrainStatus(),
+    futbinSnapshotBrain: getSnapshotFutbinBrainStatus(),
     futbinParseBrainFallback: getParseFutbinBrainFallbackStatus(),
     worldMaxForecast: getWorldMaxForecastStatus(),
     finalTraderHardening: {
@@ -886,6 +887,7 @@ ${healthAnchor}`);
     './futbinDirectBrainV1.js',
     'enrichRowsWithDirectFutbinBrain',
     'futbinDirectBrain: getDirectFutbinBrainStatus()',
+    'futbinSnapshotBrain: getSnapshotFutbinBrainStatus()',
     './futbinParseBrainFallbackV1.js',
     'enrichImportantRowsWithParseFutbinBrain',
     'futbinParseBrainFallback: getParseFutbinBrainFallbackStatus()',
