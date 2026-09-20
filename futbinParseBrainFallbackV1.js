@@ -16,6 +16,10 @@ const state = {
   lastSuccessAt: null,
   lastFailureAt: null,
   lastError: null,
+  lastHttpStatus: null,
+  lastRetryAfterSeconds: null,
+  lastProviderCode: null,
+  lastProviderMessage: null,
   lastPlayer: null,
   lastRunAt: null,
   lastRun: null,
@@ -49,6 +53,31 @@ function minIntervalMs(options = {}) {
 function cardCacheMs(options = {}) {
   const raw = Number(options.cardCacheMs ?? (Number(process.env.FUTBIN_PARSE_BRAIN_CARD_CACHE_MIN || 360) * 60_000));
   return Math.max(60_000, Number.isFinite(raw) ? raw : DEFAULT_CARD_CACHE_MS);
+}
+function retryAfterSeconds(response) {
+  const raw = response?.headers?.get?.("retry-after");
+  if (!raw) return null;
+  const numeric = Number(raw);
+  if (Number.isFinite(numeric) && numeric >= 0) return Math.ceil(numeric);
+  const at = Date.parse(raw);
+  return Number.isFinite(at) ? Math.max(0, Math.ceil((at - Date.now()) / 1000)) : null;
+}
+async function providerError(response) {
+  const status = Number(response?.status || 0) || null;
+  const retrySeconds = retryAfterSeconds(response);
+  let body = null;
+  try {
+    const text = typeof response?.text === "function" ? await response.text() : "";
+    if (text) body = JSON.parse(text);
+  } catch {}
+  const providerCode = body?.code ?? body?.error_code ?? body?.error ?? null;
+  const providerMessage = String(body?.message ?? body?.detail ?? body?.reason ?? "").slice(0, 180) || null;
+  const error = new Error(`Parse FUTBIN HTTP ${status || "ERROR"}`);
+  error.httpStatus = status;
+  error.retryAfterSeconds = retrySeconds;
+  error.providerCode = providerCode == null ? null : String(providerCode).slice(0, 80);
+  error.providerMessage = providerMessage;
+  return error;
 }
 function dateKey() {
   return new Date().toISOString().slice(0, 10);
@@ -299,7 +328,7 @@ export async function enrichImportantRowsWithParseFutbinBrain(rows = [], brainWo
         "user-agent": "FC-Trader-Brain/10.69.9.6.9"
       }
     });
-    if (response && "ok" in response && !response.ok) throw new Error(`Parse FUTBIN HTTP ${response.status}`);
+    if (response && "ok" in response && !response.ok) throw await providerError(response);
     const payload = typeof response?.json === "function" ? await response.json() : response;
     const snapshotRows = payload?.players ?? payload?.data?.players ?? [];
     const byId = new Map((Array.isArray(snapshotRows) ? snapshotRows : []).map(item => [Number(item?.player_id ?? item?.id), item]));
@@ -316,15 +345,27 @@ export async function enrichImportantRowsWithParseFutbinBrain(rows = [], brainWo
     state.successes += 1;
     state.lastSuccessAt = new Date().toISOString();
     state.lastError = null;
+    state.lastHttpStatus = 200;
+    state.lastRetryAfterSeconds = null;
+    state.lastProviderCode = null;
+    state.lastProviderMessage = null;
     state.disabledUntil = null;
     state.circuitReason = null;
   } catch (error) {
     state.failures += 1;
     state.lastFailureAt = new Date().toISOString();
     state.lastError = String(error?.message || error);
+    state.lastHttpStatus = Number(error?.httpStatus || 0) || null;
+    state.lastRetryAfterSeconds = Number.isFinite(Number(error?.retryAfterSeconds)) ? Number(error.retryAfterSeconds) : null;
+    state.lastProviderCode = error?.providerCode ?? null;
+    state.lastProviderMessage = error?.providerMessage ?? null;
     if (/HTTP\s*429/i.test(state.lastError)) {
-      state.disabledUntil = new Date(Date.now() + 6 * 60 * 60_000).toISOString();
-      state.circuitReason = "RATE_LIMITED";
+      const quotaLike = /credit|quota|plan|billing|limit.*month/i.test(`${state.lastProviderCode || ""} ${state.lastProviderMessage || ""}`);
+      const retryMs = state.lastRetryAfterSeconds != null ? state.lastRetryAfterSeconds * 1000 : 0;
+      const fallbackMs = quotaLike ? 24 * 60 * 60_000 : 6 * 60 * 60_000;
+      const backoffMs = Math.max(60_000, Math.min(24 * 60 * 60_000, retryMs || fallbackMs));
+      state.disabledUntil = new Date(Date.now() + backoffMs).toISOString();
+      state.circuitReason = quotaLike ? "QUOTA_EXHAUSTED" : "RATE_LIMITED";
     } else if (/HTTP\s*(?:401|403)/i.test(state.lastError)) {
       state.disabledUntil = new Date(Date.now() + 6 * 60 * 60_000).toISOString();
       state.circuitReason = "ACCESS_BLOCKED";
