@@ -1,4 +1,5 @@
 import { FUTBIN_FC27_EA_TO_ID } from "./futbinIdMapFc27.js";
+import { acquireParseFutbinSlot, getParseFutbinRateGateStatus, resetParseFutbinRateGateForTests } from "./parseFutbinRateGateV1.js";
 
 const DEFAULT_PARSE_BASE = "https://api.parse.bot/scraper/21963078-8a17-40ff-a896-9b0b0ec3e828";
 const DEFAULT_DAILY_BUDGET = 6;
@@ -321,6 +322,7 @@ export async function enrichImportantRowsWithParseFutbinBrain(rows = [], brainWo
   state.lastPlayer = `BATCH:${batch.length}`;
 
   try {
+    await acquireParseFutbinSlot({ minDelayMs: 13000 });
     const response = await fetcher(url, {
       headers: {
         accept: "application/json",
@@ -395,6 +397,7 @@ export function getParseFutbinBrainFallbackStatus(options = {}) {
     gameYear: 27,
     endpoint: "get_fc27_market_snapshot",
     batchSize: 500,
+    sharedRateGate: getParseFutbinRateGateStatus(),
     importantOnly: true,
     noSyntheticPrices: true,
     minIntervalMinutes: Math.round(minIntervalMs(options) / 60_000),
@@ -407,6 +410,7 @@ export function getParseFutbinBrainFallbackStatus(options = {}) {
 
 export function resetParseFutbinBrainFallbackForTests() {
   cardCache.clear();
+  resetParseFutbinRateGateForTests();
   for (const key of Object.keys(state)) {
     if (["callsToday","successes","failures","applied"].includes(key)) state[key] = 0;
     else state[key] = null;

@@ -1,3 +1,5 @@
+import { acquireParseFutbinSlot } from "./parseFutbinRateGateV1.js";
+
 export const FUTBIN_PARSE_EVIDENCE_ADAPTER_VERSION = "10.69.8";
 
 const DEFAULT_PARSE_BASE =
@@ -201,11 +203,7 @@ function minDelayMs() {
 }
 
 async function throttle() {
-  const now = Date.now();
-  if (nextRequestAt > now) {
-    await new Promise(resolve => setTimeout(resolve, nextRequestAt - now));
-  }
-  nextRequestAt = Date.now() + minDelayMs();
+  await acquireParseFutbinSlot({ minDelayMs: minDelayMs() });
 }
 
 function endpointMissingError(status, text) {
