@@ -271,6 +271,9 @@ test('FC27 FUTBIN direct API is optional, backoff-safe and exposed in UV status'
   assert.ok(futbin.includes("FUTBIN direct FC27 API + Parse structured fallback"));
   assert.ok(uvApp.includes('futbinDirectFc27Api'));
   assert.ok(uvApp.includes('futbinDirectBackoff'));
+  assert.ok(uvApp.includes("marketRegimePrimary: 'real-price-history'"));
+  assert.ok(uvApp.includes("marketRegimeFallback: 'futbin-market-trends'"));
+  assert.ok(uvApp.includes('marketRegimeFallbackOnlyWhenRealInsufficient: true'));
   assert.ok(direct.includes('FUTBIN_FC27_EA_TO_ID'));
   assert.ok(direct.includes('BLOCKED_BACKOFF_MS'));
   assert.ok(direct.includes('FUTBIN_DIRECT_DISCOVERY_ENABLED'));
