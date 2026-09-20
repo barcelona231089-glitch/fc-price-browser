@@ -136,6 +136,17 @@ test('v2.4 saved lists are reopenable and persist the last live recheck', () => 
   assert.ok(db.includes("WHERE gl.game_year=$1 AND COALESCE((gl.summary_payload->>'transientRecheckOnly')::boolean, false) = false"));
 });
 
+test('FC-season isolation covers UV cards, learning, feedback and rechecks', () => {
+  const db = fs.readFileSync(path.join(uvRoot, 'src', 'db.js'), 'utf8');
+  assert.ok(db.includes('INSERT INTO uv_cards (ea_id, game_year'));
+  assert.ok(db.includes('ON CONFLICT (ea_id, game_year) WHERE game_year IS NOT NULL'));
+  assert.ok(db.includes('AND gl.game_year=$3'));
+  assert.ok(db.includes('AND gl.game_year=$2'));
+  assert.ok(db.includes("let where = 'WHERE gl.game_year=$1'"));
+  assert.ok(db.includes('SELECT 1 FROM uv_generated_lists WHERE id=$1 AND game_year=$2 FOR UPDATE'));
+  assert.ok(db.includes('WHERE id=$1 AND game_year=$2'));
+});
+
 test('v2.4 exposes budget Top-100 ranking without weakening hard 100 or rating floor', () => {
   assert.ok(uvApp.includes('budgetTop100Ranking: true'));
   assert.ok(uvApp.includes('budgetTop100SafetyIsolation: true'));
