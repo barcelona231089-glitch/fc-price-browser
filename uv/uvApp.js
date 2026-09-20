@@ -1085,7 +1085,7 @@ app.post('/api/uv/rebalance/:listId', async (req, res) => {
     let selected = balanced.selected.map(card => ({
       ...card,
       recommendationMode: 'conservative-demand+reported-outcome-learning+lifecycle+portfolio-rebalance+candidate-gate-v2.1+promo-live-market-adaptive+hard-100-slots+demand-sellability-budget-relax+hard100-sellability-ladder-v2.3.5+budget-adaptive-rating-floor+budget-top100-v2.10.3-demand-market-fit+resilient-market-tradeable-hard-guard+budget-tier-allocator+trader-consensus+budget-safe-reserve+adaptive-special-mix+budget-rating-guard+max-two-exact-copies+nonrare-demand-gate+futbin-structured-evidence',
-      capitalBand: capitalBandForPrice(card.buyPrice, budget, effectiveCount),
+      capitalBand: capitalBandForPrice(card.buyPrice, budget, count),
       recommendationLifecycle: buildRecommendationLifecycle(card, checkedAt),
       rebalanceFromListId: stored.id,
       salesProbability: null

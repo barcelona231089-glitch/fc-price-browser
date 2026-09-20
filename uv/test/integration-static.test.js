@@ -280,6 +280,14 @@ test('FC27 FUTBIN direct API is optional, backoff-safe and exposed in UV status'
   assert.ok(futbin.includes("FUTBIN_CATALOG_ENABLED"));
 });
 
+test('rebalance capital bands use the stored list count and never an undefined generation-only variable', () => {
+  const start = uvApp.indexOf("app.post('/api/uv/rebalance/:listId'");
+  const end = uvApp.indexOf("app.post('/api/uv/generate'", start);
+  const block = uvApp.slice(start, end);
+  assert.ok(block.includes('capitalBandForPrice(card.buyPrice, budget, count)'));
+  assert.equal(block.includes('effectiveCount'), false);
+});
+
 test('UI reports final hard-100 budget feasibility from the generated portfolio, not an earlier pipeline estimate', () => {
   assert.ok(ui.includes("Number(data.count||data.generatedCount||0) >= Number(data.requestedCount||100)"));
   assert.ok(ui.includes("Number(data.totalBuy||0) <= Number(data.budget||0)"));
