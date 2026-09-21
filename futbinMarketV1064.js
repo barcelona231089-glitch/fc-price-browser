@@ -395,7 +395,10 @@ export function parseFutbinPlayerHtml(html) {
   const ratingMatch = title.match(/EA FC\s*\d+\s*-\s*(\d{2})\s*-/i) || h1.match(/\b(\d{2})\b/);
   const cardMatch = h1.match(/-\s*(.*?)\s*EA FC\s*\d+/i) || title.match(/^[^-]+?\s+(.+?)\s+EA FC\s*\d+/i);
   const gameMatches = [...text.matchAll(/has been used in\s+([\d,.]+)\s+games\s+with a GPG[^\d]*([\d.]+)/gi)];
-  const currentPrice = text.match(/current price on FUT is\s+([\d,.kKmM]+)\s+on PlayStation,\s*([\d,.kKmM]+)\s+on Xbox,\s*and\s*([\d,.kKmM]+)\s+on PC/i);
+  const currentPriceText = text.match(/current price on FUT is\s+([\s\S]{0,220})/i)?.[1] || '';
+  const currentPricePlayStation = currentPriceText.match(/([\d,.kKmM]+)\s+on PlayStation/i);
+  const currentPriceXbox = currentPriceText.match(/([\d,.kKmM]+)\s+on Xbox/i);
+  const currentPricePc = currentPriceText.match(/([\d,.kKmM]+)\s+on PC/i);
   const trendMatches = [...text.matchAll(/Trend:\s*(-?\d+(?:\.\d+)?)%\s*(?:\(([-+]?[^)]+)\))?/gi)];
   const rangeMatches = [...text.matchAll(/Price Range:\s*([\d,.kKmM]+)\s*-\s*([\d,.kKmM]+)/gi)];
   const updateMatches = [...text.matchAll(/Price Updated:\s*([^*|•]{1,40}?ago|just now)/gi)];
@@ -439,9 +442,9 @@ export function parseFutbinPlayerHtml(html) {
     gpgConsole: gameMatches[0] ? Number(gameMatches[0][2]) : null,
     gamesPlayedPc: gameMatches[1] ? parseAmount(gameMatches[1][1]) : null,
     gpgPc: gameMatches[1] ? Number(gameMatches[1][2]) : null,
-    pricePlayStation: currentPrice ? parseAmount(currentPrice[1]) : null,
-    priceXbox: currentPrice ? parseAmount(currentPrice[2]) : null,
-    pricePc: currentPrice ? parseAmount(currentPrice[3]) : null,
+    pricePlayStation: currentPricePlayStation ? parseAmount(currentPricePlayStation[1]) : null,
+    priceXbox: currentPriceXbox ? parseAmount(currentPriceXbox[1]) : null,
+    pricePc: currentPricePc ? parseAmount(currentPricePc[1]) : null,
     priceUpdatedAtConsole: updateMatches[0] ? parseRelativeAgeToIso(updateMatches[0][1]) : null,
     priceUpdatedAtPc: updateMatches[1] ? parseRelativeAgeToIso(updateMatches[1][1]) : null,
     trendConsolePct: trendMatches[0] ? Number(trendMatches[0][1]) : null,

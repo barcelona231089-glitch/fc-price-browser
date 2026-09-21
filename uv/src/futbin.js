@@ -2,7 +2,8 @@ import { FUTBIN_PARSE_API_BASE, FUTBIN_CROSSCHECK_LIMIT, FUTBIN_SEARCH_ENDPOINT,
 import { clamp, fetchJson, mapLimit, normalizeName } from './utils.js';
 import { extractFutbinStructuredEvidence } from './futbinEvidence.js';
 import { getDirectFutbinCards, getFutbinDirectStatus, isDirectFutbinEnabled } from './futbinDirect.js';
-import { getPublicFutbinCards } from './futbinPublicFallback.js';
+import { getPublicFutbinCards, isPublicFutbinEnabled } from './futbinPublicFallback.js';
+import { getFutbinBraveCards, getFutbinBraveStatus, isFutbinBraveEnabled } from './futbinBraveAdapter.js';
 
 const cache = new Map();
 const CACHE_MS = 30 * 60_000;
@@ -89,6 +90,7 @@ export function getFutbinExtendedDataStatus() {
     observedSalesPerDayObserved: extendedDataState.observedSalesPerDayObserved,
     lastObservedAt: extendedDataState.lastObservedAt,
     directFutbinApi: direct,
+    bravePublicAdapter: getFutbinBraveStatus(),
     parseCatalogEnabled: CATALOG_ENABLED,
     parseCatalogMaxPages: CATALOG_MAX_PAGES,
     parseBackoff: getFutbinParseBackoffStatus(),
@@ -334,8 +336,10 @@ export async function searchFutbinCard(card, platform = 'console') {
 
 export async function crosscheckFutbin(cards, platform = 'console') {
   const directEnabled = isDirectFutbinEnabled();
+  const braveEnabled = isFutbinBraveEnabled();
+  const publicEnabled = isPublicFutbinEnabled();
   const parseConfigured = Boolean(String(process.env.FUTBIN_PARSE_API_KEY || '').trim());
-  if ((!directEnabled && !parseConfigured) || FUTBIN_CROSSCHECK_LIMIT <= 0) {
+  if ((!directEnabled && !braveEnabled && !publicEnabled && !parseConfigured) || FUTBIN_CROSSCHECK_LIMIT <= 0) {
     return cards.map(card => ({ ...card, futbinPrice: null, futbinChecked: false }));
   }
   const ranked = [...cards]
@@ -357,11 +361,29 @@ export async function crosscheckFutbin(cards, platform = 'console') {
         if (result) byId.set(String(card.eaId), result);
       }
     } catch {
-      // Direct FUTBIN is optional. Parse remains the fail-closed fallback.
+      // Direct FUTBIN is optional. Browser/Parse remain fail-closed fallbacks.
     }
   }
 
-  const publicCards = ranked.filter(card => !(Number(byId.get(String(card.eaId))?.price) > 0));
+  if (braveEnabled) {
+    try {
+      const brave = await getFutbinBraveCards(
+        ranked.filter(card => !(Number(byId.get(String(card.eaId))?.price) > 0)),
+        platform,
+        { gameYear: Number(GAME_YEAR) }
+      );
+      for (const card of ranked) {
+        const result = brave?.results?.get?.(String(card.eaId));
+        if (Number(result?.price) > 0) byId.set(String(card.eaId), result);
+      }
+    } catch {
+      // Local Brave adapter is optional and must fail closed.
+    }
+  }
+
+  const publicCards = publicEnabled
+    ? ranked.filter(card => !(Number(byId.get(String(card.eaId))?.price) > 0))
+    : [];
   if (publicCards.length) {
     try {
       const publicFallback = await getPublicFutbinCards(publicCards, platform, { gameYear: Number(GAME_YEAR) });
