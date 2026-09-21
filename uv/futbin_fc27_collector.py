@@ -110,13 +110,38 @@ def upload_snapshot(df):
 def main():
     p=argparse.ArgumentParser(); p.add_argument("url"); p.add_argument("--pages",type=int,default=3)
     p.add_argument("--delay",type=float,default=6); p.add_argument("--csv",default="uv/data/futbin_fc27_latest.csv")
-    p.add_argument("--db",default="uv/data/futbin_fc27_history.db"); a=p.parse_args()
+    p.add_argument("--db",default="uv/data/futbin_fc27_history.db")
+    p.add_argument("--adaptive",action="store_true"); p.add_argument("--core-pages",type=int,default=4)
+    p.add_argument("--rotate-pages",type=int,default=4); p.add_argument("--rotate-max-page",type=int,default=40)
+    p.add_argument("--rotation-state",default="uv/data/futbin_fc27_rotation.json"); a=p.parse_args()
     if not 1<=a.pages<=30: p.error("--pages 1..30")
-    df=normalize(collect(a.url,a.pages,a.delay))
+    import os
+    os.makedirs(os.path.dirname(a.csv) or ".",exist_ok=True); os.makedirs(os.path.dirname(a.db) or ".",exist_ok=True)
+    if a.adaptive:
+        if not 1<=a.core_pages<=10 or not 1<=a.rotate_pages<=10: p.error("adaptive page windows must be 1..10")
+        if a.core_pages+a.rotate_pages>12: p.error("adaptive total pages must be <=12")
+        rotate_start=a.core_pages+1
+        try:
+            with open(a.rotation_state,encoding="utf-8") as f: rotate_start=max(a.core_pages+1,int(json.load(f).get("nextStart",rotate_start)))
+        except (OSError,ValueError,TypeError,json.JSONDecodeError): pass
+        core=collect(page_url(a.url,1),a.core_pages,a.delay)
+        time.sleep(max(0,a.delay))
+        rotating=collect(page_url(a.url,rotate_start),a.rotate_pages,a.delay)
+        parts=[x for x in (core,rotating) if not x.empty]
+        raw=pd.concat(parts,ignore_index=True).drop_duplicates(subset=["futbin_id"],keep="first") if parts else pd.DataFrame()
+        next_start=rotate_start+a.rotate_pages
+        if next_start>a.rotate_max_page: next_start=a.core_pages+1
+        observed_pages=sorted(set(pd.to_numeric(raw.get("page",pd.Series(dtype=int)),errors="coerce").dropna().astype(int).tolist()))
+    else:
+        raw=collect(a.url,a.pages,a.delay); rotate_start=None; next_start=None
+        observed_pages=sorted(set(pd.to_numeric(raw.get("page",pd.Series(dtype=int)),errors="coerce").dropna().astype(int).tolist())) if not raw.empty else []
+    df=normalize(raw)
     if df.empty: raise SystemExit("NO_DATA")
-    import os; os.makedirs(os.path.dirname(a.csv) or ".",exist_ok=True); os.makedirs(os.path.dirname(a.db) or ".",exist_ok=True)
     df.to_csv(a.csv,index=False,encoding="utf-8-sig"); save_db(df,a.db)
     upload=upload_snapshot(df)
-    print(json.dumps({"ok":True,"rows":len(df),"pages":a.pages,"priced_console":int(df.get("price_console",pd.Series()).notna().sum()),"csv":a.csv,"db":a.db,"upload":upload}))
+    if a.adaptive:
+        os.makedirs(os.path.dirname(a.rotation_state) or ".",exist_ok=True)
+        with open(a.rotation_state,"w",encoding="utf-8") as f: json.dump({"nextStart":next_start,"lastStart":rotate_start,"updatedAt":datetime.now(timezone.utc).isoformat(timespec="seconds")},f)
+    print(json.dumps({"ok":True,"rows":len(df),"pages":len(observed_pages),"pageNumbers":observed_pages,"adaptive":a.adaptive,"rotationStart":rotate_start,"nextRotationStart":next_start,"priced_console":int(df.get("price_console",pd.Series()).notna().sum()),"csv":a.csv,"db":a.db,"upload":upload}))
 
 if __name__=="__main__": main()
