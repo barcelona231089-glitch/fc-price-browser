@@ -135,7 +135,11 @@ function buildPricingForTargetProfit(buyPrice, targetProfit) {
   const desiredProfit = Math.min(3000, Math.max(0, Number(targetProfit || 0)));
   const desiredSale = (buy + desiredProfit) / 0.95;
   const markupCapSale = buy * (1 + maxConservativeMarkupPct(buy));
-  const sell = Math.max(buy + priceStep(buy), roundMarketPrice(Math.min(desiredSale, markupCapSale), 'up'));
+  const hardProfitCapSale = roundMarketPrice((buy + 3000) / 0.95, 'down');
+  const sell = Math.max(buy + priceStep(buy), Math.min(
+    hardProfitCapSale,
+    roundMarketPrice(Math.min(desiredSale, markupCapSale), 'up')
+  ));
   const tax = Math.floor(sell * 0.05);
   const netAfterTax = sell - tax;
   const netProfit = netAfterTax - buy;
@@ -181,7 +185,12 @@ export function buildTraderAwarePricing(card) {
     const futbinSaleSamples = Number(card?.futbinSoldSampleCount || 0);
     const empiricalWeight = Number.isFinite(futbinSaleTargetSupportScore) ? Math.min(0.10, futbinSaleSamples / 80) : 0;
     const empiricalAdjustment = Number.isFinite(futbinSaleTargetSupportScore) ? (futbinSaleTargetSupportScore - 50) * empiricalWeight : 0;
-    const strategyScore = clamp(likelihoodIndex * 0.46 + pQuality * 0.29 + capitalEfficiency * 0.15 + learned.score * 0.10 + empiricalAdjustment, 0, 100);
+    const feedbackSamples = Number(learnedProfile?.reportedFeedbackSamples || 0);
+    const reportedSellRate = Number(learnedProfile?.reportedSellRate);
+    const reportedOutcomeScore = Number(learned.outcomeScore ?? learnedProfile?.reportedOutcomeScore ?? 50);
+    const stretchEvidence = feedbackSamples >= 8 && Number.isFinite(reportedSellRate) && reportedSellRate >= 0.55 && reportedOutcomeScore >= 62;
+    const stretchPenalty = pricing.netProfit > 2000 && !stretchEvidence ? 18 + Math.min(12, (pricing.netProfit - 2000) / 75) : 0;
+    const strategyScore = clamp(likelihoodIndex * 0.46 + pQuality * 0.29 + capitalEfficiency * 0.15 + learned.score * 0.10 + empiricalAdjustment - stretchPenalty, 0, 100);
     return {
       ...pricing,
       priceLikelihoodIndex: likelihoodIndex,
@@ -189,6 +198,8 @@ export function buildTraderAwarePricing(card) {
       futbinSaleTargetSupportScore,
       futbinSaleTargetSupportSamples: futbinSaleSamples,
       pricingProfitQualityScore: pQuality,
+      stretchEvidence,
+      stretchPenalty,
       targetSupportScore: learned.score,
       targetSupportSamples: learned.samples,
       reportedFeedbackSamples: learned.feedbackSamples,
@@ -219,6 +230,8 @@ export function buildTraderAwarePricing(card) {
       futbinSaleTargetSupportSamples: c.futbinSaleTargetSupportSamples,
       targetSupportScore: c.targetSupportScore,
       targetSupportSamples: c.targetSupportSamples,
+      stretchEvidence: c.stretchEvidence,
+      stretchPenalty: c.stretchPenalty,
       reportedFeedbackSamples: c.reportedFeedbackSamples,
       reportedSellRate: c.reportedSellRate,
       reportedOutcomeScore: c.reportedOutcomeScore,

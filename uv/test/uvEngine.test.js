@@ -218,6 +218,8 @@ test('v0.8 trader-aware pricing favors repeatable conservative profit over blind
   assert.equal(pricing.pricingMode, 'trader-prior+target-support+reported-outcome-optimizer');
   assert.ok(Array.isArray(pricing.pricingCandidates));
   assert.ok(pricing.pricingCandidates.length >= 5);
+  assert.ok(pricing.pricingCandidates.every(c => c.netProfit <= 3000));
+  assert.ok(pricing.pricingCandidates.filter(c => c.netProfit > 2000).every(c => c.stretchPenalty > 0 && c.stretchEvidence === false));
 });
 
 test('v0.9 in-packs supply pressure lowers ranking and flags falling supplied cards', () => {
