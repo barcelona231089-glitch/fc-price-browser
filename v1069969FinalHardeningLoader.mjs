@@ -564,7 +564,7 @@ function patchServerFinal(source) {
   if (!out.includes('./futbinDirectBrainV1.js')) {
     const importAnchor = 'import { createHaCoordinator } from "./haCoordinator.js";';
     if (!out.includes(importAnchor)) throw new Error('[6.9] direct FUTBIN import anchor missing');
-    out = out.replace(importAnchor, `${importAnchor}\nimport { enrichRowsWithDirectFutbinBrain, getDirectFutbinBrainStatus } from "./futbinDirectBrainV1.js";\nimport { enrichRowsWithSnapshotFutbinBrain, getSnapshotFutbinBrainStatus } from "./futbinSnapshotReaderV1.js";
+    out = out.replace(importAnchor, `${importAnchor}\nimport { enrichRowsWithDirectFutbinBrain, getDirectFutbinBrainStatus } from "./futbinDirectBrainV1.js";\nimport { ingestAuthorizedFutbinImport, getAuthorizedFutbinImportStatus } from "./futbinAuthorizedImportV1.js";\nimport { enrichRowsWithSnapshotFutbinBrain, getSnapshotFutbinBrainStatus } from "./futbinSnapshotReaderV1.js";
 import { buildFutbinSecondaryIntelligence, getFutbinSecondaryIntelligenceStatus } from "./futbinSecondaryIntelligenceV1.js";`);
   }
   if (!out.includes('./futbinParseBrainFallbackV1.js')) {
@@ -830,6 +830,17 @@ app.get("/api/trades/closed", async (req, res) => {
   }
 
   const secondaryRouteAnchor = 'app.get("/health", (req, res) => {';
+  if (out.includes(secondaryRouteAnchor) && !out.includes('/api/futbin/authorized-import')) {
+    out = out.replace(secondaryRouteAnchor, `app.post("/api/futbin/authorized-import", async (req,res) => {
+  try {
+    if (Number(req.body?.gameYear || 27) !== 27) return res.status(400).json({ok:false,reason:"FC27_ONLY"});
+    const result = await ingestAuthorizedFutbinImport(dbEnabled ? pool : null, req.body?.data ?? req.body, {gameYear:27});
+    res.status(result.ok ? 200 : 400).json(result);
+  } catch(error){ res.status(500).json({ok:false,error:String(error?.message||error)}); }
+});
+
+${secondaryRouteAnchor}`);
+  }
   if (out.includes(secondaryRouteAnchor) && !out.includes('/api/futbin-secondary-intelligence')) {
     out = out.replace(secondaryRouteAnchor, `app.get("/api/futbin-secondary-intelligence", async (req,res) => {
   try { res.json(await buildFutbinSecondaryIntelligence(dbEnabled ? pool : null,{gameYear:GAME_YEAR,limit:Number(req.query.limit||100)})); }
@@ -841,6 +852,7 @@ ${secondaryRouteAnchor}`);
   const healthAnchor = '    decisionPerformanceLab: {';
   if (out.includes(healthAnchor) && !out.includes('ownTradeLifecycle: {')) {
     out = out.replace(healthAnchor, `    futbinDirectBrain: getDirectFutbinBrainStatus(),
+    futbinAuthorizedImport: getAuthorizedFutbinImportStatus(),
     futbinSnapshotBrain: getSnapshotFutbinBrainStatus(),
     futbinSecondaryIntelligence: getFutbinSecondaryIntelligenceStatus(),
     futbinParseBrainFallback: getParseFutbinBrainFallbackStatus(),
