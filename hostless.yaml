@@ -10,10 +10,6 @@ working_directory: "/"
 build_context_directory: "/"
 start_command: "npm start"
 
-env:
-  FUTBIN_SERVER_COLLECTOR_ENABLED: "true"
-  FUTBIN_SERVER_COLLECTOR_ACTIVATION_CONFIRMED: "true"
-
 scaling:
   min_cpu: 0.5
   max_cpu: 0.5
