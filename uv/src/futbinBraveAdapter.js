@@ -143,13 +143,23 @@ async function resolvePlayerUrl(session, card, cfg) {
 function resultFromParsed(card, parsed, url, platform) {
   const price = choosePrice(parsed, platform);
   const urlId = String(url || "").match(/\/27\/player\/(\d+)/)?.[1] || null;
+  const priceConsole = Number(parsed?.pricePlayStation) > 0 ? Number(parsed.pricePlayStation) : null;
+  const pricePc = Number(parsed?.pricePc ?? parsed?.pricePC) > 0 ? Number(parsed.pricePc ?? parsed.pricePC) : null;
+  const observedAtConsole = parsed?.priceUpdatedAtConsole ?? null;
+  const observedAtPc = parsed?.priceUpdatedAtPc ?? null;
   return {
     ok: Boolean(price),
     price,
+    priceConsole,
+    pricePc,
+    rating: Number(parsed?.rating) > 0 ? Number(parsed.rating) : (Number(card?.overall || card?.rating) || null),
+    popularRank: Number.isFinite(Number(parsed?.popularityRank)) ? Number(parsed.popularityRank) : null,
     id: parsed?.futbinId ?? card?.futbinId ?? (urlId ? Number(urlId) : null),
     name: parsed?.name ?? card?.name ?? null,
     source: SOURCE,
-    checked: parsed?.priceUpdatedAtConsole ?? parsed?.priceUpdatedAtPc ?? null,
+    observedAtConsole,
+    observedAtPc,
+    checked: platform === "pc" ? observedAtPc : observedAtConsole,
     retrievedAt: new Date().toISOString(),
     url,
     reason: price ? null : "NO_VISIBLE_PRICE"

@@ -39,7 +39,8 @@ function nullablePositiveInt(value) {
 }
 
 function cleanObservedAt(value, nowMs) {
-  const raw = value || new Date(nowMs).toISOString();
+  if (!value) return null;
+  const raw = value;
   const ms = Date.parse(raw);
   if (!Number.isFinite(ms)) return null;
   if (ms > nowMs + MAX_FUTURE_MS || ms < nowMs - MAX_AGE_MS) return null;

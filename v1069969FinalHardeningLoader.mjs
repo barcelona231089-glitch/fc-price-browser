@@ -833,6 +833,7 @@ app.get("/api/trades/closed", async (req, res) => {
   if (out.includes(secondaryRouteAnchor) && !out.includes('/api/futbin/authorized-import')) {
     out = out.replace(secondaryRouteAnchor, `app.post("/api/futbin/authorized-import", async (req,res) => {
   try {
+    if (!validIngestToken(req)) return res.status(401).json({ok:false,reason:"UNAUTHORIZED"});
     if (Number(req.body?.gameYear || 27) !== 27) return res.status(400).json({ok:false,reason:"FC27_ONLY"});
     const result = await ingestAuthorizedFutbinImport(dbEnabled ? pool : null, req.body?.data ?? req.body, {gameYear:27});
     res.status(result.ok ? 200 : 400).json(result);

@@ -9,6 +9,7 @@ test('snapshot ingest normalization rejects invalid ids and timestamps and nulls
     { futbinId: 0, observedAt: '2026-09-20T23:59:00Z' },
     { futbinId: 779, observedAt: 'not-a-date' },
     { futbinId: 780, observedAt: '2026-09-21T01:00:00Z' },
+    { futbinId: 781, priceConsole: 5000 },
   ], now);
   assert.equal(rows.length, 1);
   assert.equal(rows[0].futbinId, 778);

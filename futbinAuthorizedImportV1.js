@@ -1,7 +1,7 @@
 const state = { imports: 0, accepted: 0, rejected: 0, lastImportAt: null, lastError: null };
 
 function positive(v) { const n = Number(v); return Number.isFinite(n) && n > 0 ? n : null; }
-function iso(v) { const d = v ? new Date(v) : new Date(); return Number.isFinite(d.getTime()) ? d.toISOString() : null; }
+function iso(v) { if (!v) return null; const d = new Date(v); return Number.isFinite(d.getTime()) ? d.toISOString() : null; }
 function normalizeRow(row, gameYear = 27) {
   if (Number(gameYear) !== 27) return null;
   const futbinId = positive(row.futbinId ?? row.futbin_id ?? row.ID ?? row.id);
