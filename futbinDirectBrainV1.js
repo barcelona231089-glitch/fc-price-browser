@@ -1,5 +1,6 @@
 import https from "node:https";
 import { FUTBIN_FC27_EA_TO_ID } from "./futbinIdMapFc27.js";
+import { getFutbinEndpointCandidates, getFutbinEndpointPolicy } from "./futbinEndpointRegistryV1.js";
 
 const DEFAULT_BASE = "https://www.futbin.org/futbin/api";
 const BATCH_SIZE = 11;
@@ -32,7 +33,7 @@ function enabled() {
   return truthy(raw) && truthy(process.env.FUTBIN_DIRECT_ACTIVATION_CONFIRMED);
 }
 function baseUrl() {
-  return String(process.env.FUTBIN_DIRECT_API_BASE || process.env.FUTBIN_DIRECT_BRAIN_BASE || DEFAULT_BASE).replace(/\/$/, "");
+  return getFutbinEndpointCandidates()[0] || DEFAULT_BASE;
 }
 function positive(value) {
   const n = Number(value);
@@ -344,6 +345,8 @@ export function getDirectFutbinBrainStatus() {
     staticMapCount: Object.keys(FUTBIN_FC27_EA_TO_ID).length,
     idCacheMs: ID_TTL_MS,
     priceCacheMs: PRICE_TTL_MS,
+    endpointPolicy: getFutbinEndpointPolicy(),
+    activeBaseUrl: baseUrl(),
     ...state
   };
 }
