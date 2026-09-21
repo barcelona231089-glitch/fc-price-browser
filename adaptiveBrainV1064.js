@@ -920,6 +920,52 @@ function momentumScore(row) {
   return clamp(raw * 1.6, -16, 16);
 }
 
+export function earlyEntrySignalV1(row = {}) {
+  const c5 = numberOr(row?.change5m, 0);
+  const c15 = numberOr(row?.change15m, 0);
+  const c1h = numberOr(row?.change1h, 0);
+  const rising = numberOr(row?.ratingMarketRisingPct, 0);
+  const falling = numberOr(row?.ratingMarketFallingPct, 0);
+  const price = Number(row?.price);
+  const high24h = Number(row?.high24h);
+  const nearHigh = Number.isFinite(price) && price > 0 && Number.isFinite(high24h) && high24h > 0
+    ? price >= high24h * 0.97
+    : false;
+  const positiveHorizons = [c5 >= 0.35, c15 >= 0.75, c1h >= 0.5].filter(Boolean).length;
+  const conflict = (c5 <= -1 && c15 >= 1) || (c5 >= 1 && c15 <= -1) || (c15 >= 2 && c1h <= -4);
+  const overheated = c15 >= 9 || c1h >= 16 || (nearHigh && c15 >= 5);
+  const breadthOk = rising >= 58 && falling <= 35;
+  const allowed = Boolean(
+    breadthOk &&
+    positiveHorizons >= 2 &&
+    c5 >= 0.35 && c5 <= 4 &&
+    c15 >= 0.75 && c15 <= 8 &&
+    !conflict &&
+    !overheated
+  );
+  const strong = allowed && rising >= 65 && positiveHorizons >= 3 && c15 >= 1.2;
+  const scoreBoost = !allowed ? (overheated ? -10 : 0) : clamp(
+    11 + Math.max(0, rising - 58) * 0.18 + Math.max(0, c15 - 0.75) * 0.7 + (strong ? 3 : 0),
+    10,
+    18
+  );
+  return {
+    allowed,
+    strong,
+    overheated,
+    conflict,
+    breadthOk,
+    positiveHorizons,
+    scoreBoost: Number(scoreBoost.toFixed(2)),
+    risingPct: rising,
+    fallingPct: falling,
+    change5m: c5,
+    change15m: c15,
+    change1h: c1h,
+    near24hHigh: nearHigh
+  };
+}
+
 function regimeBuyAdjustment(regime, row, relevance) {
   if (regime === 'CRASH') return -18;
   if (regime === 'RECOVERY') return 10;
@@ -947,7 +993,7 @@ function historyAdjustment(profile, maxAbs = 12) {
 }
 
 export function adaptiveEvidenceGate(x = {}) {
-  const primary = Number(x.momentum || 0) >= 2 || String(x.regime || '') === 'RECOVERY';
+  const primary = Number(x.momentum || 0) >= 2 || String(x.regime || '') === 'RECOVERY' || x.earlyEntry === true;
   const families = [];
   if (primary) families.push('FUTGG_MARKET');
   if (Number(x.demand || 0) >= 2) families.push('FUTGG_DEMAND');
@@ -1064,6 +1110,8 @@ function enrichReason(row, decision) {
       ? `FC26 Saisonphase ${decision.scoreAdjustments.seasonPhaseKey}: Ø Markt ${row.fc26GlobalMemory.phasePatterns[decision.scoreAdjustments.seasonPhaseKey].avgMarketChangePct ?? 'n/a'}%.`
       : null,
     row?.demandEvidenceScore != null ? `FUT.GG Demand ${Math.round(numberOr(row.demandEvidenceScore, 50))}/100.` : null,
+    decision.earlyEntry?.allowed ? `Early-Entry aktiv: Marktbreite ${Number(decision.earlyEntry.risingPct || 0).toFixed(0)}%, 5m ${Number(decision.earlyEntry.change5m || 0).toFixed(2)}%, 15m ${Number(decision.earlyEntry.change15m || 0).toFixed(2)}%; noch nicht ueberhitzt.` : null,
+    decision.earlyEntry?.overheated ? 'No-Chase-Guard: Bewegung bereits zu weit gelaufen.' : null,
     decision.contradictions.count ? `Widerspruch: ${decision.contradictions.reasons.join('; ')}.` : null,
     decision.hardBlock ? `Block: ${decision.hardBlock}.` : null,
     decision.legacyBuyGuardBlock ? 'Vorheriger Strict-Buy-Guard blockiert einen öffentlichen Kauf-Call.' : null,
@@ -1116,11 +1164,14 @@ function applyDecision(row, work, context) {
   const phaseBuyAdj = seasonPhaseAdjustment(row, context.gameYear, 'BUY');
   const phaseSellAdj = seasonPhaseAdjustment(row, context.gameYear, 'SELL');
   const seasonPhaseKey = currentSeasonPhaseKey(context.gameYear);
+  const earlyEntry = earlyEntrySignalV1(row);
+  const momentum = momentumScore(row);
 
   const existingAction = String(row?.aiAction || '');
   let buyScore = 50;
   buyScore += existingAction === 'JETZT KAUFEN' ? 14 : existingAction === 'NOCH WARTEN' ? 2 : existingAction === 'NICHT KAUFEN' ? -10 : existingAction.includes('VERKAUF') ? -16 : 0;
-  buyScore += momentumScore(row);
+  buyScore += momentum;
+  buyScore += earlyEntry.scoreBoost;
   buyScore += demandScore(row);
   buyScore += regimeBuyAdjustment(regime, row, relevance);
   buyScore += clamp(source.netDirection * 10, -10, 10);
@@ -1170,7 +1221,8 @@ function applyDecision(row, work, context) {
   const sellConf = evidenceConfidence(sellScore, [patternSell, cardSell], source, contradictions);
   const dataNeeds = chooseDataNeeds(row, regime, catalyst);
   const buyEvidence = adaptiveEvidenceGate({
-    momentum: momentumScore(row),
+    momentum,
+    earlyEntry: earlyEntry.allowed,
     regime,
     demand: demandScore(row),
     secondary: futbinScore(row) + futbinPublicMarketScore(row, 'BUY') + futbinWindowBuy + marketOverviewBuyAdj,
@@ -1180,16 +1232,18 @@ function applyDecision(row, work, context) {
   });
   const fc27ConservativeBuyGuardBlock = Boolean(
     FC27_CONSERVATIVE_BUY_GUARD && String(context.gameYear) === '27' && (
-      regime !== 'RECOVERY' ||
+      (regime !== 'RECOVERY' && !earlyEntry.allowed) ||
       buyConf.confidence < FC27_CONSERVATIVE_BUY_MIN_CONFIDENCE ||
-      Number(row?.rating || 0) > FC27_CONSERVATIVE_BUY_MAX_RATING
+      (Number(row?.rating || row?.overall || 0) > FC27_CONSERVATIVE_BUY_MAX_RATING && !earlyEntry.strong)
     )
   );
 
   let publicCall = null;
   let finalConfidence = Math.max(buyConf.confidence, sellConf.confidence);
+  const requiredBuyScore = earlyEntry.strong ? Math.max(66, BUY_SCORE_THRESHOLD - 4) : BUY_SCORE_THRESHOLD;
+  const requiredBuyConfidence = earlyEntry.strong ? Math.max(72, MIN_PUBLIC_BUY_CONFIDENCE - 3) : MIN_PUBLIC_BUY_CONFIDENCE;
 
-  if (buyEvidence.allowed && !hardBlock && !legacyBuyGuardBlock && !legacySanityBlock && !fc27ConservativeBuyGuardBlock && buyScore >= BUY_SCORE_THRESHOLD && buyConf.confidence >= MIN_PUBLIC_BUY_CONFIDENCE && !contradictions.severe) {
+  if (buyEvidence.allowed && !earlyEntry.overheated && !hardBlock && !legacyBuyGuardBlock && !legacySanityBlock && !fc27ConservativeBuyGuardBlock && buyScore >= requiredBuyScore && buyConf.confidence >= requiredBuyConfidence && !contradictions.severe) {
     publicCall = 'BUY';
     finalConfidence = buyConf.confidence;
     row.aiAction = 'JETZT KAUFEN';
@@ -1228,6 +1282,9 @@ function applyDecision(row, work, context) {
     publicCall,
     publicCallAllowed: Boolean(publicCall),
     buyEvidence,
+    earlyEntry,
+    requiredBuyScore,
+    requiredBuyConfidence,
     confidence: finalConfidence,
     source,
     pattern: selectedPattern,
@@ -1290,6 +1347,7 @@ function applyDecision(row, work, context) {
       buyScore: decision.buyScore,
       sellScore: decision.sellScore,
       publicCall,
+      earlyEntry: decision.earlyEntry,
       sourceReliability: source.sources,
       patternAccuracy: selectedPattern?.accuracy ?? null,
       patternSamples: selectedPattern?.effectiveSamples ?? 0,

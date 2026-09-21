@@ -5384,7 +5384,9 @@ function alertSanitySnapshot(row) {
   const saysSelloff = /abverkauf|abwÃƒÂ¤rtsdruck|crash|falling knife/.test(reasonText);
   const saysPump = /pump|fomo|stark steig/.test(reasonText);
   const pumpVsCrash = Boolean(
-    (derivedRegime === 'PUMP' && (row?.aiAction === 'NOCH WARTEN' || saysSelloff)) ||
+    // Waiting during an early pump is not a contradiction by itself. Only block
+    // when the explanatory thesis actually says sell-off/crash while price action pumps.
+    (derivedRegime === 'PUMP' && saysSelloff) ||
     (derivedRegime === 'CRASH' && ['JETZT KAUFEN', 'JETZT VERKAUFEN'].includes(String(row?.aiAction || '')) && saysPump)
   );
 
@@ -8055,6 +8057,31 @@ function buildRatingStats(rows) {
       reason =
         `${nearHighPct.toFixed(0)}% der ${rating}er liegen nahe ihrem 24h-Hoch; ` +
         `${coolingPct.toFixed(0)}% zeigen abkÃƒÂ¼hlendes Momentum. 15m-Median ${w15m.medianMove >= 0 ? "+" : ""}${w15m.medianMove.toFixed(2)}%. Gewinnmitnahme im Rating-Segment sinnvoll.`;
+    } else if (
+      // v10.70 early-entry: catch broad rating demand before the segment is already
+      // stretched at the 24h high. Require two independent positive horizons so a
+      // duplicated 1m/5m print cannot create a BUY on its own.
+      w5m.risingPct >= 58 &&
+      w5m.fallingPct <= 35 &&
+      w5m.medianMove >= 0.4 &&
+      w5m.medianMove <= 3.5 &&
+      w15m.medianMove >= 0.8 &&
+      w15m.medianMove <= 7 &&
+      nearHighPct < 35 &&
+      coolingPct < 40 &&
+      !horizonEvidence.directionConflict &&
+      horizonEvidence.positiveConfirmations >= 2 &&
+      horizonEvidence.directionalIndependentConfirmations >= 2
+    ) {
+      marketSignal = "KAUFZONE";
+      marketAdvice = "JETZT KAUFEN";
+      confidence = Math.min(
+        91,
+        Math.round(76 + Math.min(8, (w5m.risingPct - 55) / 4) + Math.min(6, w15m.medianMove / 1.5))
+      );
+      reason =
+        `${w5m.risingPct.toFixed(0)}% der ${rating}er steigen bereits breit; ` +
+        `5m +${w5m.medianMove.toFixed(2)}%, 15m +${w15m.medianMove.toFixed(2)}%, aber erst ${nearHighPct.toFixed(0)}% liegen nahe dem 24h-Hoch. Fruehe Nachfragephase statt spaetem Hinterherkaufen.`;
     } else if (
       nearLowPct >= 50 &&
       recoveryPct >= 45 &&
