@@ -14404,12 +14404,12 @@ async function initializeRuntime() {
   }
 
   try {
-    const uvStatus = await initUvBrain({
+    const uvStatus = await Promise.race([initUvBrain({
       sharedPool: pool,
       marketProvider: getSharedMarketForUv,
       runtimeProvider: () => ({ monitoringBusy }),
       active: !HA_ENABLED
-    });
+    }), new Promise((_, reject) => setTimeout(() => reject(new Error("UV_INIT_TIMEOUT_20S")), 20_000))]);
     console.log(`[ÃƒÅ“V] FC ÃƒÅ“V Brain v${uvStatus.version} integriert. Shared console snapshot: ${uvStatus.sharedConsoleMarket ? "ja" : "nein"}. Mode: ${uvStatus.runtimeMode}.`);
   } catch (error) {
     console.error("ÃƒÅ“V Brain init error:", error);
