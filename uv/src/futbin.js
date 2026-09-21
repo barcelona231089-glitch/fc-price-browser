@@ -2,6 +2,7 @@ import { FUTBIN_PARSE_API_BASE, FUTBIN_CROSSCHECK_LIMIT, FUTBIN_SEARCH_ENDPOINT,
 import { clamp, fetchJson, mapLimit, normalizeName } from './utils.js';
 import { extractFutbinStructuredEvidence } from './futbinEvidence.js';
 import { getDirectFutbinCards, getFutbinDirectStatus, isDirectFutbinEnabled } from './futbinDirect.js';
+import { getPublicFutbinCards } from './futbinPublicFallback.js';
 
 const cache = new Map();
 const CACHE_MS = 30 * 60_000;
@@ -357,6 +358,19 @@ export async function crosscheckFutbin(cards, platform = 'console') {
       }
     } catch {
       // Direct FUTBIN is optional. Parse remains the fail-closed fallback.
+    }
+  }
+
+  const publicCards = ranked.filter(card => !(Number(byId.get(String(card.eaId))?.price) > 0));
+  if (publicCards.length) {
+    try {
+      const publicFallback = await getPublicFutbinCards(publicCards, platform, { gameYear: Number(GAME_YEAR) });
+      for (const card of publicCards) {
+        const result = publicFallback?.results?.get?.(String(card.eaId));
+        if (Number(result?.price) > 0) byId.set(String(card.eaId), result);
+      }
+    } catch {
+      // Public HTML is optional and fail-closed. Parse remains the final fallback.
     }
   }
 
