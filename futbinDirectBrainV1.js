@@ -32,6 +32,10 @@ function enabled() {
   const raw = process.env.FUTBIN_DIRECT_ENABLED ?? process.env.FUTBIN_DIRECT_BRAIN_ENABLED ?? "false";
   return truthy(raw) && truthy(process.env.FUTBIN_DIRECT_ACTIVATION_CONFIRMED);
 }
+function serverCollectorEnabled() {
+  return truthy(process.env.FUTBIN_SERVER_COLLECTOR_ENABLED)
+    && truthy(process.env.FUTBIN_SERVER_COLLECTOR_ACTIVATION_CONFIRMED);
+}
 function baseUrl() {
   return getFutbinEndpointCandidates()[0] || DEFAULT_BASE;
 }
@@ -271,7 +275,8 @@ export async function enrichRowsWithDirectFutbinBrain(rows = [], options = {}) {
   const started = Date.now();
   state.lastRunAt = new Date(started).toISOString();
 
-  if (!enabled() || year !== 27) {
+  const active = enabled() || serverCollectorEnabled();
+  if (!active || year !== 27) {
     state.lastRun = { ok: false, reason: "DISABLED_OR_NON_FC27", year, selected: 0, enriched: 0 };
     return state.lastRun;
   }
@@ -337,7 +342,9 @@ export async function enrichRowsWithDirectFutbinBrain(rows = [], options = {}) {
 
 export function getDirectFutbinBrainStatus() {
   return {
-    enabled: enabled(),
+    enabled: enabled() || serverCollectorEnabled(),
+    directEnabled: enabled(),
+    serverCollectorEnabled: serverCollectorEnabled(),
     confirmedGameYear: 27,
     batchSize: BATCH_SIZE,
     maxPerRating: MAX_PER_RATING,
