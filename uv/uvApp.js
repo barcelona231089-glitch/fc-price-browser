@@ -17,7 +17,7 @@ import { buildReportedOutcomeScore } from './src/outcomeLearning.js';
 import { attachLocalFutbinFc27 } from './src/futbinLocalFc27.js';
 
 export const uvRouter = express.Router();
-const UV_VERSION = '2.12.0';
+const UV_VERSION = '2.13.0';
 
 async function getUvMarketContext(platform, liveCards = []) {
   const realRows = await loadRealMarketRegimeRows(platform).catch(() => []);

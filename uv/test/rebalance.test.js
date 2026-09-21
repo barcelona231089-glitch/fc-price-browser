@@ -100,3 +100,27 @@ test('v1.6 rebalance seed keeps at most two copies of the same exact card', () =
   assert.equal(result.dropped.length, 1);
   assert.match(result.dropped[0].reason, /Maximal 2 Exemplare/);
 });
+
+
+test('v2.13 owned bought/listed inventory is retained even when live recheck says DROP', () => {
+  const stored = [{ slot: 1, eaId: 1, buyPrice: 5000, payload: { name: 'Owned Card', overall: 85, cardType: 'Base Rare' }, journal: { event: 'listed', price: 6500 } }];
+  const rows = [{ slot: 1, eaId: 1, status: 'DROP', reasons: ['price fell'] }];
+  const current = new Map([['1', { ...card(1, 4800, 'Owned Card', 20), overall: 85 }]]);
+  const out = buildRebalanceSeed(stored, rows, current, { minRating: 82 });
+  assert.equal(out.retained.length, 1);
+  assert.equal(out.retained[0]._inventoryLocked, true);
+  assert.equal(out.retained[0]._journalState, 'listed');
+  assert.equal(out.dropped.length, 0);
+});
+
+test('v2.13 feasibility fallback never releases owned inventory', () => {
+  const retained = [
+    { ...card(1, 7000, 'Owned', 20), _recheck: { status: 'DROP' }, _inventoryLocked: true },
+    { ...card(2, 4000, 'Unowned', 10), _recheck: { status: 'REPRICE' } }
+  ];
+  const candidates = Array.from({ length: 20 }, (_, i) => card(100 + i, 1000, `Replacement ${i}`, 80));
+  const out = rebalancePortfolio({ retained, candidates, budget: 16_000, count: 10 });
+  assert.ok(out.selected.some(c => c.eaId === 1));
+  assert.ok(out.released.some(x => x.eaId === 2));
+  assert.ok(!out.released.some(x => x.eaId === 1));
+});

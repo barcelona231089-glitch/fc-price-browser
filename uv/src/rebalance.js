@@ -51,6 +51,31 @@ export function buildRebalanceSeed(storedItems = [], recheckRows = [], currentBy
     const status = String(row?.status || 'MISSING').toUpperCase();
     const id = String(item.eaId);
     const current = currentById.get(id);
+    const journalState = String(item?.journal?.event || '').toLowerCase();
+    const feedbackState = String(item?.feedback?.outcome || '').toLowerCase();
+    const inventoryLocked = ['bought','listed','relisted'].includes(journalState) || feedbackState === 'bought';
+    const ownedCard = current || (inventoryLocked ? {
+      ...(item?.payload || {}),
+      eaId: Number(item.eaId),
+      buyPrice: Number(item?.feedback?.actualBuyPrice || item?.journal?.price || item?.buyPrice),
+      recommendedBuyPrice: Number(item?.feedback?.actualBuyPrice || item?.journal?.price || item?.buyPrice),
+      price: Number(item?.payload?.price || item?.buyPrice)
+    } : null);
+
+    if (inventoryLocked && ownedCard && Number.isFinite(cost(ownedCard))) {
+      retained.push({
+        ...ownedCard,
+        _rebalanceOrigin: 'retained',
+        _rebalanceFromSlot: Number(item.slot),
+        _inventoryLocked: true,
+        _journalState: journalState || feedbackState || 'bought',
+        _recheck: row || null
+      });
+      retainedExactCounts.set(id, (retainedExactCounts.get(id) || 0) + 1);
+      if (isNormalLow(ownedCard, 82)) retained82 += 1;
+      if (isNormalLow(ownedCard, 83)) retained83OrLess += 1;
+      continue;
+    }
 
     const overall = Number(current?.overall ?? item?.payload?.overall);
     const ratingEligibility = ratingOptions
@@ -132,10 +157,12 @@ export function rebalancePortfolio({ retained = [], candidates = [], blockedIds 
       };
     } catch (error) {
       if (!seed.length) throw error;
-      // Release the weakest retained card first. REPRICE cards are less sticky
-      // than KEEP cards. This is only a feasibility fallback when the current
-      // repriced seed would otherwise make a full 100-card list impossible.
-      const releaseOrder = [...seed].sort((a, b) => {
+      // Already-bought/listed inventory is real capital and must never vanish from
+      // a rebalance just to make the optimizer feasible. Only unowned retained
+      // recommendations may be released by this fallback.
+      const releasable = seed.filter(card => card?._inventoryLocked !== true);
+      if (!releasable.length) throw error;
+      const releaseOrder = [...releasable].sort((a, b) => {
         const sa = String(a?._recheck?.status || 'KEEP') === 'REPRICE' ? 0 : 1;
         const sb = String(b?._recheck?.status || 'KEEP') === 'REPRICE' ? 0 : 1;
         if (sa !== sb) return sa - sb;
@@ -143,7 +170,7 @@ export function rebalancePortfolio({ retained = [], candidates = [], blockedIds 
         return cost(b) - cost(a);
       });
       const victim = releaseOrder[0];
-      seed = seed.filter(card => String(card.eaId) !== String(victim.eaId));
+      seed = seed.filter(card => card !== victim);
       dynamicallyBlocked.add(String(victim.eaId));
       released.push({
         eaId: Number(victim.eaId),
