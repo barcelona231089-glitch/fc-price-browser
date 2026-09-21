@@ -108,6 +108,7 @@ async function requestJson(url, fetcher = fetch) {
       json = typeof response?.json === "function" ? await response.json() : response;
     } catch (primaryError) {
       if (fetcher !== fetch) throw primaryError;
+      if (/HTTP\s*(?:401|403|429)/i.test(String(primaryError?.message || primaryError))) throw primaryError;
       json = await requestJsonIpv4(url);
     }
     state.successes += 1;
