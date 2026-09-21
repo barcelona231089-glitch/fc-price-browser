@@ -24,12 +24,15 @@ const state = {
   lastError: null, lastRunAt: null, lastRun: null, disabledUntil: null, circuitReason: null
 };
 
+function truthy(value) {
+  return ["1", "true", "yes", "on"].includes(String(value || "").trim().toLowerCase());
+}
 function enabled() {
-  const raw = String(process.env.FUTBIN_DIRECT_BRAIN_ENABLED ?? "true").trim().toLowerCase();
-  return !["0", "false", "off", "no"].includes(raw);
+  const raw = process.env.FUTBIN_DIRECT_ENABLED ?? process.env.FUTBIN_DIRECT_BRAIN_ENABLED ?? "false";
+  return truthy(raw) && truthy(process.env.FUTBIN_DIRECT_ACTIVATION_CONFIRMED);
 }
 function baseUrl() {
-  return String(process.env.FUTBIN_DIRECT_BRAIN_BASE || DEFAULT_BASE).replace(/\/$/, "");
+  return String(process.env.FUTBIN_DIRECT_API_BASE || process.env.FUTBIN_DIRECT_BRAIN_BASE || DEFAULT_BASE).replace(/\/$/, "");
 }
 function positive(value) {
   const n = Number(value);
