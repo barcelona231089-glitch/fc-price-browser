@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { earlyEntrySignalV1, adaptiveEvidenceGate, liveConfluenceSignalV1 } from '../adaptiveBrainV1064.js';
+import { earlyEntrySignalV1, adaptiveEvidenceGate, liveConfluenceSignalV1, leakWeightV1 } from '../adaptiveBrainV1064.js';
 
 test('early entry opens on broad, confirmed, not-yet-overheated demand', () => {
   const signal = earlyEntrySignalV1({
@@ -65,4 +65,21 @@ test('live confluence fails closed on FUTBIN divergence or overheated move', () 
   const evidence = adaptiveEvidenceGate({ momentum: 5, demand: 5, history: 3 });
   assert.equal(liveConfluenceSignalV1({ momentum: 5, demand: 5, history: 3, evidence, futbinStatus: 'DIVERGENCE' }).allowed, false);
   assert.equal(liveConfluenceSignalV1({ momentum: 5, demand: 5, history: 3, evidence, overheated: true }).allowed, false);
+});
+
+
+test('confirmed relevant leak gets materially more weight but can never trigger BUY alone', () => {
+  const weak = leakWeightV1({ active: true, marketReaction: false, relevance: 0.8, sourceCount: 2, reliableCount: 1 });
+  const strong = leakWeightV1({ active: true, marketReaction: true, relevance: 0.8, sourceCount: 2, reliableCount: 1 });
+  assert.ok(strong.score > weak.score);
+  assert.ok(strong.external > weak.external);
+  assert.equal(strong.canTriggerBuyAlone, false);
+  assert.ok(strong.score <= 16);
+  assert.ok(strong.external <= 11);
+});
+
+test('inactive leak has zero influence', () => {
+  assert.deepEqual(leakWeightV1({ active: false, marketReaction: true, relevance: 1, sourceCount: 3, reliableCount: 3 }), {
+    score: 0, external: 0, confirmed: false, canTriggerBuyAlone: false
+  });
 });

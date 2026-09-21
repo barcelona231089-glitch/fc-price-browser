@@ -1004,6 +1004,29 @@ export function adaptiveEvidenceGate(x = {}) {
   return { allowed: primary && families.length >= 2, primary, families, count: families.length };
 }
 
+export function leakWeightV1({ active = false, marketReaction = false, relevance = 0, sourceCount = 0, reliableCount = 0 } = {}) {
+  if (!active) return { score: 0, external: 0, confirmed: false, canTriggerBuyAlone: false };
+  const rel = clamp(Number(relevance || 0), 0, 1);
+  const breadth = Math.min(3, Math.max(0, Number(sourceCount || 0))) * 0.75;
+  const reliability = Math.min(3, Math.max(0, Number(reliableCount || 0))) * 0.9;
+  const confirmed = marketReaction === true;
+  const score = confirmed
+    ? clamp(4 + rel * 8 + breadth + reliability, 4, 16)
+    : clamp(1 + rel * 2 + breadth * 0.4 + reliability * 0.3, 1, 5);
+  const external = confirmed
+    ? clamp(3 + rel * 6 + reliability, 3, 11)
+    : clamp(rel * 1.5, 0, 1.5);
+  return {
+    score: Number(score.toFixed(2)),
+    external: Number(external.toFixed(2)),
+    confirmed,
+    relevance: rel,
+    sourceCount: Number(sourceCount || 0),
+    reliableCount: Number(reliableCount || 0),
+    canTriggerBuyAlone: false
+  };
+}
+
 export function liveConfluenceSignalV1({ momentum = 0, demand = 0, history = 0, evidence = null, futbinStatus = '', overheated = false } = {}) {
   const families = Array.isArray(evidence?.families) ? evidence.families : [];
   const badSecondary = ['DIVERGENCE','OUTLIER'].includes(String(futbinStatus || '').toUpperCase());
@@ -1164,6 +1187,13 @@ function applyDecision(row, work, context) {
   const relevance = eventRelevance(row, signals, catalyst);
   const source = sourceEvidence(signals, context.gameYear);
   const upgradeWatch = buildUpgradeWatchV1(row, signals, catalyst, relevance);
+  const leakWeight = leakWeightV1({
+    active: row?.aiLeakIntel?.active === true,
+    marketReaction: row?.aiLeakIntel?.marketReaction === true,
+    relevance,
+    sourceCount: source?.sourceCount || 0,
+    reliableCount: source?.reliableCount || 0
+  });
   row.aiUpgradeWatch = upgradeWatch;
   if (work?.input && typeof work.input === 'object') work.input.upgradeWatch = upgradeWatch;
   const contradictions = contradictionSnapshot(row, regime);
@@ -1206,7 +1236,7 @@ function applyDecision(row, work, context) {
   buyScore += phaseBuyAdj;
   buyScore += historyAdjustment(patternBuy, 12);
   buyScore += historyAdjustment(cardBuy, 8);
-  if (row?.aiLeakIntel?.active) buyScore += row.aiLeakIntel.marketReaction ? 5 * relevance : 1.5 * relevance;
+  if (row?.aiLeakIntel?.active) buyScore += leakWeight.score;
   buyScore -= contradictions.count * 6;
   if (hardBlock) buyScore -= 40;
   if (legacyBuyGuardBlock) buyScore -= 24;
@@ -1250,7 +1280,7 @@ function applyDecision(row, work, context) {
     demand,
     secondary: futbinScore(row) + futbinPublicMarketScore(row, 'BUY') + futbinWindowBuy + marketOverviewBuyAdj,
     history,
-    external: Math.max(0, source.netDirection * 10) + (row?.aiLeakIntel?.active && row.aiLeakIntel.marketReaction ? relevance * 3 : 0),
+    external: Math.max(0, source.netDirection * 10) + leakWeight.external,
     season: seasonMemoryAdjustment(row, 'BUY', context.gameYear) + catalystBuyAdj + phaseBuyAdj
   });
   const liveConfluence = liveConfluenceSignalV1({
@@ -1316,6 +1346,7 @@ function applyDecision(row, work, context) {
     catalyst,
     eventRelevance: Number(relevance.toFixed(2)),
     upgradeWatch,
+    leakWeight,
     buyScore: Math.round(buyScore),
     sellScore: Math.round(sellScore),
     publicCall,
@@ -1387,6 +1418,7 @@ function applyDecision(row, work, context) {
       buyScore: decision.buyScore,
       sellScore: decision.sellScore,
       publicCall,
+      leakWeight: decision.leakWeight,
       earlyEntry: decision.earlyEntry,
       liveConfluence: decision.liveConfluence,
       sourceReliability: source.sources,
