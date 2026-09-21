@@ -41,7 +41,7 @@ test('real regime excludes specials and applies the season-aware rating floor', 
   const data = rows(30, -3);
   const cards = live(30).map((c, i) => i < 10 ? { ...c, cardType: 'Special' } : i < 20 ? { ...c, overall: 81 } : c);
   const r = buildRealMarketRegime(data, cards);
-  assert.equal(r.measuredCards, 20);
+  assert.equal(r.measuredCards, 10);
   assert.equal(r.ok, false);
   assert.equal(r.mood, 'insufficient_data');
 });

@@ -303,12 +303,26 @@ export async function saveGeneratedList(result) {
       VALUES ($1,$2,$3,$4,$5,$6,$7,$8::jsonb) RETURNING id
     `, [result.budget, result.platform, GAME_YEAR, result.cards.length, result.totalBuy, result.totalExpectedProfit, result.avgUvScore, JSON.stringify(summaryPayload)]);
     const listId = head.rows[0].id;
-    for (let slot = 0; slot < result.cards.length; slot++) {
-      const c = result.cards[slot];
+    const itemRows = result.cards.map((c, slot) => ({
+      slot: slot + 1,
+      ea_id: Number(c.eaId),
+      buy_price: Number(c.buyPrice),
+      start_price: Number(c.startPrice),
+      sell_price: Number(c.sellPrice),
+      ea_tax: Number(c.eaTax),
+      net_profit: Number(c.netProfit),
+      uv_score: Number(c.uvScore || 0),
+      payload: c
+    }));
+    if (itemRows.length) {
       await client.query(`
         INSERT INTO uv_list_items (list_id, slot, ea_id, buy_price, start_price, sell_price, ea_tax, net_profit, uv_score, payload)
-        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::jsonb)
-      `, [listId, slot + 1, c.eaId, c.buyPrice, c.startPrice, c.sellPrice, c.eaTax, c.netProfit, c.uvScore, JSON.stringify(c)]);
+        SELECT $1, x.slot, x.ea_id, x.buy_price, x.start_price, x.sell_price, x.ea_tax, x.net_profit, x.uv_score, x.payload
+        FROM jsonb_to_recordset($2::jsonb) AS x(
+          slot smallint, ea_id bigint, buy_price integer, start_price integer, sell_price integer,
+          ea_tax integer, net_profit integer, uv_score numeric, payload jsonb
+        )
+      `, [listId, JSON.stringify(itemRows)]);
     }
     await client.query('COMMIT');
     return listId;
@@ -816,6 +830,10 @@ export async function recordTradeFeedback({ listId, slot, outcome, soldPrice = n
       market_price_at_sale=COALESCE(EXCLUDED.market_price_at_sale, uv_trade_feedback.market_price_at_sale),
       listed_at=COALESCE(EXCLUDED.listed_at, uv_trade_feedback.listed_at), resolved_at=NOW()
   `, [id, s, normalized, safeSoldPrice, safeRelists, safeNote, safeActualBuyPrice, safeListedPrice, safeMarketPriceAtBuy, safeMarketPriceAtSale, safeListedAt]);
+  await pool.query(`
+    INSERT INTO uv_trade_journal (list_id, slot, event, price, relists, note)
+    VALUES ($1,$2,$3,$4,$5,$6)
+  `, [id, s, normalized, safeSoldPrice || safeActualBuyPrice || safeListedPrice, safeRelists, safeNote]);
   return { ok: true, listId: id, slot: s, outcome: normalized, soldPrice: safeSoldPrice, relists: safeRelists, actualBuyPrice: safeActualBuyPrice, listedPrice: safeListedPrice, marketPriceAtBuy: safeMarketPriceAtBuy, marketPriceAtSale: safeMarketPriceAtSale, listedAt: safeListedAt };
 }
 

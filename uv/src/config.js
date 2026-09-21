@@ -1,4 +1,4 @@
-export const GAME_YEAR = Math.max(26, Number(process.env.GAME_YEAR || 26));
+export const GAME_YEAR = Math.max(27, Number(process.env.GAME_YEAR || 27));
 export const PRICE_REFRESH_MS = Math.max(15, Number(process.env.PRICE_REFRESH_SECONDS || 60)) * 1000;
 export const META_REFRESH_MS = Math.max(5, Number(process.env.META_REFRESH_MINUTES || 30)) * 60_000;
 export const FETCH_TIMEOUT_MS = 20_000;

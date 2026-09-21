@@ -123,6 +123,28 @@ export function buildPricing(buyPrice, uvScore = 70, longTermScore = 65, options
 }
 
 
+export function assertUvPortfolioIntegrity(cards = [], { budget, count = 100, gameYear = 27 } = {}) {
+  if (Number(gameYear) !== 27) throw new Error(`UV season guard: FC${gameYear} ist nicht FC27.`);
+  if (!Array.isArray(cards) || cards.length !== Number(count)) throw new Error(`UV slot guard: ${cards?.length || 0}/${count} Karten.`);
+  let totalBuy = 0;
+  for (const card of cards) {
+    const buy = Number(card?.buyPrice);
+    const sell = Number(card?.sellPrice);
+    const tax = Number(card?.eaTax);
+    const profit = Number(card?.netProfit);
+    if (![buy, sell, tax, profit].every(Number.isFinite) || buy <= 0 || sell <= 0) throw new Error('UV Preis-Integritaet verletzt.');
+    const expectedTax = Math.floor(sell * 0.05);
+    const expectedProfit = sell - expectedTax - buy;
+    if (tax !== expectedTax) throw new Error(`UV EA-Steuer-Guard verletzt fuer EA ${card?.eaId || 'unknown'}.`);
+    if (profit !== expectedProfit) throw new Error(`UV Netto-Profit-Guard verletzt fuer EA ${card?.eaId || 'unknown'}.`);
+    if (profit > 3000) throw new Error(`UV Profit-Cap verletzt fuer EA ${card?.eaId || 'unknown'}: ${profit}.`);
+    if (card?.synthetic === true || card?.isSynthetic === true || card?.syntheticPrice === true) throw new Error(`UV no-synthetic guard verletzt fuer EA ${card?.eaId || 'unknown'}.`);
+    totalBuy += buy;
+  }
+  if (totalBuy > Number(budget)) throw new Error(`UV Budget-Guard verletzt: ${totalBuy} > ${budget}.`);
+  return { ok: true, count: cards.length, totalBuy, budget: Number(budget), gameYear: Number(gameYear), taxRate: 0.05, maxNetProfit: 3000 };
+}
+
 export function targetProfitCandidates(buy) {
   if (buy < 1500) return [250, 400, 550, 700];
   if (buy < 5000) return [700, 900, 1100, 1400];
