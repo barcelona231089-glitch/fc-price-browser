@@ -2,11 +2,11 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { buildBuyPlan, buildPricing, optimizeList, optimizeListWithSeed, maxAffordablePortfolioCount, scoreCard, filterConservativeCandidates, buildLongTermProjection, buildSelectionScore, buildSellabilityScore, buildBudgetTop100Score, buildPublicTraderEndgameScore, buildTraderConsensusScore, buildBudgetTierProfile, buildBudgetTierScore, buildDemandMarketFitScore, portfolioCountForBudget } from '../src/uvEngine.js';
 
-test('budget-adaptive portfolio starts at 20k and reaches 100 slots at 100k', () => {
+test('20k minimum requests a full 100-card portfolio', () => {
   assert.equal(portfolioCountForBudget(19_999), 0);
-  assert.equal(portfolioCountForBudget(20_000), 20);
-  assert.equal(portfolioCountForBudget(50_000), 50);
-  assert.equal(portfolioCountForBudget(99_999), 99);
+  assert.equal(portfolioCountForBudget(20_000), 100);
+  assert.equal(portfolioCountForBudget(50_000), 100);
+  assert.equal(portfolioCountForBudget(99_999), 100);
   assert.equal(portfolioCountForBudget(100_000), 100);
   assert.equal(portfolioCountForBudget(300_000), 100);
 });

@@ -2049,7 +2049,9 @@ export function buildPortfolioSummary(cards, budget, count = 100) {
 export function portfolioCountForBudget(budget) {
   const total = Math.floor(Number(budget));
   if (!Number.isFinite(total) || total < 20_000) return 0;
-  return Math.min(100, Math.max(20, Math.floor(total / 1000)));
+  // The UI promise is a 100-card list from the supported 20k minimum upward.
+  // Feasibility/quality gates may still fail closed rather than inventing filler.
+  return 100;
 }
 
 export function buildCandidatePool(cards, budget, count = 100) {

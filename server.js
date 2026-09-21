@@ -5835,14 +5835,14 @@ function buildRatingDiscordPayload(stat) {
   const unusualMove = ratingUnusualMoveValue(stat);
   const advice = String(stat.marketAdvice || "BEOBACHTEN");
 
-  let emoji = "Ã°Å¸â€œÅ ";
-  if (lowWatch) emoji = "Ã¢Å¡Â¡";
+  let emoji = "📊";
+  if (lowWatch) emoji = "⚡";
   else if (advice === "JETZT KAUFEN") emoji = "Ã°Å¸Å¸Â¢";
   else if (advice === "JETZT VERKAUFEN") emoji = "Ã°Å¸â€™Â°";
   else if (advice.includes("WARTEN")) emoji = "Ã¢ÂÂ³";
-  else if (advice.includes("NICHT")) emoji = "Ã°Å¸Å¡Â«";
-  else if (stat.marketSignal === "STARK STEIGEND") emoji = "Ã°Å¸Å¡â‚¬";
-  else if (stat.marketSignal === "STARK FALLEND") emoji = "Ã°Å¸â€Â»";
+  else if (advice.includes("NICHT")) emoji = "🚫";
+  else if (stat.marketSignal === "STARK STEIGEND") emoji = "🚀";
+  else if (stat.marketSignal === "STARK FALLEND") emoji = "🔻";
 
   const ratingPrice = Number(stat.ratingReferencePrice ?? stat.medianPrice);
   const priceText = Number.isFinite(ratingPrice) ? `${discordNumber(ratingPrice)} Coins` : "-";
@@ -5902,7 +5902,7 @@ function traderConfluenceReliabilityGate(signal, profile) {
   const categoryAccuracy = Number(profile?.specializationAccuracy?.[category]);
   const totalSignals = Math.max(0, Number(profile?.totalSignals || 0));
 
-  // Bei ganz neuen Quellen bleibt der geglÃƒÂ¤ttete Overall-Wert maÃƒÅ¸geblich.
+  // Bei ganz neuen Quellen bleibt der geglÃƒÂ¤ttete Overall-Wert maßgeblich.
   // Sobald etwas Historie vorhanden ist, zÃƒÂ¤hlt die passende Kategorie stÃƒÂ¤rker.
   const effectiveReliability = Number((
     totalSignals >= 3 && Number.isFinite(categoryAccuracy)

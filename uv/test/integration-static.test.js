@@ -93,7 +93,7 @@ test('UV production status keeps external trader picks disabled and Bronze hard-
   assert.ok(ui.includes("Bronze ${s.currentCapabilities.bronzeHardBlock?'BLOCK':'?'}"));
 });
 
-test('v2.15 production status keeps hard-100 at higher budgets and enables dynamic safe slots from 20k', () => {
+test('v2.15 production status requests hard-100 from the 20k minimum', () => {
   assert.match(uvApp, /seasonPhaseRatingGuard:\s*false/);
   assert.match(uvApp, /calendarPhaseContextOnly:\s*true/);
   assert.match(uvApp, /promoMarketAdaptive:\s*true/);
@@ -108,8 +108,8 @@ test('v2.15 production status keeps hard-100 at higher budgets and enables dynam
   assert.match(uvApp, /qualityFirstDynamicCount:\s*true/);
   assert.match(uvApp, /dynamicPortfolioSize:\s*true/);
   assert.ok(uvApp.includes('minimumBudget: 20000'));
-  assert.ok(uvApp.includes('budgetAdaptiveSlotsFrom20k: true'));
-  assert.ok(uvApp.includes('hard100FromBudget: 100000'));
+  assert.ok(uvApp.includes('budgetAdaptiveSlotsFrom20k: false'));
+  assert.ok(uvApp.includes('hard100FromBudget: 20000'));
   assert.match(uvApp, /const UV_VERSION = '2\.15\.0'/);
   assert.ok(ui.includes('PROMO + LIVE MARKET'));
   assert.ok(ui.includes('Markt-Regime'));
