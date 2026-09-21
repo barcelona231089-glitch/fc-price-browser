@@ -174,6 +174,20 @@ export async function initDb() {
   await pool.query(`ALTER TABLE uv_trade_feedback ADD COLUMN IF NOT EXISTS market_price_at_sale INTEGER`);
   await pool.query(`ALTER TABLE uv_trade_feedback ADD COLUMN IF NOT EXISTS listed_at TIMESTAMPTZ`);
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_uv_trade_feedback_time ON uv_trade_feedback (resolved_at DESC)`);
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS uv_trade_journal (
+      id BIGSERIAL PRIMARY KEY,
+      list_id BIGINT NOT NULL,
+      slot SMALLINT NOT NULL,
+      event VARCHAR(20) NOT NULL,
+      price INTEGER,
+      relists INTEGER,
+      note VARCHAR(500),
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      FOREIGN KEY (list_id, slot) REFERENCES uv_list_items(list_id, slot) ON DELETE CASCADE
+    )
+  `);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_uv_trade_journal_slot ON uv_trade_journal (list_id, slot, created_at DESC)`);
 }
 
 export async function recordSnapshot(cards, platform, limit = 700) {
@@ -737,6 +751,31 @@ export async function loadTargetSupportPerformance(platform) {
   return map;
 }
 
+export async function recordTradeJournalEvent({ listId, slot, event, price = null, relists = null, note = null }) {
+  if (!pool) throw new Error('PostgreSQL ist nicht konfiguriert.');
+  const id = Number(listId);
+  const s = Number(slot);
+  const normalized = String(event || '').toLowerCase();
+  if (!Number.isInteger(id) || id <= 0 || !Number.isInteger(s) || s <= 0) throw new Error('listId/slot ungueltig.');
+  if (!['bought','listed','relisted','skipped','sold','expired','unsold'].includes(normalized)) throw new Error('event ungueltig.');
+  const exists = await pool.query(`
+    SELECT 1 FROM uv_list_items li
+    JOIN uv_generated_lists gl ON gl.id=li.list_id
+    WHERE li.list_id=$1 AND li.slot=$2 AND gl.game_year=$3
+  `, [id, s, GAME_YEAR]);
+  if (!exists.rowCount) throw new Error('Listenposition nicht gefunden.');
+  const n = Number(price);
+  const safePrice = Number.isFinite(n) && n > 0 ? Math.round(n) : null;
+  const safeRelists = relists == null ? null : Math.max(0, Math.min(999, Math.floor(Number(relists) || 0)));
+  const safeNote = note == null ? null : String(note).slice(0, 500);
+  const saved = await pool.query(`
+    INSERT INTO uv_trade_journal (list_id, slot, event, price, relists, note)
+    VALUES ($1,$2,$3,$4,$5,$6)
+    RETURNING id, created_at
+  `, [id, s, normalized, safePrice, safeRelists, safeNote]);
+  return { ok: true, id: Number(saved.rows[0].id), listId: id, slot: s, event: normalized, price: safePrice, relists: safeRelists, createdAt: saved.rows[0].created_at };
+}
+
 export async function recordTradeFeedback({ listId, slot, outcome, soldPrice = null, relists = 0, note = null, actualBuyPrice = null, listedPrice = null, marketPriceAtBuy = null, marketPriceAtSale = null, listedAt = null }) {
   if (!pool) throw new Error('PostgreSQL ist nicht konfiguriert.');
   const normalized = String(outcome || '').toLowerCase();
@@ -883,6 +922,19 @@ export async function loadGeneratedList(listId) {
     WHERE li.list_id=$1
     ORDER BY slot ASC
   `, [id]);
+  const journal = await pool.query(`
+    SELECT DISTINCT ON (slot) slot, event, price, relists, note, created_at
+    FROM uv_trade_journal
+    WHERE list_id=$1
+    ORDER BY slot, created_at DESC
+  `, [id]);
+  const journalBySlot = new Map(journal.rows.map(r => [Number(r.slot), {
+    event: r.event,
+    price: r.price == null ? null : Number(r.price),
+    relists: r.relists == null ? null : Number(r.relists),
+    note: r.note || null,
+    createdAt: r.created_at
+  }]));
   const h = head.rows[0];
   return {
     id: Number(h.id),
@@ -911,7 +963,8 @@ export async function loadGeneratedList(listId) {
         outcome: r.feedback_outcome, soldPrice: r.sold_price == null ? null : Number(r.sold_price),
         relists: Number(r.relists || 0), actualBuyPrice: r.actual_buy_price == null ? null : Number(r.actual_buy_price),
         listedPrice: r.listed_price == null ? null : Number(r.listed_price), listedAt: r.listed_at || null, resolvedAt: r.resolved_at || null
-      } : null
+      } : null,
+      journal: journalBySlot.get(Number(r.slot)) || null
     }))
   };
 }

@@ -230,8 +230,8 @@ function renderDetail(c, pricing, status, quality){
     : 'SwepixTV, MM___TV, Noah x Kai';
   const ladder = c.recommendationLifecycle?.relistLadder?.stages || [];
   const ladderText = ladder.length ? ladder.map(x=>`${x.afterHours}h ${coins(x.price)}`).join(' • ') : '–';
-  const journalState = c._feedback?.outcome ? `Status: ${c._feedback.outcome}` : 'Status: offen';
-  const journal = lastListId && c._savedSlot ? `<div class="journalBox"><strong>Trade-Journal</strong><span>${journalState} • Relist-Leiter: ${ladderText}</span><div class="journalActions"><button type="button" data-feedback="bought" data-slot="${c._savedSlot}">Gekauft</button><button type="button" data-feedback="sold" data-slot="${c._savedSlot}">Verkauft</button><button type="button" data-feedback="unsold" data-slot="${c._savedSlot}">Nicht verkauft</button><button type="button" data-feedback="expired" data-slot="${c._savedSlot}">Abgelaufen</button><button type="button" data-feedback="skipped" data-slot="${c._savedSlot}">Übersprungen</button></div></div>` : '';
+  const journalState = c._feedback?.outcome || c._journal?.event || 'offen';
+  const journal = lastListId && c._savedSlot ? `<div class="journalBox"><strong>Trade-Journal</strong><span>Status: ${journalState} • Relist-Leiter: ${ladderText}</span><div class="journalActions"><button type="button" data-journal="bought" data-slot="${c._savedSlot}">Gekauft</button><button type="button" data-journal="listed" data-slot="${c._savedSlot}">Gelistet</button><button type="button" data-journal="relisted" data-slot="${c._savedSlot}">Relist</button><button type="button" data-feedback="sold" data-slot="${c._savedSlot}">Verkauft</button><button type="button" data-feedback="unsold" data-slot="${c._savedSlot}">Nicht verkauft</button><button type="button" data-feedback="expired" data-slot="${c._savedSlot}">Abgelaufen</button><button type="button" data-journal="skipped" data-slot="${c._savedSlot}">Skip</button></div></div>` : '';
   return `<div class="detailPanel">
     <div class="detailGrid">
       ${detailMetric('Kartentyp',c.rarityName||c.cardType||'-')}
@@ -589,6 +589,34 @@ for(const button of statusFilters){
 }
 
 rows.addEventListener('click',async event=>{
+  const journalButton=event.target.closest('[data-journal]');
+  if(journalButton){
+    if(!lastListId) return;
+    const slot=Number(journalButton.dataset.slot||0);
+    const journalEvent=String(journalButton.dataset.journal||'');
+    const card=lastCards.find(c=>Number(c._savedSlot)===slot);
+    if(!card) return;
+    const pricing=effectivePricing(card);
+    let price=null;
+    let relists=null;
+    if(journalEvent==='bought') price=Number(prompt('Tatsächlicher Einkaufspreis?', String(card.buyPrice||card.recommendedBuyPrice||card.price||''))||0);
+    if(journalEvent==='listed') price=Number(prompt('Listenpreis?', String(pricing.sell||card.sellPrice||''))||0);
+    if(journalEvent==='relisted'){
+      price=Number(prompt('Neuer Relist-Preis?', String(card.recommendationLifecycle?.relistLadder?.stages?.[1]?.price||pricing.sell||''))||0);
+      relists=Number(prompt('Relist Nummer?', '1')||1);
+    }
+    journalButton.disabled=true;
+    try{
+      const r=await fetch('/api/uv/journal',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({listId:lastListId,slot,event:journalEvent,price:price||null,relists})});
+      const data=await r.json(); if(!r.ok) throw new Error(data.error||'Journal konnte nicht gespeichert werden.');
+      card._journal=data;
+      notice.textContent=`Trade-Journal #${slot} ${card.name||''}: ${journalEvent} gespeichert.`;
+      renderCurrentRows();
+      notice.classList.remove('hidden');
+    }catch(e){notice.textContent=e.message;notice.classList.remove('hidden')}
+    finally{journalButton.disabled=false}
+    return;
+  }
   const feedbackButton=event.target.closest('[data-feedback]');
   if(feedbackButton){
     if(!lastListId) return;
