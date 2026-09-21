@@ -6,7 +6,7 @@ import { getLiveFutggCards as fetchLiveFutggCards, confirmTradeableMarketCards }
 import { crosscheckFutbin, getFutbinMarketTrends, attachMarketMoverSignals, getFutbinExtendedDataStatus } from './src/futbin.js';
 import { attachFutggDemandSignals, attachCachedFutggDemandSignals } from './src/demand.js';
 import { initDb, configureDbPool, closeDb, isDbEnabled, recordSnapshot, upsertCards, loadHistoryFeatures, loadPerformanceFeatures, loadTraderRulePerformance, loadTargetSupportPerformance, recordTradeFeedback, recordTradeJournalEvent, getTradeFeedbackStatus, saveGeneratedList, saveListRecheck, recordMarketSnapshot, recordDemandSnapshot, loadWatchPlatforms, loadWatchedEaIds, recordSmartSnapshot, evaluateGeneratedLists, getLearningStatus, loadGeneratedList, listGeneratedLists, loadRealMarketRegimeRows } from './src/db.js';
-import { buildCandidatePool, scoreCard, buildBuyPlan, buildTradingEconomics, assertUvPortfolioIntegrity, buildSelectionScore, buildSellabilityScore, buildBudgetTop100Score, buildPublicTraderEndgameScore, buildTraderConsensusScore, buildBudgetTierScore, buildDemandMarketFitScore, optimizeList, maxAffordablePortfolioCount, filterConservativeCandidates, buildPortfolioSummary, capitalBandForPrice, targetProfitCandidates, specialTargetRatioForBudget } from './src/uvEngine.js';
+import { buildCandidatePool, scoreCard, buildBuyPlan, buildTradingEconomics, assertUvPortfolioIntegrity, buildSelectionScore, buildSellabilityScore, buildBudgetTop100Score, buildPublicTraderEndgameScore, buildTraderConsensusScore, buildBudgetTierScore, buildDemandMarketFitScore, optimizeList, maxAffordablePortfolioCount, filterConservativeCandidates, buildPortfolioSummary, capitalBandForPrice, targetProfitCandidates, specialTargetRatioForBudget, portfolioCountForBudget } from './src/uvEngine.js';
 import { buildRebalanceSeed, rebalancePortfolio } from './src/rebalance.js';
 import { buildRealMarketRegime } from './src/marketRegime.js';
 import { buildTraderKnowledge, TRADER_KNOWLEDGE_SOURCES } from './src/traderKnowledge.js';
@@ -17,7 +17,7 @@ import { buildReportedOutcomeScore } from './src/outcomeLearning.js';
 import { attachLocalFutbinFc27 } from './src/futbinLocalFc27.js';
 
 export const uvRouter = express.Router();
-const UV_VERSION = '2.14.0';
+const UV_VERSION = '2.15.0';
 
 async function getUvMarketContext(platform, liveCards = []) {
   const realRows = await loadRealMarketRegimeRows(platform).catch(() => []);
@@ -244,7 +244,7 @@ function summarizeSelectedCards(selected, budget, specialTargetRatio = null) {
 }
 
 app.get('/api/uv/health', (req, res) => res.json({
-  ok: true, service: 'FC ÃœV Brain', version: UV_VERSION, gameYear: GAME_YEAR,
+  ok: true, service: 'FC ÜV Brain', version: UV_VERSION, gameYear: GAME_YEAR,
   database: isDbEnabled() ? 'PostgreSQL' : 'memory/no-db',
   activeInstance: uvActive,
   runtimeMode: uvActive ? 'ACTIVE' : 'HA_STANDBY_READ_ONLY',
@@ -282,9 +282,9 @@ app.get('/api/uv/status', (req, res) => {
       futbinDirectFc27Api: Boolean(futbinExtended.directFutbinApi?.configured),
       futbinDirectBackoff: Boolean(futbinExtended.directFutbinApi?.backoffActive),
       futbinDirectDiscoveryEnabled: Boolean(futbinExtended.directFutbinApi?.discoveryEnabled),
-      postgresHistory: isDbEnabled(), budgetOptimizer100: true, eaTax: true,
+      postgresHistory: isDbEnabled(), budgetOptimizer100: true, minimumBudget: 20000, budgetAdaptiveSlotsFrom20k: true, hard100FromBudget: 100000, eaTax: true,
       conservativeProfit: true, longTermScore: true, priceActivityProxy: isDbEnabled(),
-      sourceRiskFilter: true, adaptiveCardMix: true, specialCardPriority: true, specialCardSoftTarget300k100: 'promo-live-market-adaptive', seasonPhaseRatingGuard: false, calendarPhaseContextOnly: true, promoMarketAdaptive: true, promoInPacksAwareness: true, promoMomentumAwareness: true, dynamicMarketPolicy: true, budgetAwareDynamicRating: true, demandGatedRatingRelaxation: true, budgetFeasibilityFallback: true, balancedLiquidityFallback: true, qualityFirstDynamicCount: false, dynamicPortfolioSize: false, hard100Slots: true, sellabilityFirstRanking: true, demandMarketFitFirstRanker: true, marketTradeableHardGuard: true, confirmedLiveBinRequired: true, marketVerificationFailFast: true, marketMetadataSafeFallback: true, unresolvedSpecialsFailClosed: true, sbcObjectiveRewardHardBlock: true, ratingPrimaryRanker: false, hard100PortfolioSellabilityFallback: true, adaptiveSpecialMix: true, maxExactCardCopies: 2, futggMostUsedDemand: true, futggMomentumDemand: true,
+      sourceRiskFilter: true, adaptiveCardMix: true, specialCardPriority: true, specialCardSoftTarget300k100: 'promo-live-market-adaptive', seasonPhaseRatingGuard: false, calendarPhaseContextOnly: true, promoMarketAdaptive: true, promoInPacksAwareness: true, promoMomentumAwareness: true, dynamicMarketPolicy: true, budgetAwareDynamicRating: true, demandGatedRatingRelaxation: true, budgetFeasibilityFallback: true, balancedLiquidityFallback: true, qualityFirstDynamicCount: true, dynamicPortfolioSize: true, hard100Slots: true, sellabilityFirstRanking: true, demandMarketFitFirstRanker: true, marketTradeableHardGuard: true, confirmedLiveBinRequired: true, marketVerificationFailFast: true, marketMetadataSafeFallback: true, unresolvedSpecialsFailClosed: true, sbcObjectiveRewardHardBlock: true, ratingPrimaryRanker: false, hard100PortfolioSellabilityFallback: true, adaptiveSpecialMix: true, maxExactCardCopies: 2, futggMostUsedDemand: true, futggMomentumDemand: true,
       backgroundHistoryMonitor: isDbEnabled(), selfLearningPriceSafety: isDbEnabled(), smartBuyCeiling: true, qualityFirstOptimizer: true, budgetTop100Ranking: true, budgetTop100SafetyIsolation: true, budgetSafetyReserveFallback: true, publicTraderEndgameLogic: true, traderConsensusRanker: true, budgetTierAllocator: true, candidatePoolAllocationSeparation: true, budgetTierReferenceMode: 'soft-observed-shape-only', ratingAsSecondaryPortfolioSignal: true, cardVersionClassFromItemRecord: true, traderConsensusSources: ['Futpepi-budget-method','FUT.GG-usage-momentum','PostgreSQL-price-stability','FutStarz-demand-window-method','public-popularity-tiebreak'], endgameLowGoldCaps: true, endgame300kBase82Max: 2, endgame300kBase83OrLessMax: 8, futtiesDemandPriority: true, popularLeagueNationTieBreak: true, savedLists: isDbEnabled(), savedListReopen: isDbEnabled(), manualListSaveChoice: true, autoSaveGeneratedLists: false, persistedLiveRecheck: isDbEnabled(), liveRecheckPost: true, liveRecheckAsyncJob: true, liveRecheckCpuSafeQueue: true, fullLiveRecheckFreshDemand: true, liveRecheckFutbinStructuredEvidence: true, generationCpuSafeBatches: true, generationWaitsForIdleCpuWindow: true, optimizerLinearStateCache: true, liveRecheckDemandCacheOnly: false, liveRecheckBatchSize: LIVE_RECHECK_BATCH_SIZE, liveRecheckBatchPauseMs: LIVE_RECHECK_BATCH_PAUSE_MS, batchedRecheckPersistence: isDbEnabled(), currentBuyPricesVisible: true, capitalEfficiencyScore: true, adaptiveCapitalLadder: true, repeatabilityScore: true, longTermProfitRanker: true, portfolioDiagnostics: true, traderKnowledgePriors: true, verifiedPublicUvMethodConsensus: true, externalTraderPlayerPicksImported: false, bronzeHardBlock: true, normalCardMinimumRating: 82, specialBelow82StrongDemandOnly: true, nonRareDemandGate: true, lowNonRareRatingHardBlockMax: 82, midNonRareDemandGateMin: 83, midNonRareDemandGateMax: 84, traderRulePriceSafetyLearning: isDbEnabled(), saleLikelihoodIndex: true, traderAwarePricingOptimizer: true, empiricalTargetSupportLearning: isDbEnabled(), optionalReportedTradeFeedback: isDbEnabled(), listLifecycleGuard: true, liveStoredListRecheck: isDbEnabled(), portfolioRebalancing: isDbEnabled(), reportedOutcomeLearning: isDbEnabled(), outcomeJournalV2: isDbEnabled(), actualBuyPriceLearning: isDbEnabled(), relistLadder6h24h: true, staleRecommendationGuard: true, tradeJournalStateTracking: isDbEnabled(), fc27IntegrityGuard: true, batchListPersistence: true, terminalJournalMirroring: isDbEnabled(), robustCandidatePipeline: true, apiNamespaceUv: true, futggUsageAudienceSplit: true, futggUsagePositionBreadth: true, futggInPacksSupply: true, demandEvidenceConfidence: true,
       playerSalesHistory: Boolean(futbinExtended.salesHistoryObserved),
       pgpGames: Boolean(futbinExtended.gamesObserved),
@@ -307,7 +307,7 @@ async function runHistoryMonitorOnce() {
   if (!uvActive || !isDbEnabled() || historyMonitorBusy) return;
   if (generationBusy) {
     lastHistoryMonitorDeferredAt = new Date().toISOString();
-    lastHistoryMonitorDeferredReason = 'CPU-SAFE: ÃœV-Generierung hat PrioritÃ¤t; History-Monitor wird bis danach verschoben.';
+    lastHistoryMonitorDeferredReason = 'CPU-SAFE: ÜV-Generierung hat Priorität; History-Monitor wird bis danach verschoben.';
     scheduleHistoryMonitorRetry(Math.max(10_000, GENERATION_BATCH_PAUSE_MS * 100));
     return;
   }
@@ -965,7 +965,7 @@ app.get('/api/uv/recheck-job/:jobId', (req, res) => {
 
 app.post('/api/uv/rebalance/:listId', async (req, res) => {
   if (!requireUvActive(req, res)) return;
-  if (generationBusy) return res.status(429).json({ error: 'Eine Generierung oder ein Rebalance lÃ¤uft gerade. Bitte kurz warten.' });
+  if (generationBusy) return res.status(429).json({ error: 'Eine Generierung oder ein Rebalance läuft gerade. Bitte kurz warten.' });
   generationBusy = true;
   try {
     if (!isDbEnabled()) return res.status(503).json({ error: 'PostgreSQL ist fuer gespeicherte Portfolio-Rebalances erforderlich.' });
@@ -1174,10 +1174,10 @@ app.post('/api/uv/rebalance/:listId', async (req, res) => {
         semantics: {
           retained: 'KEEP/REPRICE Positionen bleiben bevorzugt im Portfolio und werden auf aktuelle Preise neu gerechnet.',
           replacement: 'WAIT/DROP/MISSING Positionen werden nicht blind weitergekauft, sondern durch neue konservative Kandidaten ersetzt.',
-          releasedForFeasibility: 'Nur wenn ein vollstÃ¤ndiges 100er-Portfolio sonst nicht innerhalb des Gesamtbudgets mÃ¶glich ist.'
+          releasedForFeasibility: 'Nur wenn ein vollständiges 100er-Portfolio sonst nicht innerhalb des Gesamtbudgets möglich ist.'
         }
       },
-      dataNotice: 'v2.1 PROMO+LIVE-MARKET: Rebalance hÃ¤lt die GrÃ¶ÃŸe der gespeicherten Liste stabil, nutzt den aktuellen Live-Markt-/Promo-Floor und weiterhin maximal 2 exakte Kopien. FÃ¼r eine neu berechnete dynamische Slot-Anzahl bitte eine neue Liste generieren.',
+      dataNotice: 'v2.1 PROMO+LIVE-MARKET: Rebalance hält die Größe der gespeicherten Liste stabil, nutzt den aktuellen Live-Markt-/Promo-Floor und weiterhin maximal 2 exakte Kopien. Für eine neu berechnete dynamische Slot-Anzahl bitte eine neue Liste generieren.',
       cards: selected
     });
   } catch (error) {
@@ -1195,8 +1195,9 @@ app.post('/api/uv/generate', async (req, res) => {
     const budget = Math.floor(Number(req.body?.budget));
     const platform = req.body?.platform === 'pc' ? 'pc' : 'console';
     const saveListRequested = req.body?.saveList === true;
-    const count = 100;
-    if (!Number.isFinite(budget) || budget < 30_000) return res.status(400).json({ error: 'FÃ¼r eine 100-Karten-Liste bitte mindestens 30.000 Coins eingeben.' });
+    const requestedCount = portfolioCountForBudget(budget);
+    let count = requestedCount;
+    if (!Number.isFinite(budget) || budget < 20_000 || requestedCount < 1) return res.status(400).json({ error: 'Bitte mindestens 20.000 Coins eingeben.' });
 
     // CPU-SAFE v2.9.2: do not stack a manual 100-card build on top of the
     // Trader market loop, History monitor or Live-Recheck. Wait briefly for an
@@ -1206,8 +1207,14 @@ app.post('/api/uv/generate', async (req, res) => {
     const live = await getLiveFutggCards(platform, { allowRecentSafeSnapshot: true });
     const marketContext = await getUvMarketContext(platform, live.cards);
 
-    const { pool: rawPool, ideal, minPrice, maxPrice, tierProfile } = buildCandidatePool(live.cards, budget, count);
-    if (rawPool.length < count) throw new Error(`Nur ${rawPool.length} Karten im passenden Preisbereich gefunden.`);
+    let candidateBuild = buildCandidatePool(live.cards, budget, count);
+    if (candidateBuild.pool.length < count) {
+      const reduced = Math.max(1, Math.min(count, candidateBuild.pool.length || 1));
+      count = reduced;
+      candidateBuild = buildCandidatePool(live.cards, budget, count);
+    }
+    const { pool: rawPool, ideal, minPrice, maxPrice, tierProfile } = candidateBuild;
+    if (!rawPool.length) throw new Error('Aktuell keine sichere Karte im passenden Preisbereich gefunden.');
 
     let demandContext = { ok: false, mostUsedOk: false, momentumOk: false, inPacksOk: false, mostUsedMatches: 0, momentumMatches: 0, inPacksMatches: 0, sources: [], errors: [] };
     let demandCards = rawPool;
@@ -1368,21 +1375,17 @@ app.post('/api/uv/generate', async (req, res) => {
       pool = [...merged.values()];
       affordability = maxAffordablePortfolioCount(pool, budget, count);
     }
+    let dynamicCountReduced = count < requestedCount;
     if (Number(affordability.count || 0) < count) {
-      const fallbackText = hard100SellabilityFallback
-        ? ` Sellability-Fallback ${hard100SellabilityFallback.stage || 'n/a'}: ${hard100SellabilityFallback.slots || 0}/${count} strukturelle Slots${Number.isFinite(hard100SellabilityFallback.allocatorSlots) ? `, ${hard100SellabilityFallback.allocatorSlots}/${count} nach Endgame-Mix` : ''}, ${hard100SellabilityFallback.uniqueCards || 0} unterschiedliche Karten${Number.isFinite(hard100SellabilityFallback.minimumCost) ? `, billigste zulÃ¤ssige 100 ca. ${Number(hard100SellabilityFallback.minimumCost).toLocaleString('de-DE')} Coins` : ''}.`
-        : '';
-      const adaptiveText = budgetAdaptiveFallback
-        ? ` Budget-Adaptive ${budgetAdaptiveFallback.stage || 'n/a'} bei ca. ${Number(budgetAdaptiveFallback.idealSlotPrice || 0).toLocaleString('de-DE')} Coins/Slot: ${budgetAdaptiveFallback.slots || 0}/${count} strukturelle Slots${Number.isFinite(budgetAdaptiveFallback.allocatorSlots) ? `, ${budgetAdaptiveFallback.allocatorSlots}/${count} nach Endgame-Mix` : ''}, ${budgetAdaptiveFallback.uniqueCards || 0} unterschiedliche Karten${Number.isFinite(budgetAdaptiveFallback.minimumCost) ? `, billigste sichere 100 ca. ${Number(budgetAdaptiveFallback.minimumCost).toLocaleString('de-DE')} Coins` : ''}.`
-        : '';
-      const reserveText = budgetSafetyReserveFallback
-        ? ` Safety-Reserve ${budgetSafetyReserveFallback.stage || 'n/a'}: ${budgetSafetyReserveFallback.slots || 0}/${count} strukturelle Slots${Number.isFinite(budgetSafetyReserveFallback.allocatorSlots) ? `, ${budgetSafetyReserveFallback.allocatorSlots}/${count} nach Endgame-Mix` : ''}, ${budgetSafetyReserveFallback.uniqueCards || 0} unterschiedliche Karten${Number.isFinite(budgetSafetyReserveFallback.minimumCost) ? `, billigste sichere 100 ca. ${Number(budgetSafetyReserveFallback.minimumCost).toLocaleString('de-DE')} Coins` : ''}.`
-        : '';
-      throw new Error(`100-Slot-Guard: Auch nach Sellability-Ladder und 82+-Safety-Reserve sind aktuell nur ${Number(affordability.count || 0)}/${count} sichere Positionen innerhalb des Budgets mÃ¶glich.${fallbackText}${adaptiveText}${reserveText} Unter 82 normale Karten und tote FÃ¼llkarten bleiben gesperrt.`);
+      const reduced = Math.max(0, Math.floor(Number(affordability.count || 0)));
+      if (reduced < 1) {
+        throw new Error('Aktuell ist innerhalb dieses Budgets keine sichere Position verfuegbar. Unsichere Fuellkarten bleiben gesperrt.');
+      }
+      count = reduced;
+      dynamicCountReduced = true;
     }
-    const dynamicCountReduced = false;
     const effectiveCount = count;
-    const optimized = optimizeList(pool, budget, count);
+    const optimized = optimizeList(pool, budget, effectiveCount);
 
     let selected = optimized.selected.map(card => ({
       ...card,
@@ -1450,7 +1453,7 @@ app.post('/api/uv/generate', async (req, res) => {
 
     const result = {
       ok: true, version: UV_VERSION, gameYear: GAME_YEAR, platform, budget,
-      requestedCount: count,
+      requestedCount,
       count: selected.length,
       generatedCount: selected.length,
       dynamicCountReduced,
@@ -1508,7 +1511,11 @@ app.post('/api/uv/generate', async (req, res) => {
         history: isDbEnabled() ? 'PostgreSQL' : 'not configured',
         traderKnowledge: TRADER_KNOWLEDGE_SOURCES.map(s => s.name)
       },
-      dataNotice: (dynamicCountReduced ? `v2.8.1 BUDGET-TIER-ALLOCATOR+TRADER-CONSENSUS: ${adaptiveMarketPolicy.promoMarketRegime}. Kandidatenpool und echte 100-Slot-Allokation sind getrennt; Rating ist nur ein SekundÃ¤rsignal, Karten-Version und Live-Nachfrage entscheiden stÃ¤rker.` : `v2.8.1 BUDGET-TIER-ALLOCATOR+TRADER-CONSENSUS: ${count} Karten sind im Budget machbar. ${tierProfile?.name || 'Budget-Profil'} formt nur weiche Preis-Tiers; FUT.GG Livepreise/Nachfrage, PostgreSQL-StabilitÃ¤t, Netto-Profit und Safety-Gates entscheiden. Niedrig geratete Specials werden nicht mit normalen Low-Golds verwechselt.`) + ' Externe FutStarz-Beobachtungen dienen nur als weiche Portfolio-Form, niemals als Live-Preisquelle oder kopierte Kartenliste.' + (marketTradeability.diagnostics?.verificationSourceDown ? ' FUT.GG Zusatz-Verifizierung war nicht erreichbar; verwendet wurde nur der sichere Metadaten/R2-Fallback. Unklare Specials wurden verworfen.' : '') + (live.requiresLiveRecheck === true ? ' Die Liste wurde wÃ¤hrend der FUT.GG-Recovery aus dem letzten hÃ¶chstens 5 Minuten alten sicheren Trader-Snapshot erzeugt. Vor jedem Kauf ist der Live-Recheck Pflicht.' : ' Vor jedem Kauf bleibt der Live-Recheck Pflicht.'),
+      dataNotice: (dynamicCountReduced
+        ? `Budget-Modus: ${selected.length}/${requestedCount} sichere Slots innerhalb von ${budget.toLocaleString('de-DE')} Coins. Unsichere Fuellkarten bleiben gesperrt.`
+        : `Budget-Modus: ${selected.length} sichere Slots innerhalb von ${budget.toLocaleString('de-DE')} Coins.`)
+        + (marketTradeability.diagnostics?.verificationSourceDown ? ' FUT.GG Zusatz-Verifizierung war nicht erreichbar; unklare Specials wurden verworfen.' : '')
+        + (live.requiresLiveRecheck === true ? ' Die Liste nutzt einen hoechstens 5 Minuten alten sicheren Trader-Snapshot. Vor dem Kaufen Live-Recheck nutzen.' : ' Vor dem Kaufen Live-Recheck nutzen.'),
       cards: selected
     };
 

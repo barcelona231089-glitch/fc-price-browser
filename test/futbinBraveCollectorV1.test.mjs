@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { selectCollectorCards } from "../futbinBraveCollectorV1.js";
 import { parseAuthorizedFutbinImport } from "../futbinAuthorizedImportV1.js";
 
@@ -24,4 +25,13 @@ test("authorized import never invents a missing observation timestamp", () => {
   ]);
   assert.equal(out.rows.length, 1);
   assert.equal(out.rows[0].observedAt, "2026-09-21T20:00:00.000Z");
+});
+
+test("collector closes its dedicated Brave gracefully after every cycle", () => {
+  const source = readFileSync(new URL("../futbinBraveCollectorV1.js", import.meta.url), "utf8");
+  const launcher = readFileSync(new URL("../startFutbinBraveBrowser.ps1", import.meta.url), "utf8");
+  assert.ok(source.includes('method: "Browser.close"'));
+  assert.ok(source.includes("await closeCollectorBrave();"));
+  assert.equal(source.includes("Stop-Process -Id $_.ProcessId -Force"), false);
+  assert.ok(launcher.includes("--hide-crash-restore-bubble"));
 });

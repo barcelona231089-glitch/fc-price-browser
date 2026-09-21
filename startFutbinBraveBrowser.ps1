@@ -10,6 +10,6 @@ New-Item -ItemType Directory -Force -Path (Split-Path $ShortcutPath) | Out-Null
 $w = New-Object -ComObject WScript.Shell
 $s = $w.CreateShortcut($ShortcutPath)
 $s.TargetPath = $BravePath
-$s.Arguments = '--remote-debugging-port=' + $Port + ' --user-data-dir="' + $ProfileDir + '" --new-window --no-first-run --no-default-browser-check --start-minimized https://www.futbin.com/27/players'
+$s.Arguments = '--remote-debugging-port=' + $Port + ' --user-data-dir="' + $ProfileDir + '" --new-window --no-first-run --no-default-browser-check --start-minimized --hide-crash-restore-bubble https://www.futbin.com/27/players'
 $s.Save()
 Start-Process explorer.exe -ArgumentList $ShortcutPath

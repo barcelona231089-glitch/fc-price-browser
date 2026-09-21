@@ -2046,6 +2046,12 @@ export function buildPortfolioSummary(cards, budget, count = 100) {
   };
 }
 
+export function portfolioCountForBudget(budget) {
+  const total = Math.floor(Number(budget));
+  if (!Number.isFinite(total) || total < 20_000) return 0;
+  return Math.min(100, Math.max(20, Math.floor(total / 1000)));
+}
+
 export function buildCandidatePool(cards, budget, count = 100) {
   const ideal = budget / count;
   const tierProfile = buildBudgetTierProfile(budget, count);

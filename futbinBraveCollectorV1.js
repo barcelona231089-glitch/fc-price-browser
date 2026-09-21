@@ -113,16 +113,44 @@ async function ensureBrave() {
   throw new Error("BRAVE_DEBUG_NOT_READY");
 }
 
-function closeCollectorBrave() {
+async function closeCollectorBrave() {
   if (!CLOSE_AFTER_CYCLE) return;
-  const profile = PROFILE_DIR.replace(/'/g, "''");
-  const command = [
-    `$profile='${profile}'`,
-    `Get-CimInstance Win32_Process | Where-Object { $_.Name -eq 'brave.exe' -and $_.CommandLine -like ('*' + $profile + '*') } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }`
-  ].join("; ");
-  spawnSync("powershell.exe", [
-    "-NoProfile", "-ExecutionPolicy", "Bypass", "-WindowStyle", "Hidden", "-Command", command
-  ], { stdio: "ignore", windowsHide: true, timeout: 10_000 });
+  let version = null;
+  try {
+    version = await fetchJson(`http://127.0.0.1:${PORT}/json/version`, {}, 2500);
+  } catch {
+    return;
+  }
+  const wsUrl = version?.webSocketDebuggerUrl;
+  if (!wsUrl || typeof WebSocket !== "function") return;
+
+  await new Promise(resolve => {
+    let settled = false;
+    const finish = () => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve();
+    };
+    const timer = setTimeout(finish, 5000);
+    try {
+      const ws = new WebSocket(wsUrl);
+      ws.onopen = () => {
+        try { ws.send(JSON.stringify({ id: 1, method: "Browser.close" })); }
+        catch { finish(); }
+      };
+      ws.onmessage = finish;
+      ws.onclose = finish;
+      ws.onerror = finish;
+    } catch {
+      finish();
+    }
+  });
+
+  for (let i = 0; i < 20; i += 1) {
+    if (!(await debugReady())) break;
+    await new Promise(resolve => setTimeout(resolve, 250));
+  }
 }
 
 function actionPriority(action) {
@@ -258,7 +286,7 @@ export async function runCollectorCycle() {
       return status;
     }
 
-    closeCollectorBrave();
+    await closeCollectorBrave();
     await ensureBrave();
 
     const collect = () => getFutbinBraveCards(selection.cards, "console", {
@@ -309,7 +337,7 @@ export async function runCollectorCycle() {
     log("cycle-error", { error: status.error });
     return status;
   } finally {
-    closeCollectorBrave();
+    await closeCollectorBrave();
   }
 }
 function enabled() {

@@ -20,12 +20,18 @@ test('combined build exposes only namespaced UV API routes', () => {
   assert.equal(/app\.(?:get|post|delete|put|patch)\('\/api\/(?!uv\/)/.test(uvApp), false);
 });
 
+test('UV UI text is clean UTF-8 without mojibake or decorative garbage symbols', () => {
+  const combined = uvApp + ui + html;
+  assert.equal(/[ÃÂ�]/.test(combined), false);
+  assert.equal(/[•✓×🪙⚠…]/u.test(ui + html), false);
+});
+
 test('UV browser UI uses the production /api/uv namespace and /uv assets', () => {
   assert.ok(ui.includes("fetch('/api/uv/status')"));
   assert.ok(ui.includes("fetch('/api/uv/generate'"));
   assert.equal(ui.includes("fetch('/api/status')"), false);
   assert.ok(html.includes('href="/uv/styles.css"'));
-  assert.ok(html.includes('src="/uv/app.js?v=2.10.12-feasibility2"'));
+  assert.ok(html.includes('src="/uv/app.js?v=2.15.0-clean"'));
 });
 
 test('compact UV UI exposes status filters, essential columns and recheck-aware pricing', () => {
@@ -82,12 +88,12 @@ test('UV production status keeps external trader picks disabled and Bronze hard-
   assert.ok(uvApp.includes('specialBelow82StrongDemandOnly: true'));
   assert.ok(uvApp.includes('nonRareDemandGate: true'));
   assert.ok(uvApp.includes('lowNonRareRatingHardBlockMax: 82'));
-  assert.ok(ui.includes('NR≤82'));
+  assert.ok(ui.includes('NR<=82'));
   assert.ok(uvApp.includes('paidPlayerPicksImported: false'));
   assert.ok(ui.includes("Bronze ${s.currentCapabilities.bronzeHardBlock?'BLOCK':'?'}"));
 });
 
-test('v2.3 production status enforces hard 100 slots and sellability-first live evidence', () => {
+test('v2.15 production status keeps hard-100 at higher budgets and enables dynamic safe slots from 20k', () => {
   assert.match(uvApp, /seasonPhaseRatingGuard:\s*false/);
   assert.match(uvApp, /calendarPhaseContextOnly:\s*true/);
   assert.match(uvApp, /promoMarketAdaptive:\s*true/);
@@ -99,14 +105,17 @@ test('v2.3 production status enforces hard 100 slots and sellability-first live 
   assert.match(uvApp, /demandGatedRatingRelaxation:\s*true/);
   assert.match(uvApp, /hard100Slots:\s*true/);
   assert.match(uvApp, /sellabilityFirstRanking:\s*true/);
-  assert.match(uvApp, /qualityFirstDynamicCount:\s*false/);
-  assert.match(uvApp, /dynamicPortfolioSize:\s*false/);
-  assert.match(uvApp, /const UV_VERSION = '2\.14\.0'/);
+  assert.match(uvApp, /qualityFirstDynamicCount:\s*true/);
+  assert.match(uvApp, /dynamicPortfolioSize:\s*true/);
+  assert.ok(uvApp.includes('minimumBudget: 20000'));
+  assert.ok(uvApp.includes('budgetAdaptiveSlotsFrom20k: true'));
+  assert.ok(uvApp.includes('hard100FromBudget: 100000'));
+  assert.match(uvApp, /const UV_VERSION = '2\.15\.0'/);
   assert.ok(ui.includes('PROMO + LIVE MARKET'));
   assert.ok(ui.includes('Markt-Regime'));
   assert.ok(ui.includes('Promo-Heat'));
   assert.ok(ui.includes("metric('Slots'"));
-  assert.ok(html.includes('Top 100 fürs Budget'));
+  assert.ok(html.includes('Ab 20.000 Coins wird eine sichere Liste gebaut.'));
 });
 
 
@@ -117,7 +126,7 @@ test('v2.2 focus mode keeps header compact and hides deep analytics behind discl
   assert.ok(ui.includes('class="summaryPrimary"'));
   assert.ok(ui.includes('class="summaryMore"'));
   assert.ok(ui.includes('<summary>Mehr Analyse</summary>'));
-  for (const label of ['Budget','Einkauf','Slots','Specials','Profit 1×']) assert.ok(ui.includes(`metric('${label}'`), label);
+  for (const label of ['Budget','Einkauf','Slots','Specials','Profit 1x']) assert.ok(ui.includes(`metric('${label}'`), label);
 });
 
 
@@ -203,9 +212,9 @@ test('v2.7 trader consensus + budget tier allocator combine demand, stability, p
   assert.ok(uvApp.includes('budgetTierAllocator: true'));
   assert.ok(uvApp.includes('candidatePoolAllocationSeparation: true'));
   assert.ok(uvApp.includes('buildBudgetTierScore'));
-  assert.ok(ui.includes('Ø Budget-Tier'));
+  assert.ok(ui.includes('Avg Budget-Tier'));
   assert.ok(ui.includes('Karten-Version'));
-  assert.ok(ui.includes('Ø Trader-Consensus'));
+  assert.ok(ui.includes('Avg Trader-Consensus'));
   assert.ok(ui.includes('Consensus-Tags'));
 });
 
@@ -245,7 +254,7 @@ test('v2.10.2 CPU-safe full live recheck refreshes demand and preserves degraded
 
 test('v2.10.2 budget supports manual entry plus quick presets and saving is explicit opt-in', () => {
   assert.ok(html.includes('id="budget"'));
-  for (const value of ['100000','300000','500000','1000000','3000000','12000000']) {
+  for (const value of ['20000','50000','100000','300000','500000','1000000','3000000','12000000']) {
     assert.ok(html.includes(`data-budget="${value}"`), value);
   }
   assert.ok(html.includes('id="saveListChoice"'));
@@ -288,10 +297,10 @@ test('rebalance capital bands use the stored list count and never an undefined g
   assert.equal(block.includes('effectiveCount'), false);
 });
 
-test('UI reports final hard-100 budget feasibility from the generated portfolio, not an earlier pipeline estimate', () => {
-  assert.ok(ui.includes("Number(data.count||data.generatedCount||0) >= Number(data.requestedCount||100)"));
+test('UI reports final budget-slot feasibility from the generated portfolio, not an earlier pipeline estimate', () => {
+  assert.ok(ui.includes("Number(data.count||data.generatedCount||0) >= Number(data.requestedCount||data.count||0)"));
   assert.ok(ui.includes("Number(data.totalBuy||0) <= Number(data.budget||0)"));
-  assert.ok(ui.includes("? '✓ 100 machbar'"));
+  assert.ok(ui.includes("? 'OK Ziel erreicht'"));
   assert.ok(ui.includes("Pipeline-Mindestbudget (vor Fallback)"));
 });
 
