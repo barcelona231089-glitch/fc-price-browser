@@ -1004,6 +1004,27 @@ export function adaptiveEvidenceGate(x = {}) {
   return { allowed: primary && families.length >= 2, primary, families, count: families.length };
 }
 
+export function liveConfluenceSignalV1({ momentum = 0, demand = 0, history = 0, evidence = null, futbinStatus = '', overheated = false } = {}) {
+  const families = Array.isArray(evidence?.families) ? evidence.families : [];
+  const badSecondary = ['DIVERGENCE','OUTLIER'].includes(String(futbinStatus || '').toUpperCase());
+  const allowed = Boolean(
+    !overheated && !badSecondary &&
+    Number(momentum) >= 2.5 && Number(demand) >= 2.5 && Number(history) >= 1.5 &&
+    families.includes('FUTGG_MARKET') && families.includes('FUTGG_DEMAND') && families.includes('HISTORY')
+  );
+  const strong = Boolean(allowed && Number(momentum) >= 4 && Number(demand) >= 4 && Number(history) >= 2 && families.length >= 3);
+  return {
+    allowed,
+    strong,
+    momentum: Number(momentum),
+    demand: Number(demand),
+    history: Number(history),
+    families: [...families],
+    badSecondary,
+    canTriggerBuyAlone: false
+  };
+}
+
 export function buildUpgradeWatchV1(row = {}, signals = [], catalyst = 'NONE', relevance = 0) {
   const text = normalizeText(...signals.map(signalText), ...(Array.isArray(row?.aiLeakIntel?.topics) ? row.aiLeakIntel.topics : [])).toLowerCase();
   const keywordHit = /\b(upgrad|upgrade|upgrades|upgraded|evo|evolution|dynamic|live card|win|wins|goal|goals|assist|objective)\b/i.test(text);
@@ -1220,15 +1241,25 @@ function applyDecision(row, work, context) {
   const buyConf = evidenceConfidence(buyScore, [patternBuy, cardBuy], source, contradictions);
   const sellConf = evidenceConfidence(sellScore, [patternSell, cardSell], source, contradictions);
   const dataNeeds = chooseDataNeeds(row, regime, catalyst);
+  const demand = demandScore(row);
+  const history = historyAdjustment(patternBuy, 12) + historyAdjustment(cardBuy, 8);
   const buyEvidence = adaptiveEvidenceGate({
     momentum,
     earlyEntry: earlyEntry.allowed,
     regime,
-    demand: demandScore(row),
+    demand,
     secondary: futbinScore(row) + futbinPublicMarketScore(row, 'BUY') + futbinWindowBuy + marketOverviewBuyAdj,
-    history: historyAdjustment(patternBuy, 12) + historyAdjustment(cardBuy, 8),
+    history,
     external: Math.max(0, source.netDirection * 10) + (row?.aiLeakIntel?.active && row.aiLeakIntel.marketReaction ? relevance * 3 : 0),
     season: seasonMemoryAdjustment(row, 'BUY', context.gameYear) + catalystBuyAdj + phaseBuyAdj
+  });
+  const liveConfluence = liveConfluenceSignalV1({
+    momentum,
+    demand,
+    history,
+    evidence: buyEvidence,
+    futbinStatus: row?.futbinCrossCheck,
+    overheated: earlyEntry.overheated
   });
   const fc27ConservativeBuyGuardBlock = Boolean(
     FC27_CONSERVATIVE_BUY_GUARD && String(context.gameYear) === '27' && (
@@ -1240,8 +1271,16 @@ function applyDecision(row, work, context) {
 
   let publicCall = null;
   let finalConfidence = Math.max(buyConf.confidence, sellConf.confidence);
-  const requiredBuyScore = earlyEntry.strong ? Math.max(66, BUY_SCORE_THRESHOLD - 4) : BUY_SCORE_THRESHOLD;
-  const requiredBuyConfidence = earlyEntry.strong ? Math.max(72, MIN_PUBLIC_BUY_CONFIDENCE - 3) : MIN_PUBLIC_BUY_CONFIDENCE;
+  const requiredBuyScore = liveConfluence.strong
+    ? Math.max(68, BUY_SCORE_THRESHOLD - 4)
+    : earlyEntry.strong
+      ? Math.max(66, BUY_SCORE_THRESHOLD - 4)
+      : BUY_SCORE_THRESHOLD;
+  const requiredBuyConfidence = liveConfluence.strong
+    ? Math.max(68, MIN_PUBLIC_BUY_CONFIDENCE - 6)
+    : earlyEntry.strong
+      ? Math.max(72, MIN_PUBLIC_BUY_CONFIDENCE - 3)
+      : MIN_PUBLIC_BUY_CONFIDENCE;
 
   if (buyEvidence.allowed && !earlyEntry.overheated && !hardBlock && !legacyBuyGuardBlock && !legacySanityBlock && !fc27ConservativeBuyGuardBlock && buyScore >= requiredBuyScore && buyConf.confidence >= requiredBuyConfidence && !contradictions.severe) {
     publicCall = 'BUY';
@@ -1283,6 +1322,7 @@ function applyDecision(row, work, context) {
     publicCallAllowed: Boolean(publicCall),
     buyEvidence,
     earlyEntry,
+    liveConfluence,
     requiredBuyScore,
     requiredBuyConfidence,
     confidence: finalConfidence,
@@ -1348,6 +1388,7 @@ function applyDecision(row, work, context) {
       sellScore: decision.sellScore,
       publicCall,
       earlyEntry: decision.earlyEntry,
+      liveConfluence: decision.liveConfluence,
       sourceReliability: source.sources,
       patternAccuracy: selectedPattern?.accuracy ?? null,
       patternSamples: selectedPattern?.effectiveSamples ?? 0,

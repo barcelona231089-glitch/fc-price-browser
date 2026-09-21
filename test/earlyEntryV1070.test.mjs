@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { earlyEntrySignalV1, adaptiveEvidenceGate } from '../adaptiveBrainV1064.js';
+import { earlyEntrySignalV1, adaptiveEvidenceGate, liveConfluenceSignalV1 } from '../adaptiveBrainV1064.js';
 
 test('early entry opens on broad, confirmed, not-yet-overheated demand', () => {
   const signal = earlyEntrySignalV1({
@@ -48,4 +48,21 @@ test('rating intelligence includes early buy zone and late no-chase protection',
   assert.ok(source.includes('nearHighPct < 35'));
   assert.ok(source.includes('marketAdvice = "JETZT KAUFEN"'));
   assert.ok(source.includes('marketAdvice = "NICHT HINTERHERKAUFEN"'));
+});
+
+
+test('strong live confluence can confirm BUY without FUTBIN when market demand and history agree', () => {
+  const evidence = adaptiveEvidenceGate({ momentum: 5, demand: 5, history: 3 });
+  const signal = liveConfluenceSignalV1({ momentum: 5, demand: 5, history: 3, evidence, futbinStatus: 'NO_DATA' });
+  assert.equal(evidence.allowed, true);
+  assert.deepEqual(evidence.families, ['FUTGG_MARKET','FUTGG_DEMAND','HISTORY']);
+  assert.equal(signal.allowed, true);
+  assert.equal(signal.strong, true);
+  assert.equal(signal.canTriggerBuyAlone, false);
+});
+
+test('live confluence fails closed on FUTBIN divergence or overheated move', () => {
+  const evidence = adaptiveEvidenceGate({ momentum: 5, demand: 5, history: 3 });
+  assert.equal(liveConfluenceSignalV1({ momentum: 5, demand: 5, history: 3, evidence, futbinStatus: 'DIVERGENCE' }).allowed, false);
+  assert.equal(liveConfluenceSignalV1({ momentum: 5, demand: 5, history: 3, evidence, overheated: true }).allowed, false);
 });
