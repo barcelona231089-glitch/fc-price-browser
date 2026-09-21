@@ -946,6 +946,36 @@ function historyAdjustment(profile, maxAbs = 12) {
   return clamp(accuracyAdj + outcomeAdj, -maxAbs, maxAbs);
 }
 
+export function adaptiveEvidenceGate(x = {}) {
+  const primary = Number(x.momentum || 0) >= 2 || String(x.regime || '') === 'RECOVERY';
+  const families = [];
+  if (primary) families.push('FUTGG_MARKET');
+  if (Number(x.demand || 0) >= 2) families.push('FUTGG_DEMAND');
+  if (Number(x.secondary || 0) >= 3) families.push('SECONDARY');
+  if (Number(x.history || 0) >= 2) families.push('HISTORY');
+  if (Number(x.external || 0) >= 2) families.push('EVENT');
+  if (Number(x.season || 0) >= 2) families.push('SEASON');
+  return { allowed: primary && families.length >= 2, primary, families, count: families.length };
+}
+
+export function buildUpgradeWatchV1(row = {}, signals = [], catalyst = 'NONE', relevance = 0) {
+  const text = normalizeText(...signals.map(signalText), ...(Array.isArray(row?.aiLeakIntel?.topics) ? row.aiLeakIntel.topics : [])).toLowerCase();
+  const keywordHit = /\b(upgrad|upgrade|upgrades|upgraded|evo|evolution|dynamic|live card|win|wins|goal|goals|assist|objective)\b/i.test(text);
+  const active = keywordHit && ['EVO','PROMO','LEAK_OR_TRADER'].includes(String(catalyst));
+  const confirmedReaction = Boolean(row?.aiLeakIntel?.marketReaction) || signals.some(s => s?.marketConfirmation === true);
+  const sourceCount = new Set(signals.map(sourceName).filter(x => x && x !== 'UNKNOWN')).size;
+  return {
+    version: '1.0',
+    active,
+    catalyst: String(catalyst),
+    relevance: Number(clamp(Number(relevance || 0), 0, 1).toFixed(2)),
+    confirmedReaction,
+    sourceCount,
+    mode: active ? (confirmedReaction ? 'CONFIRMED_REACTION' : 'WATCH_ONLY') : 'INACTIVE',
+    canTriggerBuyAlone: false
+  };
+}
+
 function evidenceConfidence(score, historyProfiles, source, contradictions) {
   const history = historyProfiles.filter(Boolean);
   const samples = history.reduce((sum, p) => sum + numberOr(p.effectiveSamples, 0), 0);
@@ -1064,6 +1094,9 @@ function applyDecision(row, work, context) {
   const { regime, catalyst } = classifyRegime(row, context.marketContext, signals);
   const relevance = eventRelevance(row, signals, catalyst);
   const source = sourceEvidence(signals, context.gameYear);
+  const upgradeWatch = buildUpgradeWatchV1(row, signals, catalyst, relevance);
+  row.aiUpgradeWatch = upgradeWatch;
+  if (work?.input && typeof work.input === 'object') work.input.upgradeWatch = upgradeWatch;
   const contradictions = contradictionSnapshot(row, regime);
   const hardBlock = tradeabilityBlock(row);
   const legacyBuyGuardBlock = row?.aiBuyGuard?.blocked === true;
@@ -1136,6 +1169,15 @@ function applyDecision(row, work, context) {
   const buyConf = evidenceConfidence(buyScore, [patternBuy, cardBuy], source, contradictions);
   const sellConf = evidenceConfidence(sellScore, [patternSell, cardSell], source, contradictions);
   const dataNeeds = chooseDataNeeds(row, regime, catalyst);
+  const buyEvidence = adaptiveEvidenceGate({
+    momentum: momentumScore(row),
+    regime,
+    demand: demandScore(row),
+    secondary: futbinScore(row) + futbinPublicMarketScore(row, 'BUY') + futbinWindowBuy + marketOverviewBuyAdj,
+    history: historyAdjustment(patternBuy, 12) + historyAdjustment(cardBuy, 8),
+    external: Math.max(0, source.netDirection * 10) + (row?.aiLeakIntel?.active && row.aiLeakIntel.marketReaction ? relevance * 3 : 0),
+    season: seasonMemoryAdjustment(row, 'BUY', context.gameYear) + catalystBuyAdj + phaseBuyAdj
+  });
   const fc27ConservativeBuyGuardBlock = Boolean(
     FC27_CONSERVATIVE_BUY_GUARD && String(context.gameYear) === '27' && (
       regime !== 'RECOVERY' ||
@@ -1147,7 +1189,7 @@ function applyDecision(row, work, context) {
   let publicCall = null;
   let finalConfidence = Math.max(buyConf.confidence, sellConf.confidence);
 
-  if (!hardBlock && !legacyBuyGuardBlock && !legacySanityBlock && !fc27ConservativeBuyGuardBlock && buyScore >= BUY_SCORE_THRESHOLD && buyConf.confidence >= MIN_PUBLIC_BUY_CONFIDENCE && !contradictions.severe) {
+  if (buyEvidence.allowed && !hardBlock && !legacyBuyGuardBlock && !legacySanityBlock && !fc27ConservativeBuyGuardBlock && buyScore >= BUY_SCORE_THRESHOLD && buyConf.confidence >= MIN_PUBLIC_BUY_CONFIDENCE && !contradictions.severe) {
     publicCall = 'BUY';
     finalConfidence = buyConf.confidence;
     row.aiAction = 'JETZT KAUFEN';
@@ -1180,10 +1222,12 @@ function applyDecision(row, work, context) {
     regimeLabel: REGIME_LABELS[regime] || regime,
     catalyst,
     eventRelevance: Number(relevance.toFixed(2)),
+    upgradeWatch,
     buyScore: Math.round(buyScore),
     sellScore: Math.round(sellScore),
     publicCall,
     publicCallAllowed: Boolean(publicCall),
+    buyEvidence,
     confidence: finalConfidence,
     source,
     pattern: selectedPattern,
