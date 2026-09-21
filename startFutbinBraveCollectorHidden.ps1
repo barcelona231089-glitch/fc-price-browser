@@ -31,6 +31,7 @@ try {
     $env:FUTBIN_BRAVE_COLLECTOR_MAX_CARDS = '6'
     $env:FUTBIN_BRAVE_COLLECTOR_INTERVAL_MS = '1800000'
     $env:FUTBIN_BRAVE_SPACING_MS = '3000'
+    $env:FUTBIN_BRAVE_CLOSE_AFTER_CYCLE = '1'
 
     Set-Location $repo
     Write-SupervisorLog 'collector start'

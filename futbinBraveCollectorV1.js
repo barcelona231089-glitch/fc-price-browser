@@ -15,6 +15,7 @@ const MAX_CARDS = Math.max(1, Math.min(12, Number(process.env.FUTBIN_BRAVE_COLLE
 const INTERVAL_MS = Math.max(15 * 60_000, Number(process.env.FUTBIN_BRAVE_COLLECTOR_INTERVAL_MS || 30 * 60_000));
 const PAGE_WAIT_MS = Math.max(1500, Math.min(20_000, Number(process.env.FUTBIN_BRAVE_PAGE_WAIT_MS || 4500)));
 const SPACING_MS = Math.max(1500, Math.min(60_000, Number(process.env.FUTBIN_BRAVE_SPACING_MS || 3000)));
+const CLOSE_AFTER_CYCLE = !["0", "false", "no", "off"].includes(String(process.env.FUTBIN_BRAVE_CLOSE_AFTER_CYCLE || "1").trim().toLowerCase());
 const TOKEN = String(process.env.FUTBIN_SNAPSHOT_INGEST_TOKEN || "");
 const PROFILE_DIR = process.env.FUTBIN_BRAVE_COLLECTOR_PROFILE
   || join(process.env.LOCALAPPDATA || ROOT, "FCTraderBrain", "BraveFutbinCollectorProfile");
@@ -111,6 +112,19 @@ async function ensureBrave() {
   }
   throw new Error("BRAVE_DEBUG_NOT_READY");
 }
+
+function closeCollectorBrave() {
+  if (!CLOSE_AFTER_CYCLE) return;
+  const profile = PROFILE_DIR.replace(/'/g, "''");
+  const command = [
+    `$profile='${profile}'`,
+    `Get-CimInstance Win32_Process | Where-Object { $_.Name -eq 'brave.exe' -and $_.CommandLine -like ('*' + $profile + '*') } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }`
+  ].join("; ");
+  spawnSync("powershell.exe", [
+    "-NoProfile", "-ExecutionPolicy", "Bypass", "-WindowStyle", "Hidden", "-Command", command
+  ], { stdio: "ignore", windowsHide: true, timeout: 10_000 });
+}
+
 function actionPriority(action) {
   const v = String(action || "").toUpperCase();
   if (v.includes("BUY")) return 900;
@@ -234,16 +248,18 @@ export async function runCollectorCycle() {
   const startedAt = nowIso();
   try {
     const brainRows = await loadBrainRows();
-    await ensureBrave();
     const selection = selectCollectorCards(brainRows, { maxCards: MAX_CARDS, cursor });
     cursor = selection.nextCursor;
 
     if (!selection.cards.length) {
-      const status = { ok: true, cycleCount, startedAt, finishedAt: nowIso(), eligibleCount: selection.eligibleCount, selected: 0, inserted: 0, nextCursor: cursor, reason: "NO_ELIGIBLE_CARDS" };
+      const status = { ok: true, cycleCount, startedAt, finishedAt: nowIso(), eligibleCount: selection.eligibleCount, selected: 0, inserted: 0, nextCursor: cursor, browserClosedAfterCycle: CLOSE_AFTER_CYCLE, reason: "NO_ELIGIBLE_CARDS" };
       writeStatus(status);
       log("cycle-no-eligible", status);
       return status;
     }
+
+    closeCollectorBrave();
+    await ensureBrave();
 
     const collect = () => getFutbinBraveCards(selection.cards, "console", {
       force: true,
@@ -275,6 +291,7 @@ export async function runCollectorCycle() {
       inserted: Number(pushed?.inserted || 0),
       received: Number(pushed?.received || 0),
       nextCursor: cursor,
+      browserClosedAfterCycle: CLOSE_AFTER_CYCLE,
       lastCards: rows.map(row => ({ futbinId: row.futbinId, name: row.name, priceConsole: row.priceConsole, observedAt: row.observedAt }))
     };
     writeStatus(status);
@@ -291,6 +308,8 @@ export async function runCollectorCycle() {
     writeStatus(status);
     log("cycle-error", { error: status.error });
     return status;
+  } finally {
+    closeCollectorBrave();
   }
 }
 function enabled() {
