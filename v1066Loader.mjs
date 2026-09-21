@@ -516,7 +516,8 @@ async function cleanupExpiredTransientRechecks() {
 
   out = out.replace(reserveOld, reserveNew);
 
-  if (!out.includes('adaptiveAllocatorProved') || !out.includes('reserveAllocatorProved')) {
+  const dynamicPortfolioMode = out.includes('dynamicPortfolioSize: true') || out.includes('qualityFirstDynamicCount: true');
+  if (!dynamicPortfolioMode && (!out.includes('adaptiveAllocatorProved') || !out.includes('reserveAllocatorProved'))) {
     throw new Error('[ÜV v2.10.12] allocator-consistency patch failed.');
   }
   return out;
