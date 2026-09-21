@@ -228,6 +228,9 @@ function renderDetail(c, pricing, status, quality){
   const traderMethodSources = Array.isArray(c.traderKnowledge?.publicMethodologySignals)
     ? c.traderKnowledge.publicMethodologySignals.map(x=>x.source).filter(Boolean).join(', ')
     : 'SwepixTV, MM___TV, Noah x Kai';
+  const ladder = c.recommendationLifecycle?.relistLadder?.stages || [];
+  const ladderText = ladder.length ? ladder.map(x=>`${x.afterHours}h ${coins(x.price)}`).join(' • ') : '–';
+  const journal = lastListId && c._savedSlot ? `<div class="journalBox"><strong>Outcome-Journal</strong><span>Relist-Leiter: ${ladderText}</span><div class="journalActions"><button type="button" data-feedback="sold" data-slot="${c._savedSlot}">Verkauft</button><button type="button" data-feedback="unsold" data-slot="${c._savedSlot}">Nicht verkauft</button><button type="button" data-feedback="expired" data-slot="${c._savedSlot}">Abgelaufen</button></div></div>` : '';
   return `<div class="detailPanel">
     <div class="detailGrid">
       ${detailMetric('Kartentyp',c.rarityName||c.cardType||'-')}
@@ -262,6 +265,7 @@ function renderDetail(c, pricing, status, quality){
     </div>
     <p class="detailReason"><strong>${status === 'KEEP' || status === 'REPRICE' ? 'Hinweis' : 'Sicherheitsgrund'}:</strong> ${reason}</p>
     <p class="coverage">${signalText(c)}</p>
+    ${journal}
   </div>`;
 }
 
@@ -415,7 +419,9 @@ btn.addEventListener('click', async()=>{
     let data;
     try{data=JSON.parse(text)}catch{throw new Error(`Server lieferte keine JSON-Antwort (HTTP ${r.status}).`)}
     if(!r.ok) throw new Error(data.error||'Fehler');
-    lastCards=data.cards; lastListId=data.listId||null; lastCheckedListId=null; resetListUiState(); renderSummary(data); renderCurrentRows(); filter.disabled=false; recheckBtn.disabled=!lastListId; rebalanceBtn.disabled=true;
+    lastListId=data.listId||null;
+    lastCards=(data.cards||[]).map((card,index)=>({...card,_savedSlot:lastListId?index+1:null}));
+    lastCheckedListId=null; resetListUiState(); renderSummary(data); renderCurrentRows(); filter.disabled=false; recheckBtn.disabled=!lastListId; rebalanceBtn.disabled=true;
     $('#tableSub').textContent=`${data.count} Karten • Pool ${data.candidatePoolSize} • Budget übrig ${coins(data.unusedBudget)}${lastListId?' • Vor dem Kaufen: Liste live prüfen':' • Nicht gespeichert'}`;
     notice.textContent=lastListId
       ? `Liste #${lastListId} gespeichert. Vor dem Kaufen zuerst „Liste live prüfen“ verwenden. ${data.dataNotice||''}`
@@ -536,7 +542,9 @@ rebalanceBtn.addEventListener('click', async()=>{
     let data;
     try{data=JSON.parse(text)}catch{throw new Error(`Server lieferte keine JSON-Antwort (HTTP ${r.status}).`)}
     if(!r.ok) throw new Error(data.error||'Rebalance fehlgeschlagen');
-    lastCards=data.cards||[]; lastListId=data.listId||null; lastCheckedListId=null; activeStatusFilter='ALL'; expandedRows.clear();
+    lastListId=data.listId||null;
+    lastCards=(data.cards||[]).map((card,index)=>({...card,_savedSlot:lastListId?index+1:null}));
+    lastCheckedListId=null; activeStatusFilter='ALL'; expandedRows.clear();
     renderSummary(data); renderCurrentRows();
     const rb=data.rebalance||{};
     $('#tableSub').textContent=lastListId
@@ -579,7 +587,35 @@ for(const button of statusFilters){
   });
 }
 
-rows.addEventListener('click',event=>{
+rows.addEventListener('click',async event=>{
+  const feedbackButton=event.target.closest('[data-feedback]');
+  if(feedbackButton){
+    if(!lastListId) return;
+    const slot=Number(feedbackButton.dataset.slot||0);
+    const outcome=String(feedbackButton.dataset.feedback||'');
+    const card=lastCards.find(c=>Number(c._savedSlot)===slot);
+    if(!card) return;
+    const actualBuy=Number(prompt('Tatsächlicher Einkaufspreis?', String(card.buyPrice||card.recommendedBuyPrice||card.price||''))||0);
+    const relists=Number(prompt('Wie viele Relists?', '0')||0);
+    const listedHours=Number(prompt('Seit wie vielen Stunden war die Karte gelistet?', '0')||0);
+    let soldPrice=null;
+    if(outcome==='sold') soldPrice=Number(prompt('Tatsächlicher Verkaufspreis?', String(card.sellPrice||''))||0);
+    const listedAt=Number.isFinite(listedHours)&&listedHours>=0?new Date(Date.now()-listedHours*3600000).toISOString():null;
+    feedbackButton.disabled=true;
+    try{
+      const pricing=effectivePricing(card);
+      const r=await fetch('/api/uv/feedback',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({
+        listId:lastListId,slot,outcome,soldPrice:soldPrice||null,relists:Number.isFinite(relists)?relists:0,
+        actualBuyPrice:actualBuy||null,listedPrice:pricing.sell||null,marketPriceAtBuy:pricing.market||null,
+        marketPriceAtSale:pricing.market||null,listedAt
+      })});
+      const data=await r.json(); if(!r.ok) throw new Error(data.error||'Outcome konnte nicht gespeichert werden.');
+      notice.textContent=`Outcome für #${slot} ${card.name||''} gespeichert: ${outcome}. Dieses Ergebnis fließt ins ÜV-Lernen ein.`;
+      notice.classList.remove('hidden');
+    }catch(e){notice.textContent=e.message;notice.classList.remove('hidden')}
+    finally{feedbackButton.disabled=false}
+    return;
+  }
   const button=event.target.closest('[data-details]');
   if(!button) return;
   const key=String(button.dataset.details||'');

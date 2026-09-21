@@ -403,6 +403,7 @@ app.get('/api/uv/list/:listId', async (req, res) => {
     const stored = await loadGeneratedList(req.params.listId);
     const cards = stored.items.map(item => ({
       ...item.payload,
+      _savedSlot: item.slot,
       eaId: item.eaId,
       buyPrice: item.buyPrice,
       recommendedBuyPrice: item.payload?.recommendedBuyPrice ?? item.buyPrice,

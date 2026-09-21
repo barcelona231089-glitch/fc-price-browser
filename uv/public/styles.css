@@ -86,3 +86,7 @@
 .saveChoice input{accent-color:var(--green);width:15px;height:15px;margin:0}
 @media(max-width:900px){.generateActions{grid-column:1/-1}.saveChoice{justify-content:flex-start}.compactGenerator #generateBtn{grid-column:auto}}
 @media(max-width:560px){.generateActions{grid-column:1}.budgetPresets{gap:4px}.budgetPreset{flex:1 1 27%;padding:6px}.saveChoice{justify-content:flex-start}}
+
+.journalBox{margin-top:12px;padding:12px;border:1px solid var(--line,#d8d8d8);border-radius:10px;display:flex;flex-wrap:wrap;gap:10px;align-items:center}
+.journalBox>strong{margin-right:4px}.journalBox>span{font-size:13px;opacity:.8}.journalActions{display:flex;gap:8px;flex-wrap:wrap;margin-left:auto}
+.journalActions button{padding:7px 10px;border-radius:8px;border:1px solid currentColor;background:transparent;cursor:pointer}
