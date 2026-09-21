@@ -670,6 +670,7 @@ export async function loadTargetSupportPerformance(platform) {
     JOIN uv_generated_lists gl ON gl.id=f.list_id
     WHERE gl.platform=$1
       AND gl.game_year=$2
+      AND f.outcome IN ('sold','unsold','expired')
       AND f.resolved_at > NOW() - INTERVAL '90 days'
     GROUP BY 1,2,3,4,5
   `, [platform, GAME_YEAR]);
@@ -739,7 +740,7 @@ export async function loadTargetSupportPerformance(platform) {
 export async function recordTradeFeedback({ listId, slot, outcome, soldPrice = null, relists = 0, note = null, actualBuyPrice = null, listedPrice = null, marketPriceAtBuy = null, marketPriceAtSale = null, listedAt = null }) {
   if (!pool) throw new Error('PostgreSQL ist nicht konfiguriert.');
   const normalized = String(outcome || '').toLowerCase();
-  if (!['sold', 'unsold', 'expired'].includes(normalized)) throw new Error('outcome muss sold, unsold oder expired sein.');
+  if (!['bought', 'sold', 'unsold', 'expired', 'skipped'].includes(normalized)) throw new Error('outcome muss bought, sold, unsold, expired oder skipped sein.');
   const id = Number(listId);
   const s = Number(slot);
   if (!Number.isInteger(id) || id <= 0 || !Number.isInteger(s) || s <= 0) throw new Error('listId/slot ungueltig.');
@@ -786,14 +787,16 @@ export async function getTradeFeedbackStatus(platform = null) {
   if (platform) { values.push(platform); where += ' AND gl.platform=$2'; }
   const result = await pool.query(`
     SELECT
-      COUNT(*)::int AS total,
+      COUNT(*) FILTER (WHERE f.outcome IN ('sold','unsold','expired'))::int AS total,
       COUNT(*) FILTER (WHERE f.outcome='sold')::int AS sold,
       COUNT(*) FILTER (WHERE f.outcome='unsold')::int AS unsold,
       COUNT(*) FILTER (WHERE f.outcome='expired')::int AS expired,
-      AVG(f.relists)::numeric AS avg_relists,
+      COUNT(*) FILTER (WHERE f.outcome='bought')::int AS bought,
+      COUNT(*) FILTER (WHERE f.outcome='skipped')::int AS skipped,
+      AVG(f.relists) FILTER (WHERE f.outcome IN ('sold','unsold','expired'))::numeric AS avg_relists,
       AVG(CASE WHEN f.outcome='sold' AND f.sold_price IS NOT NULL
         THEN FLOOR(f.sold_price * 0.95) - COALESCE(f.actual_buy_price, li.buy_price) END)::numeric AS avg_sold_net_profit,
-      AVG(GREATEST(0, EXTRACT(EPOCH FROM (f.resolved_at - COALESCE(f.listed_at, gl.created_at))) / 3600.0))::numeric AS avg_resolution_hours,
+      AVG(GREATEST(0, EXTRACT(EPOCH FROM (f.resolved_at - COALESCE(f.listed_at, gl.created_at))) / 3600.0)) FILTER (WHERE f.outcome IN ('sold','unsold','expired'))::numeric AS avg_resolution_hours,
       MAX(f.resolved_at) AS last_at
     FROM uv_trade_feedback f
     JOIN uv_generated_lists gl ON gl.id=f.list_id
@@ -809,6 +812,8 @@ export async function getTradeFeedbackStatus(platform = null) {
     sold,
     unsold: Number(row.unsold || 0),
     expired: Number(row.expired || 0),
+    bought: Number(row.bought || 0),
+    skipped: Number(row.skipped || 0),
     reportedSellRate: total > 0 ? sold / total : null,
     avgRelists: Number.isFinite(Number(row.avg_relists)) ? Number(row.avg_relists) : null,
     avgSoldNetProfit: Number.isFinite(Number(row.avg_sold_net_profit)) ? Number(row.avg_sold_net_profit) : null,
@@ -871,9 +876,11 @@ export async function loadGeneratedList(listId) {
   `, [id, GAME_YEAR]);
   if (!head.rowCount) throw new Error('Liste nicht gefunden.');
   const items = await pool.query(`
-    SELECT slot, ea_id, buy_price, start_price, sell_price, ea_tax, net_profit, uv_score, payload, last_recheck
-    FROM uv_list_items
-    WHERE list_id=$1
+    SELECT li.slot, li.ea_id, li.buy_price, li.start_price, li.sell_price, li.ea_tax, li.net_profit, li.uv_score, li.payload, li.last_recheck,
+           f.outcome AS feedback_outcome, f.sold_price, f.relists, f.actual_buy_price, f.listed_price, f.listed_at, f.resolved_at
+    FROM uv_list_items li
+    LEFT JOIN uv_trade_feedback f ON f.list_id=li.list_id AND f.slot=li.slot
+    WHERE li.list_id=$1
     ORDER BY slot ASC
   `, [id]);
   const h = head.rows[0];
@@ -899,7 +906,12 @@ export async function loadGeneratedList(listId) {
       netProfit: Number(r.net_profit),
       uvScore: Number(r.uv_score || 0),
       payload: r.payload || {},
-      lastRecheck: r.last_recheck || null
+      lastRecheck: r.last_recheck || null,
+      feedback: r.feedback_outcome ? {
+        outcome: r.feedback_outcome, soldPrice: r.sold_price == null ? null : Number(r.sold_price),
+        relists: Number(r.relists || 0), actualBuyPrice: r.actual_buy_price == null ? null : Number(r.actual_buy_price),
+        listedPrice: r.listed_price == null ? null : Number(r.listed_price), listedAt: r.listed_at || null, resolvedAt: r.resolved_at || null
+      } : null
     }))
   };
 }

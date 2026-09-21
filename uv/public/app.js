@@ -230,7 +230,8 @@ function renderDetail(c, pricing, status, quality){
     : 'SwepixTV, MM___TV, Noah x Kai';
   const ladder = c.recommendationLifecycle?.relistLadder?.stages || [];
   const ladderText = ladder.length ? ladder.map(x=>`${x.afterHours}h ${coins(x.price)}`).join(' • ') : '–';
-  const journal = lastListId && c._savedSlot ? `<div class="journalBox"><strong>Outcome-Journal</strong><span>Relist-Leiter: ${ladderText}</span><div class="journalActions"><button type="button" data-feedback="sold" data-slot="${c._savedSlot}">Verkauft</button><button type="button" data-feedback="unsold" data-slot="${c._savedSlot}">Nicht verkauft</button><button type="button" data-feedback="expired" data-slot="${c._savedSlot}">Abgelaufen</button></div></div>` : '';
+  const journalState = c._feedback?.outcome ? `Status: ${c._feedback.outcome}` : 'Status: offen';
+  const journal = lastListId && c._savedSlot ? `<div class="journalBox"><strong>Trade-Journal</strong><span>${journalState} • Relist-Leiter: ${ladderText}</span><div class="journalActions"><button type="button" data-feedback="bought" data-slot="${c._savedSlot}">Gekauft</button><button type="button" data-feedback="sold" data-slot="${c._savedSlot}">Verkauft</button><button type="button" data-feedback="unsold" data-slot="${c._savedSlot}">Nicht verkauft</button><button type="button" data-feedback="expired" data-slot="${c._savedSlot}">Abgelaufen</button><button type="button" data-feedback="skipped" data-slot="${c._savedSlot}">Übersprungen</button></div></div>` : '';
   return `<div class="detailPanel">
     <div class="detailGrid">
       ${detailMetric('Kartentyp',c.rarityName||c.cardType||'-')}
@@ -595,22 +596,32 @@ rows.addEventListener('click',async event=>{
     const outcome=String(feedbackButton.dataset.feedback||'');
     const card=lastCards.find(c=>Number(c._savedSlot)===slot);
     if(!card) return;
-    const actualBuy=Number(prompt('Tatsächlicher Einkaufspreis?', String(card.buyPrice||card.recommendedBuyPrice||card.price||''))||0);
-    const relists=Number(prompt('Wie viele Relists?', '0')||0);
-    const listedHours=Number(prompt('Seit wie vielen Stunden war die Karte gelistet?', '0')||0);
+    const pricing=effectivePricing(card);
+    let actualBuy=null;
+    let relists=0;
+    let listedHours=0;
     let soldPrice=null;
+    if(outcome!=='skipped'){
+      actualBuy=Number(prompt('Tatsächlicher Einkaufspreis?', String(card._feedback?.actualBuyPrice||card.buyPrice||card.recommendedBuyPrice||card.price||''))||0);
+    }
+    if(['sold','unsold','expired'].includes(outcome)){
+      relists=Number(prompt('Wie viele Relists?', String(card._feedback?.relists||0))||0);
+      listedHours=Number(prompt('Seit wie vielen Stunden war die Karte gelistet?', '0')||0);
+    }
     if(outcome==='sold') soldPrice=Number(prompt('Tatsächlicher Verkaufspreis?', String(card.sellPrice||''))||0);
-    const listedAt=Number.isFinite(listedHours)&&listedHours>=0?new Date(Date.now()-listedHours*3600000).toISOString():null;
+    const listedAt=outcome==='bought' ? new Date().toISOString() : (card._feedback?.listedAt || (Number.isFinite(listedHours)&&listedHours>=0 ? new Date(Date.now()-listedHours*3600000).toISOString() : null));
     feedbackButton.disabled=true;
     try{
-      const pricing=effectivePricing(card);
       const r=await fetch('/api/uv/feedback',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({
         listId:lastListId,slot,outcome,soldPrice:soldPrice||null,relists:Number.isFinite(relists)?relists:0,
         actualBuyPrice:actualBuy||null,listedPrice:pricing.sell||null,marketPriceAtBuy:pricing.market||null,
         marketPriceAtSale:pricing.market||null,listedAt
       })});
       const data=await r.json(); if(!r.ok) throw new Error(data.error||'Outcome konnte nicht gespeichert werden.');
-      notice.textContent=`Outcome für #${slot} ${card.name||''} gespeichert: ${outcome}. Dieses Ergebnis fließt ins ÜV-Lernen ein.`;
+      card._feedback={...(card._feedback||{}),...data};
+      const learns=['sold','unsold','expired'].includes(outcome);
+      notice.textContent=`Journal für #${slot} ${card.name||''} gespeichert: ${outcome}.${learns?' Dieses abgeschlossene Ergebnis fließt ins ÜV-Lernen ein.':' Kein Lernsignal, bis der Trade abgeschlossen ist.'}`;
+      renderCurrentRows();
       notice.classList.remove('hidden');
     }catch(e){notice.textContent=e.message;notice.classList.remove('hidden')}
     finally{feedbackButton.disabled=false}

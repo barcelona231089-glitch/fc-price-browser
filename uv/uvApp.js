@@ -17,7 +17,7 @@ import { buildReportedOutcomeScore } from './src/outcomeLearning.js';
 import { attachLocalFutbinFc27 } from './src/futbinLocalFc27.js';
 
 export const uvRouter = express.Router();
-const UV_VERSION = '2.11.0';
+const UV_VERSION = '2.11.1';
 
 async function getUvMarketContext(platform, liveCards = []) {
   const realRows = await loadRealMarketRegimeRows(platform).catch(() => []);
@@ -412,7 +412,8 @@ app.get('/api/uv/list/:listId', async (req, res) => {
       eaTax: item.eaTax,
       netProfit: item.netProfit,
       uvScore: item.uvScore,
-      _recheck: item.lastRecheck || null
+      _recheck: item.lastRecheck || null,
+      _feedback: item.feedback || null
     }));
     const fallbackMetrics = summarizeSelectedCards(cards, stored.budget);
     const savedSummary = stored.summaryPayload && typeof stored.summaryPayload === 'object' ? stored.summaryPayload : {};
