@@ -34,6 +34,41 @@ export function lifecycleWindowMinutes(card = {}) {
   return { validForMinutes: validFor, recheckAfterMinutes: recheckAfter };
 }
 
+function priceStep(price) {
+  const p = Number(price || 0);
+  if (p < 1000) return 50;
+  if (p < 10000) return 100;
+  if (p < 50000) return 250;
+  if (p < 100000) return 500;
+  return 1000;
+}
+
+function roundDownPrice(price) {
+  const step = priceStep(price);
+  return Math.max(step, Math.floor(Number(price || 0) / step) * step);
+}
+
+export function buildRelistLadder(card = {}) {
+  const buy = finite(card.buyPrice ?? card.recommendedBuyPrice, null);
+  const market = finite(card.price ?? card.marketPrice, null);
+  const sell = finite(card.sellPrice, null);
+  if (!(buy > 0) || !(market > 0) || !(sell > 0)) return null;
+  const breakEven = Math.ceil(buy / 0.95);
+  const mid = Math.max(breakEven, roundDownPrice(market + (sell - market) * 0.5));
+  const exit = Math.max(breakEven, roundDownPrice(market));
+  return {
+    version: '1.0',
+    taxRate: 0.05,
+    breakEven,
+    stages: [
+      { afterHours: 0, price: sell, action: 'LIST' },
+      { afterHours: 6, price: Math.min(sell, mid), action: 'RELIST' },
+      { afterHours: 24, price: Math.min(sell, exit), action: 'EXIT_OR_RECHECK' }
+    ],
+    neverBelowBreakEven: true
+  };
+}
+
 export function buildRecommendationLifecycle(card = {}, now = new Date()) {
   const at = now instanceof Date ? now : new Date(now);
   const { validForMinutes, recheckAfterMinutes } = lifecycleWindowMinutes(card);
@@ -51,6 +86,7 @@ export function buildRecommendationLifecycle(card = {}, now = new Date()) {
     validForMinutes,
     recheckAfterMinutes,
     lifecycleMode: 'price+quality-invalidation-guard',
+    relistLadder: buildRelistLadder(card),
     invalidationThresholds: {
       dropPricePct: risk >= 14 ? -4 : risk >= 7 ? -5 : -6,
       chasePricePct: confidence >= 78 && stability >= 70 ? 4.5 : 3.0,

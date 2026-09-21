@@ -168,6 +168,11 @@ export async function initDb() {
       FOREIGN KEY (list_id, slot) REFERENCES uv_list_items(list_id, slot) ON DELETE CASCADE
     )
   `);
+  await pool.query(`ALTER TABLE uv_trade_feedback ADD COLUMN IF NOT EXISTS actual_buy_price INTEGER`);
+  await pool.query(`ALTER TABLE uv_trade_feedback ADD COLUMN IF NOT EXISTS listed_price INTEGER`);
+  await pool.query(`ALTER TABLE uv_trade_feedback ADD COLUMN IF NOT EXISTS market_price_at_buy INTEGER`);
+  await pool.query(`ALTER TABLE uv_trade_feedback ADD COLUMN IF NOT EXISTS market_price_at_sale INTEGER`);
+  await pool.query(`ALTER TABLE uv_trade_feedback ADD COLUMN IF NOT EXISTS listed_at TIMESTAMPTZ`);
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_uv_trade_feedback_time ON uv_trade_feedback (resolved_at DESC)`);
 }
 
@@ -655,11 +660,11 @@ export async function loadTargetSupportPerformance(platform) {
       AVG(f.relists)::numeric AS avg_relists,
       AVG(CASE WHEN f.outcome='sold' THEN f.relists::numeric END)::numeric AS avg_sold_relists,
       AVG(CASE WHEN f.outcome='sold' AND f.sold_price IS NOT NULL
-        THEN FLOOR(f.sold_price * 0.95) - li.buy_price END)::numeric AS avg_reported_net_profit,
-      AVG(CASE WHEN f.outcome='sold' AND f.sold_price IS NOT NULL AND li.buy_price > 0
-        THEN ((FLOOR(f.sold_price * 0.95) - li.buy_price)::numeric / li.buy_price) * 100 END)::numeric AS avg_reported_roi_pct,
+        THEN FLOOR(f.sold_price * 0.95) - COALESCE(f.actual_buy_price, li.buy_price) END)::numeric AS avg_reported_net_profit,
+      AVG(CASE WHEN f.outcome='sold' AND f.sold_price IS NOT NULL AND COALESCE(f.actual_buy_price, li.buy_price) > 0
+        THEN ((FLOOR(f.sold_price * 0.95) - COALESCE(f.actual_buy_price, li.buy_price))::numeric / COALESCE(f.actual_buy_price, li.buy_price)) * 100 END)::numeric AS avg_reported_roi_pct,
       AVG(li.net_profit)::numeric AS avg_recommended_net_profit,
-      AVG(GREATEST(0, EXTRACT(EPOCH FROM (f.resolved_at - gl.created_at)) / 3600.0))::numeric AS avg_resolution_hours
+      AVG(GREATEST(0, EXTRACT(EPOCH FROM (f.resolved_at - COALESCE(f.listed_at, gl.created_at))) / 3600.0))::numeric AS avg_resolution_hours
     FROM uv_trade_feedback f
     JOIN uv_list_items li ON li.list_id=f.list_id AND li.slot=f.slot
     JOIN uv_generated_lists gl ON gl.id=f.list_id
@@ -731,7 +736,7 @@ export async function loadTargetSupportPerformance(platform) {
   return map;
 }
 
-export async function recordTradeFeedback({ listId, slot, outcome, soldPrice = null, relists = 0, note = null }) {
+export async function recordTradeFeedback({ listId, slot, outcome, soldPrice = null, relists = 0, note = null, actualBuyPrice = null, listedPrice = null, marketPriceAtBuy = null, marketPriceAtSale = null, listedAt = null }) {
   if (!pool) throw new Error('PostgreSQL ist nicht konfiguriert.');
   const normalized = String(outcome || '').toLowerCase();
   if (!['sold', 'unsold', 'expired'].includes(normalized)) throw new Error('outcome muss sold, unsold oder expired sein.');
@@ -745,18 +750,33 @@ export async function recordTradeFeedback({ listId, slot, outcome, soldPrice = n
     WHERE li.list_id=$1 AND li.slot=$2 AND gl.game_year=$3
   `, [id, s, GAME_YEAR]);
   if (!exists.rowCount) throw new Error('Listenposition nicht gefunden.');
-  const sp = Number(soldPrice);
-  const safeSoldPrice = Number.isFinite(sp) && sp > 0 ? Math.round(sp) : null;
+  const safePrice = value => {
+    const n = Number(value);
+    return Number.isFinite(n) && n > 0 ? Math.round(n) : null;
+  };
+  const safeSoldPrice = safePrice(soldPrice);
+  const safeActualBuyPrice = safePrice(actualBuyPrice);
+  const safeListedPrice = safePrice(listedPrice);
+  const safeMarketPriceAtBuy = safePrice(marketPriceAtBuy);
+  const safeMarketPriceAtSale = safePrice(marketPriceAtSale);
   const safeRelists = Math.max(0, Math.min(999, Math.floor(Number(relists || 0))));
   const safeNote = note == null ? null : String(note).slice(0, 500);
+  const parsedListedAt = listedAt ? new Date(listedAt) : null;
+  const safeListedAt = parsedListedAt && Number.isFinite(parsedListedAt.getTime()) ? parsedListedAt.toISOString() : null;
   await pool.query(`
-    INSERT INTO uv_trade_feedback (list_id, slot, outcome, sold_price, relists, note, resolved_at)
-    VALUES ($1,$2,$3,$4,$5,$6,NOW())
+    INSERT INTO uv_trade_feedback (
+      list_id, slot, outcome, sold_price, relists, note, actual_buy_price, listed_price,
+      market_price_at_buy, market_price_at_sale, listed_at, resolved_at
+    ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,NOW())
     ON CONFLICT (list_id, slot) DO UPDATE SET
       outcome=EXCLUDED.outcome, sold_price=EXCLUDED.sold_price, relists=EXCLUDED.relists,
-      note=EXCLUDED.note, resolved_at=NOW()
-  `, [id, s, normalized, safeSoldPrice, safeRelists, safeNote]);
-  return { ok: true, listId: id, slot: s, outcome: normalized, soldPrice: safeSoldPrice, relists: safeRelists };
+      note=EXCLUDED.note, actual_buy_price=COALESCE(EXCLUDED.actual_buy_price, uv_trade_feedback.actual_buy_price),
+      listed_price=COALESCE(EXCLUDED.listed_price, uv_trade_feedback.listed_price),
+      market_price_at_buy=COALESCE(EXCLUDED.market_price_at_buy, uv_trade_feedback.market_price_at_buy),
+      market_price_at_sale=COALESCE(EXCLUDED.market_price_at_sale, uv_trade_feedback.market_price_at_sale),
+      listed_at=COALESCE(EXCLUDED.listed_at, uv_trade_feedback.listed_at), resolved_at=NOW()
+  `, [id, s, normalized, safeSoldPrice, safeRelists, safeNote, safeActualBuyPrice, safeListedPrice, safeMarketPriceAtBuy, safeMarketPriceAtSale, safeListedAt]);
+  return { ok: true, listId: id, slot: s, outcome: normalized, soldPrice: safeSoldPrice, relists: safeRelists, actualBuyPrice: safeActualBuyPrice, listedPrice: safeListedPrice, marketPriceAtBuy: safeMarketPriceAtBuy, marketPriceAtSale: safeMarketPriceAtSale, listedAt: safeListedAt };
 }
 
 export async function getTradeFeedbackStatus(platform = null) {
@@ -772,8 +792,8 @@ export async function getTradeFeedbackStatus(platform = null) {
       COUNT(*) FILTER (WHERE f.outcome='expired')::int AS expired,
       AVG(f.relists)::numeric AS avg_relists,
       AVG(CASE WHEN f.outcome='sold' AND f.sold_price IS NOT NULL
-        THEN FLOOR(f.sold_price * 0.95) - li.buy_price END)::numeric AS avg_sold_net_profit,
-      AVG(GREATEST(0, EXTRACT(EPOCH FROM (f.resolved_at - gl.created_at)) / 3600.0))::numeric AS avg_resolution_hours,
+        THEN FLOOR(f.sold_price * 0.95) - COALESCE(f.actual_buy_price, li.buy_price) END)::numeric AS avg_sold_net_profit,
+      AVG(GREATEST(0, EXTRACT(EPOCH FROM (f.resolved_at - COALESCE(f.listed_at, gl.created_at))) / 3600.0))::numeric AS avg_resolution_hours,
       MAX(f.resolved_at) AS last_at
     FROM uv_trade_feedback f
     JOIN uv_generated_lists gl ON gl.id=f.list_id

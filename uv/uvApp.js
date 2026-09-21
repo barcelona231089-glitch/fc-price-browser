@@ -17,7 +17,7 @@ import { buildReportedOutcomeScore } from './src/outcomeLearning.js';
 import { attachLocalFutbinFc27 } from './src/futbinLocalFc27.js';
 
 export const uvRouter = express.Router();
-const UV_VERSION = '2.10.5';
+const UV_VERSION = '2.11.0';
 
 async function getUvMarketContext(platform, liveCards = []) {
   const realRows = await loadRealMarketRegimeRows(platform).catch(() => []);
@@ -533,7 +533,12 @@ app.post('/api/uv/feedback', async (req, res) => {
       outcome: req.body?.outcome,
       soldPrice: req.body?.soldPrice,
       relists: req.body?.relists,
-      note: req.body?.note
+      note: req.body?.note,
+      actualBuyPrice: req.body?.actualBuyPrice,
+      listedPrice: req.body?.listedPrice,
+      marketPriceAtBuy: req.body?.marketPriceAtBuy,
+      marketPriceAtSale: req.body?.marketPriceAtSale,
+      listedAt: req.body?.listedAt
     });
     res.json(saved);
   } catch (error) {
