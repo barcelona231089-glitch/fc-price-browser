@@ -1028,7 +1028,9 @@ app.post('/api/uv/rebalance/:listId', async (req, res) => {
       loadTargetSupportPerformance(platform)
     ]);
 
-    const enriched = pool.map(card => {
+    // Rebalance uses the same CPU/memory-safe chunking as fresh generation. On the 512 MB Hostless runtime, scoring the full candidate pool synchronously can exhaust the process and surface as a 502/browser OOM.
+    await waitForGenerationCpuWindow();
+    const enriched = await generationCpuSafeMap(pool, card => {
       const history = historyMap.get(String(card.eaId)) || null;
       const learning = performanceMap.get(String(card.eaId)) || null;
       const base = { ...card, learning };
