@@ -25,7 +25,8 @@ app.get("/healthz", (req, res) => {
   res.status(200).json({
     ok: true,
     service: "fc-trader-brain",
-    readiness: "process-alive"
+    readiness: "process-alive",
+    buildMarker: "sales-evidence-v1"
   });
 });
 
