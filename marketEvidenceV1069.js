@@ -1133,6 +1133,7 @@ function statusPayload() {
     fields: {
       games: true,
       salesHistory: true,
+      failedListings: true,
       popularRank: true,
       liquidityFromSales: true,
       gamesVelocityFromSnapshots: true,
