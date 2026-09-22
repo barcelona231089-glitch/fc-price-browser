@@ -34,6 +34,9 @@ test("collector launcher uses one isolated reusable Brave page", () => {
   assert.ok(source.includes('method: "Browser.close"'));
   assert.equal(source.includes("Stop-Process -Id $_.ProcessId -Force"), false);
   assert.ok(launcher.includes("--app=https://www.futbin.com/27/players"));
+  assert.ok(launcher.includes("--window-position=-32000,-32000"));
+  assert.ok(launcher.includes("CollectorWindow"));
+  assert.ok(launcher.includes("BraveFutbinCollectorProfile") || launcher.includes("$ProfileDir"));
   assert.equal(launcher.includes("--new-window"), false);
   assert.ok(launcher.includes("Default\\Sessions"));
   assert.ok(supervisor.includes("FUTBIN_BRAVE_CLOSE_AFTER_CYCLE = '0'"));
