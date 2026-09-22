@@ -12,6 +12,7 @@ const LOCK_FILE = join(LOG_DIR, "futbin-brave-collector.lock");
 const HOST = String(process.env.FUTBIN_COLLECTOR_HOST || "https://fc-trader-brain.hostless.app").replace(/\/$/, "");
 const PORT = Math.max(1024, Math.min(65535, Number(process.env.FUTBIN_BRAVE_COLLECTOR_PORT || 9230)));
 const MAX_CARDS = Math.max(1, Math.min(12, Number(process.env.FUTBIN_BRAVE_COLLECTOR_MAX_CARDS || 6)));
+const SALES_CARDS_PER_CYCLE = Math.max(0, Math.min(2, Number(process.env.FUTBIN_BRAVE_SALES_CARDS_PER_CYCLE || 1)));
 const INTERVAL_MS = Math.max(15 * 60_000, Number(process.env.FUTBIN_BRAVE_COLLECTOR_INTERVAL_MS || 30 * 60_000));
 const PAGE_WAIT_MS = Math.max(1500, Math.min(20_000, Number(process.env.FUTBIN_BRAVE_PAGE_WAIT_MS || 4500)));
 const SPACING_MS = Math.max(1500, Math.min(60_000, Number(process.env.FUTBIN_BRAVE_SPACING_MS || 3000)));
@@ -283,7 +284,22 @@ function snapshotRowsFromResults(cards, results) {
       rating: Number(result.rating || card.overall || 0) || null,
       priceConsole,
       pricePc: null,
-      popularRank: Number.isFinite(Number(result.popularRank)) ? Number(result.popularRank) : null
+      popularRank: Number.isFinite(Number(result.popularRank)) ? Number(result.popularRank) : null,
+      salesEvidence: result?.evidence ? {
+        rowCount: result.evidence.futbinSalesRowCount,
+        soldSampleCount: result.evidence.futbinSoldSampleCount,
+        listedSampleCount: result.evidence.futbinListedSampleCount,
+        unsoldSampleCount: result.evidence.futbinUnsoldSampleCount,
+        soldPriceMedian: result.evidence.futbinSoldPriceMedian,
+        soldPriceP25: result.evidence.futbinSoldPriceP25,
+        soldPriceP75: result.evidence.futbinSoldPriceP75,
+        soldPriceMin: result.evidence.futbinSoldPriceMin,
+        soldPriceMax: result.evidence.futbinSoldPriceMax,
+        soldPriceMode: result.evidence.futbinSoldPriceMode,
+        salesEvidenceScore: result.evidence.futbinSalesEvidenceScore,
+        soldPremiumPctVsLive: result.evidence.futbinSoldPremiumPctVsLive,
+        latestSoldAt: result.evidence.futbinLatestSoldAt
+      } : null
     });
   }
   return rows;
@@ -337,6 +353,35 @@ export async function runCollectorCycle() {
     }
     if (!brave?.ok && !brave?.results?.size) throw new Error(brave?.reason || "BRAVE_COLLECTOR_FAILED");
 
+    let salesEvidenceCards = 0;
+    let salesEvidenceRows = 0;
+    let unsoldEvidenceRows = 0;
+    if (SALES_CARDS_PER_CYCLE > 0 && brave?.results?.size) {
+      const salesCards = selection.cards.slice(-SALES_CARDS_PER_CYCLE);
+      try {
+        const salesPass = await getFutbinBraveCards(salesCards, "console", {
+          force: true,
+          gameYear: 27,
+          port: PORT,
+          maxCards: salesCards.length,
+          pageWaitMs: PAGE_WAIT_MS,
+          spacingMs: SPACING_MS,
+          includeSalesHistory: true
+        });
+        for (const card of salesCards) {
+          const salesValue = salesPass?.results?.get?.(String(card.eaId));
+          if (!salesValue?.evidence || !(Number(salesValue.evidence.futbinSalesRowCount) > 0)) continue;
+          const baseValue = brave.results.get(String(card.eaId)) || {};
+          brave.results.set(String(card.eaId), { ...baseValue, ...salesValue });
+          salesEvidenceCards += 1;
+          salesEvidenceRows += Number(salesValue.evidence.futbinSalesRowCount || 0);
+          unsoldEvidenceRows += Number(salesValue.evidence.futbinUnsoldSampleCount || 0);
+        }
+      } catch (error) {
+        log("sales-evidence-soft-fail", { error: String(error?.message || error) });
+      }
+    }
+
     const rows = snapshotRowsFromResults(selection.cards, brave.results);
     const pushed = await pushSnapshot(rows);
     const status = {
@@ -349,6 +394,9 @@ export async function runCollectorCycle() {
       observedRows: rows.length,
       inserted: Number(pushed?.inserted || 0),
       received: Number(pushed?.received || 0),
+      salesEvidenceCards,
+      salesEvidenceRows,
+      unsoldEvidenceRows,
       nextCursor: cursor,
       browserClosedAfterCycle: CLOSE_AFTER_CYCLE,
       lastCards: rows.map(row => ({ futbinId: row.futbinId, name: row.name, priceConsole: row.priceConsole, observedAt: row.observedAt }))
