@@ -6947,11 +6947,11 @@ async function monitorOnce() {
     // v10.31: Failure-Domain-Isolation bleibt aktiv; Deploys fahren den Dienst jetzt zusÃƒÂ¤tzlich sauber herunter.
     // Fehler aus DB, Brain oder Discord gehÃƒÂ¶ren in eine getrennte Failure Domain.
     try {
-      [cards, bulk, futbinFeed] = await Promise.all([
-        ensureUniverse(false),
-        loadBulkPs5Prices(true),
-        loadAuthorizedFutbinFeedSafe(false)
-      ]);
+      // Keep source loading sequential on the constrained Hostless runtime.
+      // Parallel universe + bulk prices + FUTBIN feed caused a large startup peak.
+      cards = await ensureUniverse(false);
+      bulk = await loadBulkPs5Prices(true);
+      futbinFeed = await loadAuthorizedFutbinFeedSafe(false);
 
       currentRows = currentPricedCards(cards, bulk);
       updateSourceHealthSuccess(cards, bulk, currentRows);
