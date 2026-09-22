@@ -830,6 +830,13 @@ app.get("/api/trades/closed", async (req, res) => {
   }
 
   const secondaryRouteAnchor = 'app.get("/health", (req, res) => {';
+  if (out.includes(secondaryRouteAnchor) && !out.includes('app.get("/healthz"')) {
+    out = out.replace(secondaryRouteAnchor, `app.get("/healthz", (req, res) => {
+  res.status(200).json({ ok: true, service: "fc-trader-brain", version: "10.69.9.6.9-final", gameYear: GAME_YEAR, uptimeSeconds: Math.round(process.uptime()) });
+});
+
+${secondaryRouteAnchor}`);
+  }
   if (out.includes(secondaryRouteAnchor) && !out.includes('/api/futbin/authorized-import')) {
     out = out.replace(secondaryRouteAnchor, `app.post("/api/futbin/authorized-import", async (req,res) => {
   try {

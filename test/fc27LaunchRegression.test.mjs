@@ -93,6 +93,8 @@ test('final hardening locks market knowledge at 18 samples and preserves no-leak
   const src = fs.readFileSync(path.join(root, 'v1069969FinalHardeningLoader.mjs'), 'utf8');
   assert.match(src, /MARKET_KNOWLEDGE_MIN_SAMPLES \|\| 18/);
   assert.match(src, /leakAloneCannotBuy: true/);
+  assert.ok(src.includes('app.get("/healthz"'));
+  assert.match(src, /uptimeSeconds: Math\.round\(process\.uptime\(\)\)/);
   assert.match(bootstrap, /v1069969FinalHardeningLoader\.mjs/);
 });
 

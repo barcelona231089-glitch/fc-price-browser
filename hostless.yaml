@@ -20,7 +20,7 @@ scaling:
 
 health_check:
   type: http
-  http_path: "/health"
+  http_path: "/healthz"
   interval_in_seconds: 60
 
 cron_jobs: []
