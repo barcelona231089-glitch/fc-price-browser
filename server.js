@@ -14374,8 +14374,9 @@ async function startMonitoring(reason = "active") {
   }
 
   await sendDiscordStartupMessage();
-  monitorOnce();
 
+  // Startup grace: avoid the full market/DB/ML pipeline immediately after HA promotion.
+  // The normal interval performs the first monitoring cycle after PRICE_REFRESH_MS.
   monitorIntervalHandle = setInterval(
     monitorOnce,
     PRICE_REFRESH_MS
