@@ -20,6 +20,15 @@ const { Pool } = pg;
 const app = express();
 app.use(express.json());
 
+// Hostless startup probe: deliberately dependency-free and available as soon as Express listens.
+app.get("/healthz", (req, res) => {
+  res.status(200).json({
+    ok: true,
+    service: "fc-trader-brain",
+    readiness: "process-alive"
+  });
+});
+
 const port = process.env.PORT || 3000;
 
 const RAW_GAME_YEAR = String(process.env.GAME_YEAR || "26").trim();
