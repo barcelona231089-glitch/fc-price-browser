@@ -90,3 +90,27 @@ test('v1.1 explicit sales-per-day drives a graded turnover score instead of auto
   assert.ok(slow.turnoverIndex < fast.turnoverIndex);
   assert.ok(fast.turnoverIndex <= 100);
 });
+
+test('v1.2 keeps FUTBIN sold=0 rows as unsold listing evidence', () => {
+  const evidence = buildSalesEvidence([
+    { date: '2026-09-22T01:20:00Z', listed_for: 1800, sold_for: 1800 },
+    { date: '2026-09-22T01:21:00Z', listed_for: 1900, sold_for: 0 },
+    { date: '2026-09-22T01:22:00Z', listed_for: 2000, sold_for: 0 }
+  ], 1800);
+  assert.equal(evidence.rowCount, 3);
+  assert.equal(evidence.soldSampleCount, 1);
+  assert.equal(evidence.unsoldSampleCount, 2);
+  assert.equal(evidence.listedSampleCount, 3);
+  assert.equal(evidence.soldPriceMedian, 1800);
+});
+
+test('v1.2 exposes unsold sample count through normalized FUTBIN evidence', () => {
+  const evidence = extractFutbinStructuredEvidence({
+    sales_history: [
+      { listed_for: 7000000, sold_for: 0 },
+      { listed_for: 6750000, sold_for: 6251000 }
+    ]
+  }, 6251000);
+  assert.equal(evidence.futbinSoldSampleCount, 1);
+  assert.equal(evidence.futbinUnsoldSampleCount, 1);
+});
