@@ -221,11 +221,13 @@ export function scoreObservedSaleTarget(targetPrice, cardOrEvidence) {
   const median = Number(cardOrEvidence?.futbinSoldPriceMedian ?? cardOrEvidence?.soldPriceMedian);
   const p75 = Number(cardOrEvidence?.futbinSoldPriceP75 ?? cardOrEvidence?.soldPriceP75);
   const max = Number(cardOrEvidence?.futbinSoldPriceMax ?? cardOrEvidence?.soldPriceMax);
+  const unsold = Math.max(0, Number(cardOrEvidence?.futbinUnsoldSampleCount ?? cardOrEvidence?.unsoldSampleCount ?? 0));
   if (!Number.isFinite(target) || target <= 0 || n < 2 || !Number.isFinite(median) || median <= 0) return null;
   if (Number.isFinite(p25) && target < p25) return 78;
-  if (target <= median) return 93;
-  if (Number.isFinite(p75) && target <= p75) return 88;
-  if (Number.isFinite(max) && target <= max) return 62;
+  const unsoldPenalty = Math.min(18, unsold * 2);
+  if (target <= median) return Math.max(60, 93 - unsoldPenalty * 0.25);
+  if (Number.isFinite(p75) && target <= p75) return Math.max(50, 88 - unsoldPenalty * 0.6);
+  if (Number.isFinite(max) && target <= max) return Math.max(35, 62 - unsoldPenalty);
   if (Number.isFinite(max) && max > 0) {
     const overshootPct = ((target - max) / max) * 100;
     return clamp(42 - overshootPct * 4, 8, 42);

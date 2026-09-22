@@ -114,3 +114,10 @@ test('v1.2 exposes unsold sample count through normalized FUTBIN evidence', () =
   assert.equal(evidence.futbinSoldSampleCount, 1);
   assert.equal(evidence.futbinUnsoldSampleCount, 1);
 });
+
+test('v1.2 failed FUTBIN listings reduce support for an aggressive sell target', () => {
+  const base = { futbinSoldSampleCount: 6, futbinSoldPriceP25: 1800, futbinSoldPriceMedian: 1900, futbinSoldPriceP75: 2000, futbinSoldPriceMax: 2100 };
+  const clean = scoreObservedSaleTarget(2050, { ...base, futbinUnsoldSampleCount: 0 });
+  const failed = scoreObservedSaleTarget(2050, { ...base, futbinUnsoldSampleCount: 8 });
+  assert.ok(failed < clean);
+});
