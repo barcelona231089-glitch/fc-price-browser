@@ -27,11 +27,14 @@ test("authorized import never invents a missing observation timestamp", () => {
   assert.equal(out.rows[0].observedAt, "2026-09-21T20:00:00.000Z");
 });
 
-test("collector closes its dedicated Brave gracefully after every cycle", () => {
+test("collector launcher uses one isolated reusable Brave page", () => {
   const source = readFileSync(new URL("../futbinBraveCollectorV1.js", import.meta.url), "utf8");
   const launcher = readFileSync(new URL("../startFutbinBraveBrowser.ps1", import.meta.url), "utf8");
+  const supervisor = readFileSync(new URL("../startFutbinBraveCollectorHidden.ps1", import.meta.url), "utf8");
   assert.ok(source.includes('method: "Browser.close"'));
-  assert.ok(source.includes("await closeCollectorBrave();"));
   assert.equal(source.includes("Stop-Process -Id $_.ProcessId -Force"), false);
-  assert.ok(launcher.includes("--hide-crash-restore-bubble"));
+  assert.ok(launcher.includes("--app=https://www.futbin.com/27/players"));
+  assert.equal(launcher.includes("--new-window"), false);
+  assert.ok(launcher.includes("Default\\Sessions"));
+  assert.ok(supervisor.includes("FUTBIN_BRAVE_CLOSE_AFTER_CYCLE = '0'"));
 });
