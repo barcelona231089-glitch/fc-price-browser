@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync, unlinkSync, openSync, closeSync, appendFileSync } from "node:fs";
+﻿import { existsSync, mkdirSync, readFileSync, writeFileSync, unlinkSync, openSync, closeSync, appendFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -235,26 +235,50 @@ function releaseLock() {
 }
 
 async function loadBrainRows() {
-  try {
-    const json = await fetchJson(`${HOST}/api/trading`, {}, 30_000);
-    if (json?.ok && Array.isArray(json?.rows)) return json.rows;
-  } catch (error) {
-    if (Number(error?.status) !== 404) throw error;
-    log("brain-trading-fallback", { reason: "API_TRADING_404", fallback: "OWN_MARKET_API" });
+  const transientStatuses = new Set([404, 502, 503, 504]);
+  const retryDelaysMs = [0, 1500, 3500];
+
+  for (let attempt = 0; attempt < retryDelaysMs.length; attempt += 1) {
+    if (retryDelaysMs[attempt] > 0) {
+      await new Promise(resolve => setTimeout(resolve, retryDelaysMs[attempt]));
+    }
+
+    try {
+      const json = await fetchJson(`${HOST}/api/trading`, {}, 20_000);
+      if (json?.ok && Array.isArray(json?.rows) && json.rows.length) return json.rows;
+    } catch (error) {
+      const status = Number(error?.status);
+      if (!transientStatuses.has(status)) throw error;
+      log("brain-trading-fallback", {
+        reason: `API_TRADING_${status || "TRANSIENT"}`,
+        fallback: "OWN_MARKET_API",
+        attempt: attempt + 1
+      });
+    }
+
+    try {
+      const fallback = await fetchJson(
+        `${HOST}/api/market/v1/cards?minRating=82&maxRating=99&limit=250&sort=activity`,
+        {},
+        20_000
+      );
+      if (fallback?.ok && Array.isArray(fallback?.rows) && fallback.rows.length) {
+        return fallback.rows.map(row => ({
+          ...row,
+          overall: Number(row?.overall || row?.rating || 0) || null
+        }));
+      }
+    } catch (error) {
+      const status = Number(error?.status);
+      if (!transientStatuses.has(status)) throw error;
+      log("brain-market-retry", {
+        reason: `OWN_MARKET_API_${status || "TRANSIENT"}`,
+        attempt: attempt + 1
+      });
+    }
   }
 
-  const fallback = await fetchJson(
-    `${HOST}/api/market/v1/cards?minRating=82&maxRating=99&limit=250&sort=activity`,
-    {},
-    30_000
-  );
-  if (!fallback?.ok || !Array.isArray(fallback?.rows)) {
-    throw new Error("BRAIN_MARKET_FALLBACK_UNAVAILABLE");
-  }
-  return fallback.rows.map(row => ({
-    ...row,
-    overall: Number(row?.overall || row?.rating || 0) || null
-  }));
+  throw new Error("BRAIN_INPUT_TEMPORARILY_UNAVAILABLE");
 }
 function snapshotRowsFromResults(cards, results) {
   const rows = [];
@@ -418,3 +442,4 @@ if (invoked && import.meta.url === invoked) {
     process.exitCode = 1;
   });
 }
+
