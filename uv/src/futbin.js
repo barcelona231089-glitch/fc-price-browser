@@ -426,7 +426,17 @@ export async function crosscheckFutbin(cards, platform = 'console') {
     const diffPct = Number.isFinite(futbinPrice) && futbinPrice > 0 && Number(card.price) > 0
       ? ((futbinPrice - Number(card.price)) / Number(card.price)) * 100
       : (Number.isFinite(previousSourceDiffRaw) ? previousSourceDiffRaw : null);
-    const evidence = result?.evidence || {};
+    const marketEvidenceFallback = extractFutbinStructuredEvidence({
+      games: card?.evidenceGames ?? card?.marketEvidence?.games ?? null,
+      popular_rank: card?.evidencePopularRank ?? card?.marketEvidence?.popularRank ?? null,
+      sales_history: card?.evidenceSalesHistory ?? card?.marketEvidence?.salesHistory ?? []
+    }, futbinPrice || card.price);
+    const resultEvidence = result?.evidence || null;
+    const evidence = resultEvidence && (
+      resultEvidence.gamesAvailable
+      || resultEvidence.salesHistoryAvailable
+      || Number.isFinite(resultEvidence.futbinPopularRank)
+    ) ? resultEvidence : marketEvidenceFallback;
 
     let popularityScore = Number.isFinite(card.popularityScore) ? Number(card.popularityScore) : null;
     let demandEvidenceScore = Number.isFinite(card.demandEvidenceScore) ? Number(card.demandEvidenceScore) : popularityScore;

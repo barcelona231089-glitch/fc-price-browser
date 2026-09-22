@@ -47,19 +47,23 @@ function evidenceFreshness(observedAt, fetchedAt, now = Date.now()) {
 
 function normalizeSale(row) {
   if (!row || typeof row !== "object") return null;
-  const soldFor = finite(row.sold_for ?? row.soldFor ?? row.sale_price ?? row.salePrice ?? row.price);
+  const soldForRaw = finite(row.sold_for ?? row.soldFor ?? row.sale_price ?? row.salePrice ?? row.price);
   const listedFor = finite(row.listed_for ?? row.listedFor ?? row.list_price ?? row.listPrice);
   const netPrice = finite(row.net_price ?? row.netPrice);
   const eaTax = finite(row.ea_tax ?? row.eaTax ?? row.tax);
   const date = parseDate(row.date ?? row.sold_at ?? row.soldAt ?? row.time ?? row.timestamp);
-  if (!Number.isFinite(soldFor) || soldFor <= 0) return null;
+  const statusRaw = clean(row.status ?? row.state ?? "", 40).toUpperCase();
+  const explicitUnsold = row.sold === false || /NOT[_ -]?SOLD|UNSOLD|EXPIRED|FAILED/.test(statusRaw);
+  const sold = Number.isFinite(soldForRaw) && soldForRaw > 0;
+  if (!sold && !(explicitUnsold && Number.isFinite(listedFor) && listedFor > 0)) return null;
+  const soldFor = sold ? Math.round(soldForRaw) : 0;
   return {
     date,
     listedFor: Number.isFinite(listedFor) ? Math.round(listedFor) : null,
-    soldFor: Math.round(soldFor),
-    eaTax: Number.isFinite(eaTax) ? Math.round(eaTax) : null,
-    netPrice: Number.isFinite(netPrice) ? Math.round(netPrice) : null,
-    status: clean(row.status ?? row.state ?? "SOLD", 40) || "SOLD"
+    soldFor,
+    eaTax: sold && Number.isFinite(eaTax) ? Math.round(eaTax) : 0,
+    netPrice: sold && Number.isFinite(netPrice) ? Math.round(netPrice) : 0,
+    status: sold ? (statusRaw || "SOLD") : "NOT_SOLD"
   };
 }
 
@@ -408,7 +412,7 @@ function liquidityFromTimedSales(timedSales, now = Date.now()) {
 }
 
 function salesStats(sales) {
-  const sold = (Array.isArray(sales) ? sales : []).filter(s => Number.isFinite(Number(s.soldFor)));
+  const sold = (Array.isArray(sales) ? sales : []).filter(s => Number(s.soldFor) > 0);
   const now = Date.now();
   const timed = sold.filter(s => {
     const t = s.date ? new Date(s.date).getTime() : NaN;
