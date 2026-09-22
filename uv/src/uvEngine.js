@@ -205,7 +205,7 @@ export function buildTraderAwarePricing(card) {
     const capitalEfficiency = clamp(70 - Math.max(0, pricing.markupPct - 10) * 0.8 - capitalLock * 0.24 + likelihoodIndex * 0.25 + learned.adjustment * 0.35, 0, 100);
     const futbinSaleTargetSupportScore = scoreObservedSaleTarget(pricing.sellPrice, card);
     const futbinSaleSamples = Number(card?.futbinSoldSampleCount || 0);
-    const empiricalWeight = Number.isFinite(futbinSaleTargetSupportScore) ? Math.min(0.10, futbinSaleSamples / 80) : 0;
+    const empiricalWeight = Number.isFinite(futbinSaleTargetSupportScore) ? Math.min(0.24, futbinSaleSamples / 40) : 0;
     const empiricalAdjustment = Number.isFinite(futbinSaleTargetSupportScore) ? (futbinSaleTargetSupportScore - 50) * empiricalWeight : 0;
     const feedbackSamples = Number(learnedProfile?.reportedFeedbackSamples || 0);
     const reportedSellRate = Number(learnedProfile?.reportedSellRate);
