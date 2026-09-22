@@ -235,9 +235,26 @@ function releaseLock() {
 }
 
 async function loadBrainRows() {
-  const json = await fetchJson(`${HOST}/api/trading`, {}, 30_000);
-  if (!json?.ok || !Array.isArray(json?.rows)) throw new Error("BRAIN_TRADING_UNAVAILABLE");
-  return json.rows;
+  try {
+    const json = await fetchJson(`${HOST}/api/trading`, {}, 30_000);
+    if (json?.ok && Array.isArray(json?.rows)) return json.rows;
+  } catch (error) {
+    if (Number(error?.status) !== 404) throw error;
+    log("brain-trading-fallback", { reason: "API_TRADING_404", fallback: "OWN_MARKET_API" });
+  }
+
+  const fallback = await fetchJson(
+    `${HOST}/api/market/v1/cards?minRating=82&maxRating=99&limit=250&sort=activity`,
+    {},
+    30_000
+  );
+  if (!fallback?.ok || !Array.isArray(fallback?.rows)) {
+    throw new Error("BRAIN_MARKET_FALLBACK_UNAVAILABLE");
+  }
+  return fallback.rows.map(row => ({
+    ...row,
+    overall: Number(row?.overall || row?.rating || 0) || null
+  }));
 }
 function snapshotRowsFromResults(cards, results) {
   const rows = [];

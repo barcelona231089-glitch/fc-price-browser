@@ -37,4 +37,5 @@ test("collector launcher uses one isolated reusable Brave page", () => {
   assert.equal(launcher.includes("--new-window"), false);
   assert.ok(launcher.includes("Default\\Sessions"));
   assert.ok(supervisor.includes("FUTBIN_BRAVE_CLOSE_AFTER_CYCLE = '0'"));
+  assert.ok(source.includes("/api/market/v1/cards?minRating=82&maxRating=99&limit=250&sort=activity"));
 });
