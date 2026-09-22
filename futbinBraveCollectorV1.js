@@ -238,32 +238,21 @@ async function loadBrainRows() {
   const transientStatuses = new Set([404, 502, 503, 504]);
   const retryDelaysMs = [0, 1500, 3500];
 
+  // Collector input must stay lightweight. /api/trading serializes the full
+  // Full-Brain payload and can spike the constrained Hostless process.
   for (let attempt = 0; attempt < retryDelaysMs.length; attempt += 1) {
     if (retryDelaysMs[attempt] > 0) {
       await new Promise(resolve => setTimeout(resolve, retryDelaysMs[attempt]));
     }
 
     try {
-      const json = await fetchJson(`${HOST}/api/trading`, {}, 20_000);
-      if (json?.ok && Array.isArray(json?.rows) && json.rows.length) return json.rows;
-    } catch (error) {
-      const status = Number(error?.status);
-      if (!transientStatuses.has(status)) throw error;
-      log("brain-trading-fallback", {
-        reason: `API_TRADING_${status || "TRANSIENT"}`,
-        fallback: "OWN_MARKET_API",
-        attempt: attempt + 1
-      });
-    }
-
-    try {
-      const fallback = await fetchJson(
-        `${HOST}/api/market/v1/cards?minRating=82&maxRating=99&limit=250&sort=activity`,
+      const market = await fetchJson(
+        `${HOST}/api/market/v1/cards?minRating=82&maxRating=99&limit=100&sort=activity`,
         {},
         20_000
       );
-      if (fallback?.ok && Array.isArray(fallback?.rows) && fallback.rows.length) {
-        return fallback.rows.map(row => ({
+      if (market?.ok && Array.isArray(market?.rows) && market.rows.length) {
+        return market.rows.map(row => ({
           ...row,
           overall: Number(row?.overall || row?.rating || 0) || null
         }));
