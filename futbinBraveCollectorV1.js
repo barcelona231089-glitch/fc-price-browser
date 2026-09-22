@@ -295,7 +295,8 @@ export async function runCollectorCycle() {
       port: PORT,
       maxCards: MAX_CARDS,
       pageWaitMs: PAGE_WAIT_MS,
-      spacingMs: SPACING_MS
+      spacingMs: SPACING_MS,
+      includeSalesHistory: false
     });
     let brave = await collect();
     const retryableBrowserError = /terminated|BRAVE_DEBUG|ECONNREFUSED|fetch failed|WEBSOCKET/i.test(String(brave?.reason || ""));

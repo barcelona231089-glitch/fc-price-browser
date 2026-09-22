@@ -1,4 +1,5 @@
-import { parseFutbinPlayerHtml, parseFutbinSearchHtml } from "../../futbinMarketV1064.js";
+import { parseFutbinPlayerHtml, parseFutbinSearchHtml, parseFutbinMarketHtml } from "../../futbinMarketV1064.js";
+import { extractFutbinStructuredEvidence } from "./futbinEvidence.js";
 
 const SOURCE = "FUTBIN_BRAVE_PUBLIC_FC27";
 const cache = new Map();
@@ -200,7 +201,7 @@ export async function getFutbinBraveCards(cards = [], platform = "console", opti
   try {
     session = await openSession(cfg.port);
     for (const card of cards.slice(0, cfg.maxCards)) {
-      const key = cacheKey(card, platform);
+      const key = `${cacheKey(card, platform)}|sales:${options.includeSalesHistory ? "1" : "0"}`;
       const cached = cache.get(key);
       if (cached && Date.now() - cached.at < cfg.cacheMs) {
         state.cacheHits += 1;
@@ -220,6 +221,36 @@ export async function getFutbinBraveCards(cards = [], platform = "console", opti
       const html = await session.html();
       const parsed = parseFutbinPlayerHtml(html);
       const value = resultFromParsed(card, parsed, url, platform);
+
+      if (options.includeSalesHistory && value.id) {
+        const salesPlatform = platform === "pc" ? "pc" : "ps";
+        const salesSlug = normalizeSlug(card?.slug || value.name || card?.name || "");
+        const salesUrl = `https://www.futbin.com/27/sales/${encodeURIComponent(String(value.id))}${salesSlug ? `/${salesSlug}` : ""}?platform=${salesPlatform}`;
+        try {
+          await session.navigate(salesUrl, cfg.pageWaitMs);
+          const salesHtml = await session.html();
+          const market = parseFutbinMarketHtml(salesHtml);
+          const salesHistory = (market?.sales || []).map(row => ({
+            date: row.observedAt,
+            listed_for: row.listedPrice,
+            sold_for: row.soldPrice,
+            status: row.sold ? "sold" : "unsold",
+            ea_tax: row.eaTax,
+            net_price: row.netPrice,
+            type: row.type
+          }));
+          value.evidence = extractFutbinStructuredEvidence({ sales_history: salesHistory }, value.price);
+          value.salesHistoryUrl = salesUrl;
+          value.salesHistoryRows = salesHistory.length;
+        } catch (salesError) {
+          const salesMessage = String(salesError?.message || salesError);
+          value.salesEvidenceReason = salesMessage;
+          if (/BLOCK_PAGE|HTTP_403|HTTP_429/i.test(salesMessage)) {
+            state.blockedUntil = Date.now() + cfg.blockBackoffMs;
+          }
+        }
+      }
+
       cache.set(key, { at: Date.now(), value });
       results.set(String(card.eaId), value);
       state.calls += 1;

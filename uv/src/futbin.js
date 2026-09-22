@@ -368,13 +368,20 @@ export async function crosscheckFutbin(cards, platform = 'console') {
   if (braveEnabled) {
     try {
       const brave = await getFutbinBraveCards(
-        ranked.filter(card => !(Number(byId.get(String(card.eaId))?.price) > 0)),
+        ranked,
         platform,
-        { gameYear: Number(GAME_YEAR) }
+        { gameYear: Number(GAME_YEAR), includeSalesHistory: true }
       );
       for (const card of ranked) {
         const result = brave?.results?.get?.(String(card.eaId));
-        if (Number(result?.price) > 0) byId.set(String(card.eaId), result);
+        if (!result) continue;
+        const key = String(card.eaId);
+        const current = byId.get(key) || {};
+        byId.set(key, {
+          ...result,
+          ...current,
+          evidence: { ...(result.evidence || {}), ...(current.evidence || {}) }
+        });
       }
     } catch {
       // Local Brave adapter is optional and must fail closed.
