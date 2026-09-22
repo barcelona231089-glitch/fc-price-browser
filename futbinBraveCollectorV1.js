@@ -238,8 +238,8 @@ async function loadBrainRows() {
   const transientStatuses = new Set([404, 502, 503, 504]);
   const retryDelaysMs = [0, 1500, 3500];
 
-  // Collector input must stay lightweight. /api/trading serializes the full
-  // Full-Brain payload and can spike the constrained Hostless process.
+  // Collector input must stay lightweight. The full trading route serializes
+  // the complete Full-Brain payload and can spike the constrained Hostless process.
   for (let attempt = 0; attempt < retryDelaysMs.length; attempt += 1) {
     if (retryDelaysMs[attempt] > 0) {
       await new Promise(resolve => setTimeout(resolve, retryDelaysMs[attempt]));
