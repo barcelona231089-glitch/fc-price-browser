@@ -109,7 +109,7 @@ export function normalizeFutbinSnapshotRows(rows = [], nowMs = Date.now()) {
 export async function ingestFutbinSnapshot(pool, rows = []) {
   if (!pool) throw new Error('DB_DISABLED');
   const clean = normalizeFutbinSnapshotRows(rows);
-  if (!clean.length) return { inserted: 0, received: 0 };
+  if (!clean.length) return { inserted: 0, received: 0, salesEvidenceReceived: 0, salesEvidencePersisted: 0 };
   await ensureFutbinSnapshotTable(pool);
 
   const values = [];
@@ -130,7 +130,13 @@ export async function ingestFutbinSnapshot(pool, rows = []) {
       popular_rank = COALESCE(EXCLUDED.popular_rank, ${TABLE}.popular_rank),
       sales_evidence = COALESCE(EXCLUDED.sales_evidence, ${TABLE}.sales_evidence)`, values);
 
-  return { inserted: result.rowCount || 0, received: clean.length };
+  const salesEvidenceReceived = clean.filter(row => row.salesEvidence != null).length;
+  return {
+    inserted: result.rowCount || 0,
+    received: clean.length,
+    salesEvidenceReceived,
+    salesEvidencePersisted: salesEvidenceReceived
+  };
 }
 
 export async function futbinSnapshotHealth(pool) {

@@ -397,6 +397,9 @@ export async function runCollectorCycle() {
       salesEvidenceCards,
       salesEvidenceRows,
       unsoldEvidenceRows,
+      salesEvidencePersisted: Number(pushed?.salesEvidencePersisted || 0),
+      salesEvidencePersistenceVerified:
+        salesEvidenceCards === 0 || Number(pushed?.salesEvidencePersisted || 0) >= salesEvidenceCards,
       nextCursor: cursor,
       browserClosedAfterCycle: CLOSE_AFTER_CYCLE,
       lastCards: rows.map(row => ({ futbinId: row.futbinId, name: row.name, priceConsole: row.priceConsole, observedAt: row.observedAt }))
