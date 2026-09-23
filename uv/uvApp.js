@@ -18,7 +18,7 @@ import { buildReportedOutcomeScore } from './src/outcomeLearning.js';
 import { attachLocalFutbinFc27 } from './src/futbinLocalFc27.js';
 
 export const uvRouter = express.Router();
-const UV_VERSION = '2.15.1';
+const UV_VERSION = '2.15.2';
 
 async function getUvMarketContext(platform, liveCards = []) {
   const realRows = await loadRealMarketRegimeRows(platform).catch(() => []);
@@ -120,6 +120,29 @@ function scheduleGenerationJobCleanup(job) {
   timer.unref?.();
 }
 
+async function invokeGenerateRouteInternal(payload) {
+  const layer = app.stack?.find(entry => entry?.route?.path === '/api/uv/generate' && entry.route.methods?.post);
+  const handler = layer?.route?.stack?.[0]?.handle;
+  if (typeof handler !== 'function') throw new Error('Interner UV-Generate-Handler ist nicht registriert.');
+
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const finish = (statusCode, data) => {
+      if (settled) return;
+      settled = true;
+      if (statusCode >= 200 && statusCode < 300) resolve(data);
+      else reject(new Error(data?.error || `Generate fehlgeschlagen (HTTP ${statusCode}).`));
+    };
+    const req = { body: payload };
+    const res = {
+      statusCode: 200,
+      status(code) { this.statusCode = Number(code) || 500; return this; },
+      json(data) { finish(this.statusCode, data); return this; }
+    };
+    Promise.resolve(handler(req, res)).catch(reject);
+  });
+}
+
 function startGenerationJob(payload) {
   const requestKey = JSON.stringify(payload);
   const active = generationActiveJobId ? generationJobs.get(generationActiveJobId) : null;
@@ -147,25 +170,20 @@ function startGenerationJob(payload) {
   setImmediate(async () => {
     job.status = 'RUNNING';
     job.startedAt = new Date().toISOString();
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 12 * 60_000);
+    const timer = setTimeout(() => {
+      if (job.status === 'RUNNING') {
+        job.error = 'UV-Generierung hat das 12-Minuten-Limit überschritten.';
+        job.status = 'FAILED';
+      }
+    }, 12 * 60_000);
     timer.unref?.();
     try {
-      const internalPort = Number(process.env.PORT || 3000);
-      const response = await fetch(`http://127.0.0.1:${internalPort}/api/uv/generate`, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify(payload),
-        signal: controller.signal
-      });
-      const text = await response.text();
-      let data;
-      try { data = JSON.parse(text); } catch { throw new Error(`Generate lieferte keine JSON-Antwort (HTTP ${response.status}).`); }
-      if (!response.ok) throw new Error(data?.error || `Generate fehlgeschlagen (HTTP ${response.status}).`);
+      const data = await invokeGenerateRouteInternal(payload);
+      if (job.status === 'FAILED') return;
       job.result = data;
       job.status = 'DONE';
     } catch (error) {
-      job.error = String(error?.name === 'AbortError' ? 'ÜV-Generierung hat das 12-Minuten-Limit überschritten.' : (error?.message || error));
+      job.error = String(error?.message || error);
       job.status = 'FAILED';
     } finally {
       clearTimeout(timer);

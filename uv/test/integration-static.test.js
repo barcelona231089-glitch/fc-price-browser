@@ -28,10 +28,10 @@ test('UV UI text is clean UTF-8 without mojibake or decorative garbage symbols',
 
 test('UV browser UI uses the production /api/uv namespace and /uv assets', () => {
   assert.ok(ui.includes("fetch('/api/uv/status')"));
-  assert.ok(ui.includes("fetch('/api/uv/generate'"));
+  assert.ok(ui.includes("fetch('/api/uv/generate-job'"));
   assert.equal(ui.includes("fetch('/api/status')"), false);
   assert.ok(html.includes('href="/uv/styles.css"'));
-  assert.ok(html.includes('src="/uv/app.js?v=2.15.0-clean"'));
+  assert.ok(html.includes('src="/uv/app.js?v=2.15.2-clean"'));
 });
 
 test('compact UV UI exposes status filters, essential columns and recheck-aware pricing', () => {
@@ -110,7 +110,7 @@ test('v2.15 production status requests hard-100 from the 20k minimum', () => {
   assert.ok(uvApp.includes('minimumBudget: 20000'));
   assert.ok(uvApp.includes('budgetAdaptiveSlotsFrom20k: false'));
   assert.ok(uvApp.includes('hard100FromBudget: 20000'));
-  assert.match(uvApp, /const UV_VERSION = '2\.15\.0'/);
+  assert.match(uvApp, /const UV_VERSION = '2\.15\.2'/);
   assert.ok(ui.includes('PROMO + LIVE MARKET'));
   assert.ok(ui.includes('Markt-Regime'));
   assert.ok(ui.includes('Promo-Heat'));
@@ -119,6 +119,12 @@ test('v2.15 production status requests hard-100 from the 20k minimum', () => {
 });
 
 
+test('v2.15.2 async generation avoids self-HTTP and keeps jobs in-process', () => {
+  assert.ok(uvApp.includes('invokeGenerateRouteInternal(payload)'));
+  assert.equal(uvApp.includes('http://127.0.0.1:'), false);
+  assert.ok(uvApp.includes("app.post('/api/uv/generate-job'"));
+  assert.ok(uvApp.includes("app.get('/api/uv/generate-job/:jobId'"));
+});
 test('v2.2 focus mode keeps header compact and hides deep analytics behind disclosure', () => {
   assert.ok(html.includes('class="topbar"'));
   assert.equal(html.includes('class="hero"'), false);
@@ -261,7 +267,7 @@ test('v2.10.2 budget supports manual entry plus quick presets and saving is expl
   assert.ok(html.includes('Liste speichern'));
   assert.ok(ui.includes('budgetPresetButtons'));
   assert.ok(ui.includes('saveList = Boolean(saveListChoice?.checked)'));
-  assert.ok(ui.includes('JSON.stringify({budget,platform,saveList})'));
+  assert.ok(ui.includes('startGenerateJob({budget,platform,saveList})'));
   assert.ok(uvApp.includes('const saveListRequested = req.body?.saveList === true'));
   assert.ok(uvApp.includes('saveListRequested ? await saveGeneratedList(result).catch(() => null) : null'));
   assert.ok(uvApp.includes('result.saved = Boolean(listId)'));
