@@ -27,6 +27,37 @@ export function configureDbPool(externalPool) {
 
 export function isDbEnabled() { return Boolean(pool || process.env.DATABASE_URL); }
 
+export async function saveUvGenerationJob(job) {
+  ensureOwnPool();
+  if (!pool || !job?.jobId) return false;
+  await pool.query(`
+    INSERT INTO uv_generation_jobs (job_id, game_year, job_payload, updated_at)
+    VALUES ($1, $2, $3::jsonb, NOW())
+    ON CONFLICT (job_id, game_year)
+    DO UPDATE SET job_payload = EXCLUDED.job_payload, updated_at = NOW()
+  `, [String(job.jobId), Number(GAME_YEAR), JSON.stringify(job)]);
+  return true;
+}
+
+export async function loadUvGenerationJob(jobId) {
+  ensureOwnPool();
+  if (!pool || !jobId) return null;
+  const { rows } = await pool.query(`
+    SELECT job_payload
+    FROM uv_generation_jobs
+    WHERE job_id = $1 AND game_year = $2
+    LIMIT 1
+  `, [String(jobId), Number(GAME_YEAR)]);
+  return rows[0]?.job_payload || null;
+}
+
+export async function deleteUvGenerationJob(jobId) {
+  ensureOwnPool();
+  if (!pool || !jobId) return false;
+  await pool.query(`DELETE FROM uv_generation_jobs WHERE job_id = $1 AND game_year = $2`, [String(jobId), Number(GAME_YEAR)]);
+  return true;
+}
+
 export async function closeDb() {
   if (pool && ownsPool) await pool.end();
   if (ownsPool) pool = null;
@@ -96,6 +127,17 @@ export async function initDb() {
       recorded_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     )
   `);
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS uv_generation_jobs (
+      job_id VARCHAR(80) NOT NULL,
+      game_year SMALLINT NOT NULL,
+      job_payload JSONB NOT NULL,
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      PRIMARY KEY (job_id, game_year)
+    )
+  `);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_uv_generation_jobs_updated ON uv_generation_jobs (updated_at DESC)`);
 
   await pool.query(`
     CREATE TABLE IF NOT EXISTS uv_generated_lists (

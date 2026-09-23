@@ -7,7 +7,7 @@ import { GAME_YEAR, HISTORY_SAMPLE_LIMIT, HISTORY_MONITOR_MS, HISTORY_MONITOR_MA
 import { getLiveFutggCards as fetchLiveFutggCards, confirmTradeableMarketCards } from './src/futgg.js';
 import { crosscheckFutbin, getFutbinMarketTrends, attachMarketMoverSignals, getFutbinExtendedDataStatus } from './src/futbin.js';
 import { attachFutggDemandSignals, attachCachedFutggDemandSignals } from './src/demand.js';
-import { initDb, configureDbPool, closeDb, isDbEnabled, recordSnapshot, upsertCards, loadHistoryFeatures, loadPerformanceFeatures, loadTraderRulePerformance, loadTargetSupportPerformance, recordTradeFeedback, recordTradeJournalEvent, getTradeFeedbackStatus, saveGeneratedList, saveListRecheck, recordMarketSnapshot, recordDemandSnapshot, loadWatchPlatforms, loadWatchedEaIds, recordSmartSnapshot, evaluateGeneratedLists, getLearningStatus, loadGeneratedList, listGeneratedLists, loadRealMarketRegimeRows } from './src/db.js';
+import { initDb, configureDbPool, closeDb, isDbEnabled, saveUvGenerationJob, loadUvGenerationJob, deleteUvGenerationJob, recordSnapshot, upsertCards, loadHistoryFeatures, loadPerformanceFeatures, loadTraderRulePerformance, loadTargetSupportPerformance, recordTradeFeedback, recordTradeJournalEvent, getTradeFeedbackStatus, saveGeneratedList, saveListRecheck, recordMarketSnapshot, recordDemandSnapshot, loadWatchPlatforms, loadWatchedEaIds, recordSmartSnapshot, evaluateGeneratedLists, getLearningStatus, loadGeneratedList, listGeneratedLists, loadRealMarketRegimeRows } from './src/db.js';
 import { buildCandidatePool, scoreCard, buildBuyPlan, buildTradingEconomics, assertUvPortfolioIntegrity, buildSelectionScore, buildSellabilityScore, buildBudgetTop100Score, buildPublicTraderEndgameScore, buildTraderConsensusScore, buildBudgetTierScore, buildDemandMarketFitScore, optimizeList, maxAffordablePortfolioCount, filterConservativeCandidates, buildPortfolioSummary, capitalBandForPrice, targetProfitCandidates, specialTargetRatioForBudget, portfolioCountForBudget } from './src/uvEngine.js';
 import { buildRebalanceSeed, rebalancePortfolio } from './src/rebalance.js';
 import { buildRealMarketRegime } from './src/marketRegime.js';
@@ -19,7 +19,7 @@ import { buildReportedOutcomeScore } from './src/outcomeLearning.js';
 import { attachLocalFutbinFc27 } from './src/futbinLocalFc27.js';
 
 export const uvRouter = express.Router();
-const UV_VERSION = '2.15.5';
+const UV_VERSION = '2.15.6';
 
 async function getUvMarketContext(platform, liveCards = []) {
   const realRows = await loadRealMarketRegimeRows(platform).catch(() => []);
@@ -159,6 +159,7 @@ function scheduleGenerationJobCleanup(job) {
   const timer = setTimeout(() => {
     generationJobs.delete(job.jobId);
     deletePersistedGenerationJob(job.jobId);
+    void deleteUvGenerationJob(job.jobId).catch(() => {});
     if (generationRuntime.activeJob?.jobId === job.jobId) generationRuntime.activeJob = null;
   }, GENERATION_JOB_TTL_MS);
   timer.unref?.();
@@ -187,7 +188,7 @@ async function invokeGenerateRouteInternal(payload) {
   });
 }
 
-function startGenerationJob(payload) {
+async function startGenerationJob(payload) {
   const requestKey = JSON.stringify(payload);
   const active = generationRuntime.activeJobId
     ? (generationJobs.get(generationRuntime.activeJobId) || (generationRuntime.activeJob?.jobId === generationRuntime.activeJobId ? generationRuntime.activeJob : null))
@@ -214,11 +215,13 @@ function startGenerationJob(payload) {
   generationRuntime.activeJobId = job.jobId;
   generationRuntime.activeJob = job;
   persistGenerationJob(job);
+  await saveUvGenerationJob(job).catch(() => false);
 
   setImmediate(async () => {
     job.status = 'RUNNING';
     job.startedAt = new Date().toISOString();
     persistGenerationJob(job);
+    await saveUvGenerationJob(job).catch(() => false);
     const timer = setTimeout(() => {
       if (job.status === 'RUNNING') {
         job.error = 'UV-Generierung hat das 12-Minuten-Limit überschritten.';
@@ -238,6 +241,7 @@ function startGenerationJob(payload) {
       clearTimeout(timer);
       job.finishedAt = new Date().toISOString();
       persistGenerationJob(job);
+      await saveUvGenerationJob(job).catch(() => false);
       if (generationRuntime.activeJobId === job.jobId) generationRuntime.activeJobId = null;
       scheduleGenerationJobCleanup(job);
     }
@@ -1338,7 +1342,7 @@ app.post('/api/uv/rebalance/:listId', async (req, res) => {
   }
 });
 
-app.post('/api/uv/generate-job', (req, res) => {
+app.post('/api/uv/generate-job', async (req, res) => {
   if (!requireUvActive(req, res)) return;
   const budget = Math.floor(Number(req.body?.budget));
   const platform = req.body?.platform === 'pc' ? 'pc' : 'console';
@@ -1347,7 +1351,7 @@ app.post('/api/uv/generate-job', (req, res) => {
     return res.status(400).json({ error: 'Bitte mindestens 20.000 Coins eingeben.' });
   }
   try {
-    const { job, reused } = startGenerationJob({ budget, platform, saveList });
+    const { job, reused } = await startGenerationJob({ budget, platform, saveList });
     return res.status(reused ? 200 : 202).json({
       ok: true,
       reused,
@@ -1360,11 +1364,12 @@ app.post('/api/uv/generate-job', (req, res) => {
   }
 });
 
-app.get('/api/uv/generate-job/:jobId', (req, res) => {
+app.get('/api/uv/generate-job/:jobId', async (req, res) => {
   const jobId = String(req.params.jobId);
   const job = generationJobs.get(jobId)
     || (generationRuntime.activeJob?.jobId === jobId ? generationRuntime.activeJob : null)
-    || loadPersistedGenerationJob(jobId);
+    || loadPersistedGenerationJob(jobId)
+    || await loadUvGenerationJob(jobId).catch(() => null);
   if (!job) return res.status(404).json({ ok: false, status: 'MISSING', error: 'Generate-Job nicht gefunden oder bereits abgelaufen.' });
   return res.json({ ok: true, ...publicGenerationJob(job) });
 });
