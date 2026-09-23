@@ -86,7 +86,7 @@ export function createUvGenerateAsyncRouterV2105({ port = process.env.PORT || 30
           reused: true,
           jobId: existing.jobId,
           status: existing.status,
-          pollUrl: `/api/uv/generate-job/${encodeURIComponent(existing.jobId)}`
+          pollUrl: `/api/uv/generate-async-job/${encodeURIComponent(existing.jobId)}`
         });
       }
       activeJobId = null;
@@ -112,13 +112,13 @@ export function createUvGenerateAsyncRouterV2105({ port = process.env.PORT || 30
       reused: false,
       jobId,
       status: job.status,
-      pollUrl: `/api/uv/generate-job/${encodeURIComponent(jobId)}`
+      pollUrl: `/api/uv/generate-async-job/${encodeURIComponent(jobId)}`
     });
 
     setImmediate(() => runJob(job, req.body, port));
   });
 
-  router.get('/api/uv/generate-job/:jobId', (req, res) => {
+  router.get('/api/uv/generate-async-job/:jobId', (req, res) => {
     const job = jobs.get(String(req.params.jobId || ''));
     if (!job) return res.status(404).json({ ok: false, status: 'MISSING', error: 'ÜV-Generierungsjob nicht gefunden oder bereits abgelaufen.' });
     res.set('Cache-Control', 'no-store');

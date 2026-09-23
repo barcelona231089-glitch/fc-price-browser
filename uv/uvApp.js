@@ -19,7 +19,7 @@ import { buildReportedOutcomeScore } from './src/outcomeLearning.js';
 import { attachLocalFutbinFc27 } from './src/futbinLocalFc27.js';
 
 export const uvRouter = express.Router();
-const UV_VERSION = '2.15.7';
+const UV_VERSION = '2.15.10';
 
 async function getUvMarketContext(platform, liveCards = []) {
   const realRows = await loadRealMarketRegimeRows(platform).catch(() => []);
@@ -215,7 +215,7 @@ async function startGenerationJob(payload) {
   generationRuntime.activeJobId = job.jobId;
   generationRuntime.activeJob = job;
   persistGenerationJob(job);
-  await saveUvGenerationJob(job).catch(() => false);
+  await saveUvGenerationJob(job);
 
   setImmediate(async () => {
     job.status = 'RUNNING';

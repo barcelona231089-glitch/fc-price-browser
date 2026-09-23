@@ -110,7 +110,7 @@ test('v2.15 production status requests hard-100 from the 20k minimum', () => {
   assert.ok(uvApp.includes('minimumBudget: 20000'));
   assert.ok(uvApp.includes('budgetAdaptiveSlotsFrom20k: false'));
   assert.ok(uvApp.includes('hard100FromBudget: 20000'));
-  assert.match(uvApp, /const UV_VERSION = '2\.15\.3'/);
+  assert.match(uvApp, /const UV_VERSION = '2\.15\.10'/);
   assert.ok(ui.includes('PROMO + LIVE MARKET'));
   assert.ok(ui.includes('Markt-Regime'));
   assert.ok(ui.includes('Promo-Heat'));
