@@ -1,7 +1,7 @@
 import http from "node:http";
 import { spawn } from "node:child_process";
 
-const prefix = "[hostless-early-bootstrap-v2]";
+const prefix = "[hostless-early-bootstrap-v3]";
 const externalPort = Number(process.env.PORT || 3000);
 const configuredInternalPort = Number(process.env.HOSTLESS_INTERNAL_PORT || 0);
 const internalPort = configuredInternalPort > 0
@@ -9,9 +9,15 @@ const internalPort = configuredInternalPort > 0
   : (externalPort >= 65534 ? externalPort - 1 : externalPort + 1);
 
 let upstreamReady = false;
-let fatalError = null;
 let child = null;
 let shuttingDown = false;
+let restartTimer = null;
+let nextRestartAt = null;
+let totalChildRestarts = 0;
+let consecutiveChildFailures = 0;
+let lastChildExitAt = null;
+let lastChildExitCode = null;
+let lastChildExitSignal = null;
 
 function json(res, status, body) {
   const payload = Buffer.from(JSON.stringify(body));
@@ -21,6 +27,27 @@ function json(res, status, body) {
     "cache-control": "no-store"
   });
   res.end(payload);
+}
+
+function bootstrapStatus() {
+  const restarting = Boolean(restartTimer);
+  return {
+    ok: true,
+    service: "fc-trader-brain",
+    readiness: upstreamReady ? "ready" : (restarting ? "brain-restarting" : "booting"),
+    bootstrap: "early-port-v3-supervisor",
+    buildMarker: "sales-evidence-v1",
+    brainReady: upstreamReady,
+    externalPort,
+    internalPort,
+    childPid: child?.pid || null,
+    childRestarts: totalChildRestarts,
+    consecutiveChildFailures,
+    lastChildExitAt,
+    lastChildExitCode,
+    lastChildExitSignal,
+    nextRestartAt
+  };
 }
 
 function proxyToBrain(req, res) {
@@ -45,6 +72,7 @@ function proxyToBrain(req, res) {
 
   proxy.on("error", error => {
     console.error(`${prefix} proxy error: ${error?.message || error}`);
+    upstreamReady = false;
     if (!res.headersSent) {
       json(res, 502, {
         ok: false,
@@ -59,27 +87,30 @@ function proxyToBrain(req, res) {
   req.pipe(proxy);
 }
 
-function isBootstrapProbe(url = "/") {
-  const path = String(url).split("?", 1)[0];
-  return path === "/" || path === "/healthz" || path === "/health" || path === "/api/readiness";
+function requestPath(url = "/") {
+  return String(url).split("?", 1)[0];
+}
+
+function isBootstrapProbe(path) {
+  return path === "/" || path === "/health" || path === "/api/readiness";
 }
 
 const bootstrapServer = http.createServer((req, res) => {
+  const path = requestPath(req.url);
+
+  if (path === "/healthz" || path === "/bootstrap-status") {
+    return json(res, 200, bootstrapStatus());
+  }
+
   if (!upstreamReady) {
-    if (isBootstrapProbe(req.url)) {
-      return json(res, fatalError ? 500 : 200, {
-        ok: !fatalError,
-        service: "fc-trader-brain",
-        readiness: fatalError ? "bootstrap-failed" : "booting",
-        bootstrap: "early-port-v2-child",
-        buildMarker: "sales-evidence-v1"
-      });
+    if (isBootstrapProbe(path)) {
+      return json(res, 200, bootstrapStatus());
     }
 
     return json(res, 503, {
       ok: false,
       service: "fc-trader-brain",
-      readiness: fatalError ? "bootstrap-failed" : "booting"
+      readiness: restartTimer ? "brain-restarting" : "booting"
     });
   }
 
@@ -114,10 +145,12 @@ function probeUpstream() {
   });
 }
 
-async function waitForUpstream() {
-  while (!shuttingDown && child && child.exitCode == null) {
+async function waitForUpstream(childRef) {
+  while (!shuttingDown && child === childRef && childRef.exitCode == null) {
     if (await probeUpstream()) {
       upstreamReady = true;
+      consecutiveChildFailures = 0;
+      nextRestartAt = null;
       console.log(`${prefix} full brain ready on internal port ${internalPort}; proxy enabled.`);
       return;
     }
@@ -125,15 +158,45 @@ async function waitForUpstream() {
   }
 }
 
+function restartDelayMs() {
+  const power = Math.min(consecutiveChildFailures, 4);
+  return Math.min(30_000, 1500 * (2 ** power));
+}
+
+function scheduleBrainRestart(reason) {
+  if (shuttingDown || restartTimer) return;
+
+  upstreamReady = false;
+  consecutiveChildFailures += 1;
+  const delayMs = restartDelayMs();
+  nextRestartAt = new Date(Date.now() + delayMs).toISOString();
+
+  console.error(
+    `${prefix} scheduling full brain restart in ${delayMs}ms after ${reason}; consecutiveFailures=${consecutiveChildFailures}.`
+  );
+
+  restartTimer = setTimeout(() => {
+    restartTimer = null;
+    nextRestartAt = null;
+    totalChildRestarts += 1;
+    startBrainChild();
+  }, delayMs);
+  restartTimer.unref?.();
+}
+
 function startBrainChild() {
+  if (shuttingDown) return;
+  if (child && child.exitCode == null) return;
+
   const childEnv = {
     ...process.env,
     PORT: String(internalPort),
     HOSTLESS_PARENT_PORT: String(externalPort),
-    HOSTLESS_EARLY_BOOTSTRAP_CHILD: "1"
+    HOSTLESS_EARLY_BOOTSTRAP_CHILD: "1",
+    NODE_OPTIONS: process.env.HOSTLESS_BRAIN_NODE_OPTIONS || process.env.NODE_OPTIONS || "--max-old-space-size=320"
   };
 
-  child = spawn(
+  const childRef = spawn(
     process.execPath,
     ["./v1069965LeakHotfixL7Bootstrap.mjs"],
     {
@@ -143,33 +206,51 @@ function startBrainChild() {
       windowsHide: true
     }
   );
+  child = childRef;
 
-  console.log(`${prefix} full brain child started pid=${child.pid || "unknown"} internalPort=${internalPort}.`);
+  console.log(
+    `${prefix} full brain child started pid=${childRef.pid || "unknown"} internalPort=${internalPort} restart=${totalChildRestarts}.`
+  );
 
-  child.once("error", error => {
-    fatalError = error;
+  let failureHandled = false;
+  const handleFailure = reason => {
+    if (failureHandled || shuttingDown) return;
+    failureHandled = true;
+    if (child === childRef) child = null;
+    scheduleBrainRestart(reason);
+  };
+
+  childRef.once("error", error => {
     console.error(`${prefix} child spawn failed: ${error?.stack || error}`);
+    handleFailure("spawn-error");
   });
 
-  child.once("exit", (code, signal) => {
+  childRef.once("exit", (code, signal) => {
+    lastChildExitAt = new Date().toISOString();
+    lastChildExitCode = code;
+    lastChildExitSignal = signal || null;
+    upstreamReady = false;
+
     if (shuttingDown) return;
 
-    fatalError = new Error(
-      `full brain child exited before parent shutdown: code=${code ?? "null"} signal=${signal || "none"}`
+    console.error(
+      `${prefix} full brain child exited: code=${code ?? "null"} signal=${signal || "none"}.`
     );
-    upstreamReady = false;
-    console.error(`${prefix} ${fatalError.message}`);
-
-    setTimeout(() => process.exit(code || 1), 1000).unref?.();
+    handleFailure("child-exit");
   });
 
-  void waitForUpstream();
+  void waitForUpstream(childRef);
 }
 
 function shutdown(signal) {
   if (shuttingDown) return;
   shuttingDown = true;
   console.log(`${prefix} received ${signal}; shutting down parent and child.`);
+
+  if (restartTimer) {
+    clearTimeout(restartTimer);
+    restartTimer = null;
+  }
 
   if (child && child.exitCode == null) {
     try {
@@ -186,7 +267,7 @@ process.once("SIGINT", () => shutdown("SIGINT"));
 
 bootstrapServer.listen(externalPort, "0.0.0.0", () => {
   console.log(
-    `${prefix} early Hostless listener active on ${externalPort}; full brain isolated on child port ${internalPort}.`
+    `${prefix} early Hostless listener active on ${externalPort}; full brain supervised on child port ${internalPort}.`
   );
   startBrainChild();
 });
