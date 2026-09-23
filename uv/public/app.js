@@ -415,11 +415,8 @@ btn.addEventListener('click', async()=>{
   btn.disabled=true;loading.classList.remove('hidden');summary.classList.add('hidden');notice.classList.add('hidden');
   rows.innerHTML='<tr><td colspan="9" class="empty">Live-Marktdaten, Nachfrage, Outcome-Lernen und robuste Kandidaten-Gates werden geprüft; danach werden bis zu 100 hochwertige Karten innerhalb des Budgets optimiert...</td></tr>';
   try{
-    const r=await fetch('/api/uv/generate',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({budget,platform,saveList})});
-    const text=await r.text();
-    let data;
-    try{data=JSON.parse(text)}catch{throw new Error(`Server lieferte keine JSON-Antwort (HTTP ${r.status}).`)}
-    if(!r.ok) throw new Error(data.error||'Fehler');
+    const started=await startGenerateJob({budget,platform,saveList});
+    const data=await waitForGenerateJob(started.jobId);
     lastListId=data.listId||null;
     lastCards=(data.cards||[]).map((card,index)=>({...card,_savedSlot:lastListId?index+1:null}));
     lastCheckedListId=null; resetListUiState(); renderSummary(data); renderCurrentRows(); filter.disabled=false; recheckBtn.disabled=!lastListId; rebalanceBtn.disabled=true;
@@ -434,6 +431,50 @@ btn.addEventListener('click', async()=>{
 });
 
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
+
+async function startGenerateJob(payload) {
+  const r = await fetch('/api/uv/generate-job', {
+    method:'POST',
+    headers:{'content-type':'application/json'},
+    body:JSON.stringify(payload),
+    cache:'no-store'
+  });
+  const text = await r.text();
+  let data;
+  try{data=JSON.parse(text)}catch{throw new Error(`Generate-Start war keine JSON-Antwort (HTTP ${r.status}).`)}
+  if(!r.ok) throw new Error(data.error||'Generierung konnte nicht gestartet werden');
+  if(!data.jobId) throw new Error('Generate-Job-ID fehlt');
+  return data;
+}
+
+async function waitForGenerateJob(jobId) {
+  const startedPollingAt = Date.now();
+  let transientFetchErrors = 0;
+  while(true){
+    await sleep(2000);
+    try{
+      const r = await fetch(`/api/uv/generate-job/${encodeURIComponent(jobId)}?t=${Date.now()}`, {cache:'no-store'});
+      const text = await r.text();
+      let data;
+      try{data=JSON.parse(text)}catch{throw new Error(`Generate-Status war keine JSON-Antwort (HTTP ${r.status}).`)}
+      if(!r.ok) throw new Error(data.error||'Generate-Status nicht abrufbar');
+      transientFetchErrors = 0;
+      if(data.status==='DONE') return data.result;
+      if(data.status==='FAILED') throw new Error(data.error||'ÜV-Generierung fehlgeschlagen');
+      const seconds=Math.max(1,Math.round((Date.now()-new Date(data.startedAt||startedPollingAt).getTime())/1000));
+      $('#tableSub').textContent=`ÜV-Liste wird serverseitig berechnet... ${seconds}s  |  Verbindung bleibt stabil`;
+      if(seconds>=180){
+        notice.textContent='Die Berechnung dauert länger, läuft auf Raven aber weiter. Die Seite wartet auf das fertige Ergebnis.';
+        notice.classList.remove('hidden');
+      }
+    }catch(error){
+      transientFetchErrors += 1;
+      if(transientFetchErrors >= 12) throw error;
+      $('#tableSub').textContent=`ÜV-Berechnung läuft weiter... Status-Verbindung wird erneut geprüft (${transientFetchErrors}/12)`;
+      await sleep(1200);
+    }
+  }
+}
 
 async function startLiveRecheckJob(listId) {
   let lastError = null;

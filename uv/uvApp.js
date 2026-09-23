@@ -1,6 +1,7 @@
 import express from 'express';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import { randomUUID } from 'node:crypto';
 import { GAME_YEAR, HISTORY_SAMPLE_LIMIT, HISTORY_MONITOR_MS, HISTORY_MONITOR_MAX_CARDS, HISTORY_HEARTBEAT_MINUTES, LIVE_RECHECK_BATCH_SIZE, LIVE_RECHECK_BATCH_PAUSE_MS, LIVE_RECHECK_MAX_QUEUE, LIVE_RECHECK_JOB_TTL_MS, GENERATION_SCORE_BATCH_SIZE, GENERATION_BATCH_PAUSE_MS, GENERATION_CPU_WINDOW_WAIT_MS } from './src/config.js';
 import { getLiveFutggCards as fetchLiveFutggCards, confirmTradeableMarketCards } from './src/futgg.js';
 import { crosscheckFutbin, getFutbinMarketTrends, attachMarketMoverSignals, getFutbinExtendedDataStatus } from './src/futbin.js';
@@ -17,7 +18,7 @@ import { buildReportedOutcomeScore } from './src/outcomeLearning.js';
 import { attachLocalFutbinFc27 } from './src/futbinLocalFc27.js';
 
 export const uvRouter = express.Router();
-const UV_VERSION = '2.15.0';
+const UV_VERSION = '2.15.1';
 
 async function getUvMarketContext(platform, liveCards = []) {
   const realRows = await loadRealMarketRegimeRows(platform).catch(() => []);
@@ -95,6 +96,86 @@ function scheduleLiveRecheckJobCleanup(job) {
     if (liveRecheckJobByList.get(job.listId) === job.jobId) liveRecheckJobByList.delete(job.listId);
   }, LIVE_RECHECK_JOB_TTL_MS);
   timer.unref?.();
+}
+
+const generationJobs = new Map();
+let generationActiveJobId = null;
+const GENERATION_JOB_TTL_MS = 15 * 60_000;
+
+function publicGenerationJob(job) {
+  if (!job) return null;
+  return {
+    jobId: job.jobId,
+    status: job.status,
+    createdAt: job.createdAt,
+    startedAt: job.startedAt || null,
+    finishedAt: job.finishedAt || null,
+    error: job.error || null,
+    result: job.status === 'DONE' ? job.result : null
+  };
+}
+
+function scheduleGenerationJobCleanup(job) {
+  const timer = setTimeout(() => generationJobs.delete(job.jobId), GENERATION_JOB_TTL_MS);
+  timer.unref?.();
+}
+
+function startGenerationJob(payload) {
+  const requestKey = JSON.stringify(payload);
+  const active = generationActiveJobId ? generationJobs.get(generationActiveJobId) : null;
+  if (active && ['QUEUED', 'RUNNING'].includes(active.status)) {
+    if (active.requestKey === requestKey) return { job: active, reused: true };
+    const error = new Error('Eine andere ÜV-Liste wird gerade berechnet. Bitte den laufenden Job kurz abwarten.');
+    error.code = 'GENERATION_JOB_BUSY';
+    throw error;
+  }
+
+  const job = {
+    jobId: randomUUID(),
+    requestKey,
+    payload,
+    status: 'QUEUED',
+    createdAt: new Date().toISOString(),
+    startedAt: null,
+    finishedAt: null,
+    error: null,
+    result: null
+  };
+  generationJobs.set(job.jobId, job);
+  generationActiveJobId = job.jobId;
+
+  setImmediate(async () => {
+    job.status = 'RUNNING';
+    job.startedAt = new Date().toISOString();
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 12 * 60_000);
+    timer.unref?.();
+    try {
+      const internalPort = Number(process.env.PORT || 3000);
+      const response = await fetch(`http://127.0.0.1:${internalPort}/api/uv/generate`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(payload),
+        signal: controller.signal
+      });
+      const text = await response.text();
+      let data;
+      try { data = JSON.parse(text); } catch { throw new Error(`Generate lieferte keine JSON-Antwort (HTTP ${response.status}).`); }
+      if (!response.ok) throw new Error(data?.error || `Generate fehlgeschlagen (HTTP ${response.status}).`);
+      job.result = data;
+      job.status = 'DONE';
+    } catch (error) {
+      job.error = String(error?.name === 'AbortError' ? 'ÜV-Generierung hat das 12-Minuten-Limit überschritten.' : (error?.message || error));
+      job.status = 'FAILED';
+    } finally {
+      clearTimeout(timer);
+      job.finishedAt = new Date().toISOString();
+      if (generationActiveJobId === job.jobId) generationActiveJobId = null;
+      scheduleGenerationJobCleanup(job);
+    }
+  });
+
+  return { job, reused: false };
 }
 
 async function getLiveFutggCards(platform = 'console', options = {}) {
@@ -1187,6 +1268,34 @@ app.post('/api/uv/rebalance/:listId', async (req, res) => {
   } finally {
     generationBusy = false;
   }
+});
+
+app.post('/api/uv/generate-job', (req, res) => {
+  if (!requireUvActive(req, res)) return;
+  const budget = Math.floor(Number(req.body?.budget));
+  const platform = req.body?.platform === 'pc' ? 'pc' : 'console';
+  const saveList = req.body?.saveList === true;
+  if (!Number.isFinite(budget) || budget < 20_000) {
+    return res.status(400).json({ error: 'Bitte mindestens 20.000 Coins eingeben.' });
+  }
+  try {
+    const { job, reused } = startGenerationJob({ budget, platform, saveList });
+    return res.status(reused ? 200 : 202).json({
+      ok: true,
+      reused,
+      ...publicGenerationJob(job),
+      pollUrl: `/api/uv/generate-job/${encodeURIComponent(job.jobId)}`
+    });
+  } catch (error) {
+    const status = error?.code === 'GENERATION_JOB_BUSY' ? 429 : 500;
+    return res.status(status).json({ error: String(error?.message || error) });
+  }
+});
+
+app.get('/api/uv/generate-job/:jobId', (req, res) => {
+  const job = generationJobs.get(String(req.params.jobId));
+  if (!job) return res.status(404).json({ ok: false, status: 'MISSING', error: 'Generate-Job nicht gefunden oder bereits abgelaufen.' });
+  return res.json({ ok: true, ...publicGenerationJob(job) });
 });
 
 app.post('/api/uv/generate', async (req, res) => {
