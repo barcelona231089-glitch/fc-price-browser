@@ -1,6 +1,32 @@
 import pg from 'pg';
 import { spawn } from 'node:child_process';
+import { dirname, join } from 'node:path';
+import { existsSync, mkdirSync, readdirSync, renameSync } from 'node:fs';
 import { createHaCoordinator } from './haCoordinator.js';
+
+if (typeof process.loadEnvFile === 'function') {
+  try {
+    process.loadEnvFile('.env');
+  } catch (error) {
+    if (error?.code !== 'ENOENT') console.warn('[COLD] .env load warning:', error?.message || error);
+  }
+}
+
+function repairLegacyBackslashPaths(root = process.cwd()) {
+  let repaired = 0;
+  for (const name of readdirSync(root)) {
+    if (!name.includes('\\')) continue;
+    const target = join(root, ...name.split('\\'));
+    if (existsSync(target)) continue;
+    mkdirSync(dirname(target), { recursive: true });
+    renameSync(join(root, name), target);
+    repaired += 1;
+  }
+  return repaired;
+}
+
+const repairedLegacyPaths = repairLegacyBackslashPaths();
+if (repairedLegacyPaths > 0) console.log(`[COLD] repaired ${repairedLegacyPaths} legacy flat path(s).`);
 
 const { Pool } = pg;
 const databaseUrl = String(process.env.DATABASE_URL || '').trim();
@@ -58,10 +84,14 @@ const statusTimer = setInterval(() => {
 }, 30000);
 statusTimer.unref?.();
 
+// Keep the cold coordinator alive even if the promoted Brain exits and HA must restart.
+const keepAliveTimer = setInterval(() => {}, 60000);
+
 async function shutdown(signal) {
   if (shuttingDown) return;
   shuttingDown = true;
   clearInterval(statusTimer);
+  clearInterval(keepAliveTimer);
   if (brain) brain.kill('SIGTERM');
   await ha.stop({ releaseLease: !brain });
   await pool.end();
@@ -69,5 +99,3 @@ async function shutdown(signal) {
 }
 process.on('SIGTERM', () => shutdown('SIGTERM'));
 process.on('SIGINT', () => shutdown('SIGINT'));
-
-await new Promise(() => {});
