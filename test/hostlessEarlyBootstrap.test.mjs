@@ -26,5 +26,5 @@ test("production start uses early bootstrap and constrained Node heap", () => {
   const dockerfile = readFileSync(new URL("../Dockerfile", import.meta.url), "utf8");
 
   assert.equal(pkg.scripts.start, "node ./hostlessEarlyBootstrap.mjs");
-  assert.match(dockerfile, /NODE_OPTIONS="--max-old-space-size=160"/);
+  assert.match(dockerfile, /NODE_OPTIONS="--max-old-space-size=320"/);
 });
