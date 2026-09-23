@@ -31,7 +31,7 @@ test('UV browser UI uses the production /api/uv namespace and /uv assets', () =>
   assert.ok(ui.includes("fetch('/api/uv/generate-job'"));
   assert.equal(ui.includes("fetch('/api/status')"), false);
   assert.ok(html.includes('href="/uv/styles.css"'));
-  assert.ok(html.includes('src="/uv/app.js?v=2.15.2-clean"'));
+  assert.ok(html.includes('src="/uv/app.js?v=2.15.3-clean"'));
 });
 
 test('compact UV UI exposes status filters, essential columns and recheck-aware pricing', () => {
@@ -110,7 +110,7 @@ test('v2.15 production status requests hard-100 from the 20k minimum', () => {
   assert.ok(uvApp.includes('minimumBudget: 20000'));
   assert.ok(uvApp.includes('budgetAdaptiveSlotsFrom20k: false'));
   assert.ok(uvApp.includes('hard100FromBudget: 20000'));
-  assert.match(uvApp, /const UV_VERSION = '2\.15\.2'/);
+  assert.match(uvApp, /const UV_VERSION = '2\.15\.3'/);
   assert.ok(ui.includes('PROMO + LIVE MARKET'));
   assert.ok(ui.includes('Markt-Regime'));
   assert.ok(ui.includes('Promo-Heat'));

@@ -5,11 +5,13 @@ import { readFileSync } from 'node:fs';
 const uv = readFileSync(new URL('../uv/uvApp.js', import.meta.url), 'utf8');
 const app = readFileSync(new URL('../uv/public/app.js', import.meta.url), 'utf8');
 
-test('UV 2.15.1 exposes async generate jobs without changing the core generate route', () => {
-  assert.match(uv, /const UV_VERSION = '2\.15\.1'/);
+test('UV 2.15.3 keeps async generate jobs process-wide and avoids self-HTTP', () => {
+  assert.match(uv, /const UV_VERSION = '2\.15\.3'/);
   assert.match(uv, /app\.post\('\/api\/uv\/generate-job'/);
   assert.match(uv, /app\.get\('\/api\/uv\/generate-job\/:jobId'/);
-  assert.match(uv, /127\.0\.0\.1:\$\{internalPort\}\/api\/uv\/generate/);
+  assert.match(uv, /Symbol\.for\('fc-trader-brain\.uv-generation-runtime\.v1'\)/);
+  assert.match(uv, /invokeGenerateRouteInternal\(payload\)/);
+  assert.doesNotMatch(uv, /127\.0\.0\.1:\$\{internalPort\}\/api\/uv\/generate/);
   assert.match(uv, /app\.post\('\/api\/uv\/generate'/);
   assert.match(uv, /GENERATION_JOB_BUSY/);
 });

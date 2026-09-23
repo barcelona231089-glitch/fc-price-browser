@@ -18,7 +18,7 @@ import { buildReportedOutcomeScore } from './src/outcomeLearning.js';
 import { attachLocalFutbinFc27 } from './src/futbinLocalFc27.js';
 
 export const uvRouter = express.Router();
-const UV_VERSION = '2.15.2';
+const UV_VERSION = '2.15.3';
 
 async function getUvMarketContext(platform, liveCards = []) {
   const realRows = await loadRealMarketRegimeRows(platform).catch(() => []);
@@ -98,8 +98,12 @@ function scheduleLiveRecheckJobCleanup(job) {
   timer.unref?.();
 }
 
-const generationJobs = new Map();
-let generationActiveJobId = null;
+const GENERATION_RUNTIME_KEY = Symbol.for('fc-trader-brain.uv-generation-runtime.v1');
+const generationRuntime = globalThis[GENERATION_RUNTIME_KEY] || (globalThis[GENERATION_RUNTIME_KEY] = {
+  jobs: new Map(),
+  activeJobId: null
+});
+const generationJobs = generationRuntime.jobs;
 const GENERATION_JOB_TTL_MS = 15 * 60_000;
 
 function publicGenerationJob(job) {
@@ -145,7 +149,7 @@ async function invokeGenerateRouteInternal(payload) {
 
 function startGenerationJob(payload) {
   const requestKey = JSON.stringify(payload);
-  const active = generationActiveJobId ? generationJobs.get(generationActiveJobId) : null;
+  const active = generationRuntime.activeJobId ? generationJobs.get(generationRuntime.activeJobId) : null;
   if (active && ['QUEUED', 'RUNNING'].includes(active.status)) {
     if (active.requestKey === requestKey) return { job: active, reused: true };
     const error = new Error('Eine andere ÜV-Liste wird gerade berechnet. Bitte den laufenden Job kurz abwarten.');
@@ -165,7 +169,7 @@ function startGenerationJob(payload) {
     result: null
   };
   generationJobs.set(job.jobId, job);
-  generationActiveJobId = job.jobId;
+  generationRuntime.activeJobId = job.jobId;
 
   setImmediate(async () => {
     job.status = 'RUNNING';
@@ -188,7 +192,7 @@ function startGenerationJob(payload) {
     } finally {
       clearTimeout(timer);
       job.finishedAt = new Date().toISOString();
-      if (generationActiveJobId === job.jobId) generationActiveJobId = null;
+      if (generationRuntime.activeJobId === job.jobId) generationRuntime.activeJobId = null;
       scheduleGenerationJobCleanup(job);
     }
   });
