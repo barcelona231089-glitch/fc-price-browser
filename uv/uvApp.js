@@ -18,7 +18,7 @@ import { buildReportedOutcomeScore } from './src/outcomeLearning.js';
 import { attachLocalFutbinFc27 } from './src/futbinLocalFc27.js';
 
 export const uvRouter = express.Router();
-const UV_VERSION = '2.15.3';
+const UV_VERSION = '2.15.4';
 
 async function getUvMarketContext(platform, liveCards = []) {
   const realRows = await loadRealMarketRegimeRows(platform).catch(() => []);
@@ -101,8 +101,11 @@ function scheduleLiveRecheckJobCleanup(job) {
 const GENERATION_RUNTIME_KEY = Symbol.for('fc-trader-brain.uv-generation-runtime.v1');
 const generationRuntime = globalThis[GENERATION_RUNTIME_KEY] || (globalThis[GENERATION_RUNTIME_KEY] = {
   jobs: new Map(),
-  activeJobId: null
+  activeJobId: null,
+  activeJob: null
 });
+if (!(generationRuntime.jobs instanceof Map)) generationRuntime.jobs = new Map();
+if (!('activeJob' in generationRuntime)) generationRuntime.activeJob = null;
 const generationJobs = generationRuntime.jobs;
 const GENERATION_JOB_TTL_MS = 15 * 60_000;
 
@@ -120,7 +123,10 @@ function publicGenerationJob(job) {
 }
 
 function scheduleGenerationJobCleanup(job) {
-  const timer = setTimeout(() => generationJobs.delete(job.jobId), GENERATION_JOB_TTL_MS);
+  const timer = setTimeout(() => {
+    generationJobs.delete(job.jobId);
+    if (generationRuntime.activeJob?.jobId === job.jobId) generationRuntime.activeJob = null;
+  }, GENERATION_JOB_TTL_MS);
   timer.unref?.();
 }
 
@@ -149,7 +155,9 @@ async function invokeGenerateRouteInternal(payload) {
 
 function startGenerationJob(payload) {
   const requestKey = JSON.stringify(payload);
-  const active = generationRuntime.activeJobId ? generationJobs.get(generationRuntime.activeJobId) : null;
+  const active = generationRuntime.activeJobId
+    ? (generationJobs.get(generationRuntime.activeJobId) || (generationRuntime.activeJob?.jobId === generationRuntime.activeJobId ? generationRuntime.activeJob : null))
+    : null;
   if (active && ['QUEUED', 'RUNNING'].includes(active.status)) {
     if (active.requestKey === requestKey) return { job: active, reused: true };
     const error = new Error('Eine andere ÜV-Liste wird gerade berechnet. Bitte den laufenden Job kurz abwarten.');
@@ -170,6 +178,7 @@ function startGenerationJob(payload) {
   };
   generationJobs.set(job.jobId, job);
   generationRuntime.activeJobId = job.jobId;
+  generationRuntime.activeJob = job;
 
   setImmediate(async () => {
     job.status = 'RUNNING';
@@ -1315,7 +1324,8 @@ app.post('/api/uv/generate-job', (req, res) => {
 });
 
 app.get('/api/uv/generate-job/:jobId', (req, res) => {
-  const job = generationJobs.get(String(req.params.jobId));
+  const jobId = String(req.params.jobId);
+  const job = generationJobs.get(jobId) || (generationRuntime.activeJob?.jobId === jobId ? generationRuntime.activeJob : null);
   if (!job) return res.status(404).json({ ok: false, status: 'MISSING', error: 'Generate-Job nicht gefunden oder bereits abgelaufen.' });
   return res.json({ ok: true, ...publicGenerationJob(job) });
 });
