@@ -28,7 +28,7 @@ function repairLegacyBackslashPaths(root = process.cwd()) {
 const repairedLegacyPaths = repairLegacyBackslashPaths();
 if (repairedLegacyPaths > 0) console.log(`[COLD] repaired ${repairedLegacyPaths} legacy flat path(s).`);
 
-const PINNED_UV_REVISION = '85930754c4f1f6cb6ad766adb5eb36a6059b2b9e';
+const PINNED_UV_REVISION = '26e8b5a38abe53ee4c928791ea769e544f0e4dd0';
 const PINNED_UV_URL = `https://raw.githubusercontent.com/barcelona231089-glitch/fc-price-browser/${PINNED_UV_REVISION}/uv/uvApp.js`;
 
 async function ensurePinnedUvBackend() {
