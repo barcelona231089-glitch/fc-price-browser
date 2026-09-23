@@ -1,7 +1,7 @@
 import pg from 'pg';
 import { spawn } from 'node:child_process';
 import { dirname, join } from 'node:path';
-import { existsSync, mkdirSync, readdirSync, renameSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, writeFileSync } from 'node:fs';
 import { createHaCoordinator } from './haCoordinator.js';
 
 if (typeof process.loadEnvFile === 'function') {
@@ -27,6 +27,38 @@ function repairLegacyBackslashPaths(root = process.cwd()) {
 
 const repairedLegacyPaths = repairLegacyBackslashPaths();
 if (repairedLegacyPaths > 0) console.log(`[COLD] repaired ${repairedLegacyPaths} legacy flat path(s).`);
+
+const PINNED_UV_REVISION = '85930754c4f1f6cb6ad766adb5eb36a6059b2b9e';
+const PINNED_UV_URL = `https://raw.githubusercontent.com/barcelona231089-glitch/fc-price-browser/${PINNED_UV_REVISION}/uv/uvApp.js`;
+
+async function ensurePinnedUvBackend() {
+  const target = join(process.cwd(), 'uv', 'uvApp.js');
+  const expectedVersion = "const UV_VERSION = '2.15.1'";
+  const expectedRoute = "/api/uv/generate-job";
+  try {
+    const current = existsSync(target) ? readFileSync(target, 'utf8') : '';
+    if (current.includes(expectedVersion) && current.includes(expectedRoute)) return false;
+
+    const response = await fetch(PINNED_UV_URL, { signal: AbortSignal.timeout(15000) });
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    const next = await response.text();
+    if (next.length < 50000 || !next.includes(expectedVersion) || !next.includes(expectedRoute)) {
+      throw new Error('Pinned UV payload failed integrity markers');
+    }
+
+    mkdirSync(dirname(target), { recursive: true });
+    const temp = `${target}.sync-${process.pid}.tmp`;
+    writeFileSync(temp, next, 'utf8');
+    renameSync(temp, target);
+    console.log(`[COLD] synchronized UV backend from pinned revision ${PINNED_UV_REVISION}.`);
+    return true;
+  } catch (error) {
+    console.warn('[COLD] UV backend synchronization warning:', error?.message || error);
+    return false;
+  }
+}
+
+await ensurePinnedUvBackend();
 
 const { Pool } = pg;
 const databaseUrl = String(process.env.DATABASE_URL || '').trim();
