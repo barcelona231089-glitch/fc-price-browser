@@ -808,9 +808,9 @@ function getSharedMarketForUv(platform = "console", options = {}) {
   if (!liveAllowed && !recentSafeAllowed) return null;
 
   const cards = latestTradingRows
-    .filter(row => Number.isFinite(row?.eaId) && Number.isFinite(row?.price) && row.price > 0)
+    .filter(row => Number.isFinite(Number(row?.eaId)) && Number.isFinite(Number(row?.price)) && Number(row.price) > 0)
     .map(row => ({
-      eaId: row.eaId,
+      eaId: Number(row.eaId),
       id: row.id ?? null,
       itemId: row.itemId ?? null,
       overall: row.overall,
@@ -826,7 +826,7 @@ function getSharedMarketForUv(platform = "console", options = {}) {
       url: row.url ?? null,
       slug: row.slug ?? null,
       image: row.image ?? null,
-      price: row.price,
+      price: Number(row.price),
       priceStatusCode: row.priceStatusCode ?? null,
       priceSource: "FUT.GG / shared Trader Brain snapshot",
       traderSnapshot: {
