@@ -155,6 +155,8 @@ function resultFromParsed(card, parsed, url, platform) {
     pricePc,
     rating: Number(parsed?.rating) > 0 ? Number(parsed.rating) : (Number(card?.overall || card?.rating) || null),
     popularRank: Number.isFinite(Number(parsed?.popularityRank)) ? Number(parsed.popularityRank) : null,
+    gamesPlayedConsole: Number.isFinite(Number(parsed?.gamesPlayedConsole)) ? Number(parsed.gamesPlayedConsole) : null,
+    gamesPlayedPc: Number.isFinite(Number(parsed?.gamesPlayedPc)) ? Number(parsed.gamesPlayedPc) : null,
     id: parsed?.futbinId ?? card?.futbinId ?? (urlId ? Number(urlId) : null),
     name: parsed?.name ?? card?.name ?? null,
     source: SOURCE,
