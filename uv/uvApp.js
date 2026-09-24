@@ -215,7 +215,7 @@ async function startGenerationJob(payload) {
   generationRuntime.activeJobId = job.jobId;
   generationRuntime.activeJob = job;
   persistGenerationJob(job);
-  await saveUvGenerationJob(job);
+  void saveUvGenerationJob(job).catch(() => false);
 
   setImmediate(async () => {
     job.status = 'RUNNING';
