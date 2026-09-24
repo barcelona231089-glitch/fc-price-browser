@@ -36,7 +36,7 @@ function log(message, extra = null) {
 
 function writeStatus(status) {
   writeFileSync(STATE_FILE, JSON.stringify({
-    version: "1.0.0",
+    version: "1.1.0",
     host: HOST,
     port: PORT,
     intervalMinutes: Math.round(INTERVAL_MS / 60_000),
@@ -342,7 +342,7 @@ export async function runCollectorCycle() {
       maxCards: MAX_CARDS,
       pageWaitMs: PAGE_WAIT_MS,
       spacingMs: SPACING_MS,
-      includeSalesHistory: false
+      includeSalesHistory: true
     });
     let brave = await collect();
     const retryableBrowserError = /terminated|BRAVE_DEBUG|ECONNREFUSED|fetch failed|WEBSOCKET/i.test(String(brave?.reason || ""));
