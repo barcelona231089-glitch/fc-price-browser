@@ -1,0 +1,17 @@
+import { mkdirSync, appendFileSync } from "node:fs";
+import { join } from "node:path";
+const port=Number(process.env.BRAVE_DEBUG_PORT||9230);
+const out=process.env.FUTBIN_NET_LOG||join(process.cwd(),"logs","futbin-network.jsonl");
+mkdirSync(join(process.cwd(),"logs"),{recursive:true});
+const tabs=await fetch("http://127.0.0.1:"+port+"/json").then(r=>r.json());
+const tab=tabs.find(x=>x.type==="page"&&/futbin\.com/i.test(x.url||""));
+if(!tab?.webSocketDebuggerUrl) throw new Error("Open FUTBIN in the collector Brave session first.");
+const ws=new WebSocket(tab.webSocketDebuggerUrl); let id=0;
+const send=(method,params={})=>ws.send(JSON.stringify({id:++id,method,params}));
+ws.onopen=()=>{send("Network.enable");console.log("Recording FUTBIN network. Ctrl+C to stop.");};
+ws.onmessage=e=>{const m=JSON.parse(e.data); if(m.method!=="Network.responseReceived")return;
+ const r=m.params?.response; const u=String(r?.url||"");
+ if(!/futbin\.com/i.test(u)||!/xhr|fetch/i.test(m.params?.type||""))return;
+ const row={at:new Date().toISOString(),status:r?.status,mime:r?.mimeType,url:u};
+ appendFileSync(out,JSON.stringify(row)+"\n"); console.log(r?.status,u);
+};
