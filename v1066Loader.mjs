@@ -635,6 +635,12 @@ export async function loadFutbinPriceFeatures(eaIds = [], platform = 'console') 
 
 function patchUvFutbinV2109(source) {
   let out = String(source || '');
+  // Runtime hotfix: older/pinned patched sources could reference this helper
+  // outside the map callback. Keep a safe lexical default so generation never
+  // crashes; per-card history still overrides it where available.
+  if (out.includes('futbinOwnHistory') && !out.includes('const futbinOwnHistory = null;')) {
+    out = out.replace("import { extractFutbinStructuredEvidence } from './futbinEvidence.js';", "import { extractFutbinStructuredEvidence } from './futbinEvidence.js';\nconst futbinOwnHistory = null;");
+  }
 
   out = out.replace(
     "import { extractFutbinStructuredEvidence } from './futbinEvidence.js';",
