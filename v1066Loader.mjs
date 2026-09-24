@@ -635,13 +635,6 @@ export async function loadFutbinPriceFeatures(eaIds = [], platform = 'console') 
 
 function patchUvFutbinV2109(source) {
   let out = String(source || '');
-  // Runtime hotfix: older/pinned patched sources could reference this helper
-  // outside the map callback. Keep a safe lexical default so generation never
-  // crashes; per-card history still overrides it where available.
-  if (out.includes('futbinOwnHistory') && !out.includes('const futbinOwnHistory = null;')) {
-    out = out.replace("import { extractFutbinStructuredEvidence } from './futbinEvidence.js';", "import { extractFutbinStructuredEvidence } from './futbinEvidence.js';\nconst futbinOwnHistory = null;");
-  }
-
   out = out.replace(
     "import { extractFutbinStructuredEvidence } from './futbinEvidence.js';",
     "import { extractFutbinStructuredEvidence } from './futbinEvidence.js';\nimport { recordFutbinPriceObservations, loadFutbinPriceFeatures } from './db.js';"
@@ -1090,10 +1083,10 @@ function markParseCall({ ok = false, price = null, marketTrend = false, error = 
     `      expectedSalesPerDay: Number.isFinite(evidence.futbinObservedSalesPerDay) ? Number(evidence.futbinObservedSalesPerDay) : card.expectedSalesPerDay ?? null
     };`,
     `      expectedSalesPerDay: Number.isFinite(evidence.futbinObservedSalesPerDay) ? Number(evidence.futbinObservedSalesPerDay) : card.expectedSalesPerDay ?? null,
-      futbinOwnHistorySamples: Number((futbinHistory.get(String(card.eaId)) || null)?.samples || 0),
-      futbinOwnAvg24h: Number.isFinite(Number((futbinHistory.get(String(card.eaId)) || null)?.avg24h)) ? Number((futbinHistory.get(String(card.eaId)) || null).avg24h) : null,
-      futbinOwnTrendPct24h: Number.isFinite(Number((futbinHistory.get(String(card.eaId)) || null)?.trendPct24h)) ? Number((futbinHistory.get(String(card.eaId)) || null).trendPct24h) : null,
-      futbinOwnHistoryLastAt: (futbinHistory.get(String(card.eaId)) || null)?.lastAt || null
+      futbinOwnHistorySamples: Number(futbinOwnHistory?.samples || 0),
+      futbinOwnAvg24h: Number.isFinite(Number(futbinOwnHistory?.avg24h)) ? Number(futbinOwnHistory.avg24h) : null,
+      futbinOwnTrendPct24h: Number.isFinite(Number(futbinOwnHistory?.trendPct24h)) ? Number(futbinOwnHistory.trendPct24h) : null,
+      futbinOwnHistoryLastAt: futbinOwnHistory?.lastAt || null
     };`
   );
 
