@@ -1084,10 +1084,10 @@ function markParseCall({ ok = false, price = null, marketTrend = false, error = 
     `      expectedSalesPerDay: Number.isFinite(evidence.futbinObservedSalesPerDay) ? Number(evidence.futbinObservedSalesPerDay) : card.expectedSalesPerDay ?? null
     };`,
     `      expectedSalesPerDay: Number.isFinite(evidence.futbinObservedSalesPerDay) ? Number(evidence.futbinObservedSalesPerDay) : card.expectedSalesPerDay ?? null,
-      futbinOwnHistorySamples: Number(futbinOwnHistory?.samples || 0),
-      futbinOwnAvg24h: Number.isFinite(Number(futbinOwnHistory?.avg24h)) ? Number(futbinOwnHistory.avg24h) : null,
-      futbinOwnTrendPct24h: Number.isFinite(Number(futbinOwnHistory?.trendPct24h)) ? Number(futbinOwnHistory.trendPct24h) : null,
-      futbinOwnHistoryLastAt: futbinOwnHistory?.lastAt || null
+      futbinOwnHistorySamples: Number((futbinHistory.get(String(card.eaId)) || null)?.samples || 0),
+      futbinOwnAvg24h: Number.isFinite(Number((futbinHistory.get(String(card.eaId)) || null)?.avg24h)) ? Number((futbinHistory.get(String(card.eaId)) || null).avg24h) : null,
+      futbinOwnTrendPct24h: Number.isFinite(Number((futbinHistory.get(String(card.eaId)) || null)?.trendPct24h)) ? Number((futbinHistory.get(String(card.eaId)) || null).trendPct24h) : null,
+      futbinOwnHistoryLastAt: (futbinHistory.get(String(card.eaId)) || null)?.lastAt || null
     };`
   );
 
