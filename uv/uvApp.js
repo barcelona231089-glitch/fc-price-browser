@@ -795,6 +795,15 @@ async function performLiveRecheck(listId, job = null) {
   await enrichRowsWithSnapshotFutbinBrain(current, { pool: dbPool, gameYear: GAME_YEAR, platform });
   current = await crosscheckFutbin(current, platform);
   current = attachLocalFutbinFc27(current, platform);
+  current = current.map(card => {
+    const futbinGamesObserved = Number(card.futbinGamesPlayed || card.futbinGamesCount) > 0;
+    const futbinSalesObserved = Number(card.futbinSoldSampleCount || 0) >= 2
+      && [card.futbinSoldPriceP25, card.futbinSoldPriceMedian, card.futbinSoldPriceMode, card.futbinSoldPriceP75]
+        .some(value => Number(value) > 0);
+    const futbinPopularObserved = Number(card.futbinPopularRank) > 0;
+    const futbinEvidenceCount = [futbinGamesObserved, futbinSalesObserved, futbinPopularObserved].filter(Boolean).length;
+    return { ...card, futbinGamesObserved, futbinSalesObserved, futbinPopularObserved, futbinEvidenceCount, futbinEvidenceGate: futbinEvidenceCount >= 2 ? 'PASS' : 'FAIL' };
+  });
 
   const liveById = new Map(current.map(c => [String(c.eaId), c]));
   const ids = items.map(i => i.eaId);
@@ -1398,6 +1407,29 @@ app.post('/api/uv/generate', async (req, res) => {
     await enrichRowsWithSnapshotFutbinBrain(scored, { pool: dbPool, gameYear: GAME_YEAR, platform });
     scored = await crosscheckFutbin(scored, platform);
     scored = attachLocalFutbinFc27(scored, platform);
+
+    // Dedicated FUTBIN evidence gate. Price is mandatory and at least two of the
+    // three independent FUTBIN demand/liquidity signals must be genuinely observed.
+    scored = scored.map(card => {
+      const futbinGamesObserved = Number(card.futbinGamesPlayed || card.futbinGamesCount) > 0;
+      const futbinSalesObserved = Number(card.futbinSoldSampleCount || 0) >= 2
+        && [card.futbinSoldPriceP25, card.futbinSoldPriceMedian, card.futbinSoldPriceMode, card.futbinSoldPriceP75]
+          .some(value => Number(value) > 0);
+      const futbinPopularObserved = Number(card.futbinPopularRank) > 0;
+      const futbinEvidenceCount = [futbinGamesObserved, futbinSalesObserved, futbinPopularObserved].filter(Boolean).length;
+      return {
+        ...card,
+        futbinGamesObserved,
+        futbinSalesObserved,
+        futbinPopularObserved,
+        futbinEvidenceCount,
+        futbinEvidenceGate: futbinEvidenceCount >= 2 ? 'PASS' : 'FAIL'
+      };
+    }).filter(card => Number(card.futbinPrice || card.price) > 0 && card.futbinEvidenceCount >= 2);
+
+    if (scored.length < count) {
+      throw new Error(`FUTBIN evidence gate: only ${scored.length}/${count} candidates have price plus at least 2/3 observed criteria (Games, Sales History, Popular Rank).`);
+    }
     scored = await generationCpuSafeMap(scored, card => {
       const history = historyMap.get(String(card.eaId)) || null;
       const learning = performanceMap.get(String(card.eaId)) || card.learning || null;
