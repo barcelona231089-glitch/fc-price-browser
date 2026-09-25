@@ -192,6 +192,7 @@ async function invokeGenerateRouteInternal(payload) {
 }
 
 async function startGenerationJob(payload) {
+  console.log('[UV-GEN] start request', { budget: payload?.budget, platform: payload?.platform, saveList: payload?.saveList === true });
   const requestKey = JSON.stringify(payload);
   const active = generationRuntime.activeJobId
     ? (generationJobs.get(generationRuntime.activeJobId) || (generationRuntime.activeJob?.jobId === generationRuntime.activeJobId ? generationRuntime.activeJob : null))
@@ -221,6 +222,7 @@ async function startGenerationJob(payload) {
   void saveUvGenerationJob(job).catch(() => false);
 
   setImmediate(async () => {
+    console.log('[UV-GEN] job running', { jobId: job.jobId });
     job.status = 'RUNNING';
     job.startedAt = new Date().toISOString();
     persistGenerationJob(job);
@@ -233,11 +235,14 @@ async function startGenerationJob(payload) {
     }, 12 * 60_000);
     timer.unref?.();
     try {
+      console.log('[UV-GEN] invoking worker', { jobId: job.jobId });
       const data = await invokeGenerateRouteInternal(payload);
+      console.log('[UV-GEN] worker done', { jobId: job.jobId, count: data?.count });
       if (job.status === 'FAILED') return;
       job.result = data;
       job.status = 'DONE';
     } catch (error) {
+      console.error('[UV-GEN] worker failed', { jobId: job.jobId, error: error?.stack || error?.message || String(error) });
       job.error = String(error?.message || error);
       job.status = 'FAILED';
     } finally {
@@ -1351,9 +1356,13 @@ app.post('/api/uv/generate', async (req, res) => {
     // CPU-SAFE v2.9.2: do not stack a manual 100-card build on top of the
     // Trader market loop, History monitor or Live-Recheck. Wait briefly for an
     // idle window instead of pushing constrained hosts over their CPU cap.
+    console.log('[UV-GEN] worker entered', { budget, platform, requestedCount });
     await waitForGenerationCpuWindow();
+    console.log('[UV-GEN] cpu window ready');
 
+    console.log('[UV-GEN] loading FUTBIN cards');
     const live = await getLiveFutbinCards(platform, { allowRecentSafeSnapshot: true });
+    console.log('[UV-GEN] FUTBIN cards loaded', { count: live?.cards?.length || 0, source: live?.source || null });
     const marketContext = await getUvMarketContext(platform, live.cards);
 
     let candidateBuild = buildCandidatePool(live.cards, budget, count);
@@ -1408,8 +1417,11 @@ app.post('/api/uv/generate', async (req, res) => {
     // Snapshot evidence (price, platform-specific Games, sold prices and rank)
     // is attached before the final scoring/optimizer. Network FUTBIN adapters may supplement
     // missing evidence but never manufacture a FUTBIN observation.
+    console.log('[UV-GEN] enriching FUTBIN evidence', { candidates: scored.length });
     await enrichRowsWithSnapshotFutbinBrain(scored, { pool: dbPool, gameYear: GAME_YEAR, platform });
+    console.log('[UV-GEN] snapshot evidence attached');
     scored = await crosscheckFutbin(scored, platform);
+    console.log('[UV-GEN] FUTBIN crosscheck complete');
     scored = attachLocalFutbinFc27(scored, platform);
 
     // Dedicated FUTBIN evidence gate. Price is mandatory and at least two of the
