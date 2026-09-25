@@ -121,3 +121,22 @@ test('v1.2 failed FUTBIN listings reduce support for an aggressive sell target',
   const failed = scoreObservedSaleTarget(2050, { ...base, futbinUnsoldSampleCount: 8 });
   assert.ok(failed < clean);
 });
+
+
+test('snapshot sold-price evidence supplies the actual sell target with exact EA tax', () => {
+  const pricing = buildTraderAwarePricing({
+    price: 5000,
+    recommendedBuyPrice: 5000,
+    futbinSoldSampleCount: 8,
+    futbinSoldPriceP25: 5600,
+    futbinSoldPriceMedian: 5800,
+    futbinSoldPriceMode: 5800,
+    futbinSoldPriceP75: 6000,
+    turnoverIndex: 70
+  });
+  assert.ok([5600, 5800, 6000].includes(pricing.sellPrice));
+  assert.equal(pricing.sellPriceEvidence, 'FUTBIN_SOLD');
+  assert.equal(pricing.eaTax, Math.floor(pricing.sellPrice * 0.05));
+  assert.equal(pricing.netProfit, pricing.sellPrice - pricing.eaTax - 5000);
+  assert.ok(pricing.netProfit <= 3000);
+});
