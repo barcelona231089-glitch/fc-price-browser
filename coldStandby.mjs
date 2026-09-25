@@ -28,37 +28,50 @@ function repairLegacyBackslashPaths(root = process.cwd()) {
 const repairedLegacyPaths = repairLegacyBackslashPaths();
 if (repairedLegacyPaths > 0) console.log(`[COLD] repaired ${repairedLegacyPaths} legacy flat path(s).`);
 
-const PINNED_UV_REVISION = '6bca20950e746519c3da41e29b0bc226d89e106b';
-const PINNED_UV_URL = `https://raw.githubusercontent.com/barcelona231089-glitch/fc-price-browser/${PINNED_UV_REVISION}/uv/uvApp.js`;
+const PINNED_RUNTIME_REVISION = '9c43310736e616d74869ce0a87d52bc831db6786';
 
-async function ensurePinnedUvBackend() {
-  const target = join(process.cwd(), 'uv', 'uvApp.js');
-  const expectedVersion = "const UV_VERSION = '2.15.10'";
-  const expectedRoute = "/api/uv/generate-job";
+const PINNED_RUNTIME_FILES = [
+  {
+    path: 'uv/uvApp.js',
+    minBytes: 50000,
+    markers: ["const UV_VERSION = '2.15.10'", "/api/uv/generate-job", 'enrichRowsWithSnapshotFutbinBrain']
+  },
+  {
+    path: 'v1066Loader.mjs',
+    minBytes: 50000,
+    markers: ['function patchUvFutbinV2109', 'futbinOwnHistorySamples', 'futbinOwnHistoryLastAt']
+  }
+];
+
+async function ensurePinnedRuntimeFile(spec) {
+  const target = join(process.cwd(), ...spec.path.split('/'));
+  const url = `https://raw.githubusercontent.com/barcelona231089-glitch/fc-price-browser/${PINNED_RUNTIME_REVISION}/${spec.path}`;
   try {
     const current = existsSync(target) ? readFileSync(target, 'utf8') : '';
-    if (current.includes(expectedVersion) && current.includes(expectedRoute)) return false;
+    if (spec.markers.every(marker => current.includes(marker))) return false;
 
-    const response = await fetch(PINNED_UV_URL, { signal: AbortSignal.timeout(15000) });
+    const response = await fetch(url, { signal: AbortSignal.timeout(15000) });
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
     const next = await response.text();
-    if (next.length < 50000 || !next.includes(expectedVersion) || !next.includes(expectedRoute)) {
-      throw new Error('Pinned UV payload failed integrity markers');
+    if (next.length < spec.minBytes || !spec.markers.every(marker => next.includes(marker))) {
+      throw new Error(`Pinned runtime payload failed integrity markers: ${spec.path}`);
     }
 
     mkdirSync(dirname(target), { recursive: true });
     const temp = `${target}.sync-${process.pid}.tmp`;
     writeFileSync(temp, next, 'utf8');
     renameSync(temp, target);
-    console.log(`[COLD] synchronized UV backend from pinned revision ${PINNED_UV_REVISION}.`);
+    console.log(`[COLD] synchronized ${spec.path} from pinned revision ${PINNED_RUNTIME_REVISION}.`);
     return true;
   } catch (error) {
-    console.warn('[COLD] UV backend synchronization warning:', error?.message || error);
+    console.warn(`[COLD] runtime synchronization warning for ${spec.path}:`, error?.message || error);
     return false;
   }
 }
 
-await ensurePinnedUvBackend();
+for (const spec of PINNED_RUNTIME_FILES) {
+  await ensurePinnedRuntimeFile(spec);
+}
 
 const { Pool } = pg;
 const databaseUrl = String(process.env.DATABASE_URL || '').trim();
