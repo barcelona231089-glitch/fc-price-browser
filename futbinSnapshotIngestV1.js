@@ -15,11 +15,15 @@ export async function ensureFutbinSnapshotTable(pool) {
     price_console BIGINT,
     price_pc BIGINT,
     popular_rank INTEGER,
+    games_played_console BIGINT,
+    games_played_pc BIGINT,
     sales_evidence JSONB,
     source TEXT NOT NULL DEFAULT 'PC_COLLECTOR',
     PRIMARY KEY (futbin_id, observed_at)
   )`);
   await pool.query(`ALTER TABLE ${TABLE} ADD COLUMN IF NOT EXISTS sales_evidence JSONB`);
+  await pool.query(`ALTER TABLE ${TABLE} ADD COLUMN IF NOT EXISTS games_played_console BIGINT`);
+  await pool.query(`ALTER TABLE ${TABLE} ADD COLUMN IF NOT EXISTS games_played_pc BIGINT`);
   await pool.query(`CREATE INDEX IF NOT EXISTS ${TABLE}_observed_idx ON ${TABLE}(observed_at DESC)`);
 }
 
@@ -100,6 +104,8 @@ export function normalizeFutbinSnapshotRows(rows = [], nowMs = Date.now()) {
       priceConsole: nullablePositiveInt(row?.priceConsole),
       pricePc: nullablePositiveInt(row?.pricePc),
       popularRank,
+      gamesPlayedConsole: nullablePositiveInt(row?.gamesPlayedConsole),
+      gamesPlayedPc: nullablePositiveInt(row?.gamesPlayedPc),
       salesEvidence: normalizeSalesEvidence(row?.salesEvidence, nowMs),
     });
   }
@@ -114,13 +120,13 @@ export async function ingestFutbinSnapshot(pool, rows = []) {
 
   const values = [];
   const tuples = clean.map((row, index) => {
-    const base = index * 8;
-    values.push(row.futbinId, row.observedAt, row.name, row.rating, row.priceConsole, row.pricePc, row.popularRank, row.salesEvidence);
-    return `($${base + 1},$${base + 2},$${base + 3},$${base + 4},$${base + 5},$${base + 6},$${base + 7},$${base + 8})`;
+    const base = index * 10;
+    values.push(row.futbinId, row.observedAt, row.name, row.rating, row.priceConsole, row.pricePc, row.popularRank, row.gamesPlayedConsole, row.gamesPlayedPc, row.salesEvidence);
+    return `($${base + 1},$${base + 2},$${base + 3},$${base + 4},$${base + 5},$${base + 6},$${base + 7},$${base + 8},$${base + 9},$${base + 10})`;
   });
 
   const result = await pool.query(`INSERT INTO ${TABLE}
-    (futbin_id,observed_at,name,rating,price_console,price_pc,popular_rank,sales_evidence)
+    (futbin_id,observed_at,name,rating,price_console,price_pc,popular_rank,games_played_console,games_played_pc,sales_evidence)
     VALUES ${tuples.join(',')}
     ON CONFLICT (futbin_id, observed_at) DO UPDATE SET
       name = COALESCE(EXCLUDED.name, ${TABLE}.name),
@@ -128,6 +134,8 @@ export async function ingestFutbinSnapshot(pool, rows = []) {
       price_console = COALESCE(EXCLUDED.price_console, ${TABLE}.price_console),
       price_pc = COALESCE(EXCLUDED.price_pc, ${TABLE}.price_pc),
       popular_rank = COALESCE(EXCLUDED.popular_rank, ${TABLE}.popular_rank),
+      games_played_console = COALESCE(EXCLUDED.games_played_console, ${TABLE}.games_played_console),
+      games_played_pc = COALESCE(EXCLUDED.games_played_pc, ${TABLE}.games_played_pc),
       sales_evidence = COALESCE(EXCLUDED.sales_evidence, ${TABLE}.sales_evidence)`, values);
 
   const salesEvidenceReceived = clean.filter(row => row.salesEvidence != null).length;

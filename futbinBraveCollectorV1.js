@@ -285,6 +285,8 @@ function snapshotRowsFromResults(cards, results) {
       priceConsole,
       pricePc: null,
       popularRank: Number.isFinite(Number(result.popularRank)) ? Number(result.popularRank) : null,
+      gamesPlayedConsole: Number.isFinite(Number(result.gamesPlayedConsole)) ? Number(result.gamesPlayedConsole) : null,
+      gamesPlayedPc: Number.isFinite(Number(result.gamesPlayedPc)) ? Number(result.gamesPlayedPc) : null,
       salesEvidence: result?.evidence ? {
         rowCount: result.evidence.futbinSalesRowCount,
         soldSampleCount: result.evidence.futbinSoldSampleCount,
