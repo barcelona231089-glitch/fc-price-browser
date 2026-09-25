@@ -50,9 +50,19 @@ async function shutdown(signal) {
 process.once('SIGTERM', () => shutdown('SIGTERM').catch(console.error));
 process.once('SIGINT', () => shutdown('SIGINT').catch(console.error));
 
-await initUvBrain({ active: true });
+// Open the HTTP port first so constrained/free hosts can complete their health probe.
+// UV initialization continues immediately afterwards; /healthz reports readiness.
+server = app.listen(port, '0.0.0.0', () => {
+  console.log('[UV-STANDALONE] port-open', { port, host: '0.0.0.0', role: 'UV_ONLY' });
+});
 
-server = app.listen(port, () => {
+try {
+  await initUvBrain({ active: true });
+} catch (error) {
+  console.error('[UV-STANDALONE] init failed:', error?.stack || error?.message || error);
+}
+
+if (server) {
   const status = getUvRuntimeStatus();
   console.log('[UV-STANDALONE] listening', {
     port,
@@ -61,4 +71,4 @@ server = app.listen(port, () => {
     gameYear: status?.gameYear,
     runtimeMode: status?.runtimeMode
   });
-});
+}
