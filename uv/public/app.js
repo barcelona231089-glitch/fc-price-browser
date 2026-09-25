@@ -178,7 +178,7 @@ function signalText(c){
   const out=[];
   if(Number.isFinite(c.communityUsagePct)) out.push(`Community ${Number(c.communityUsagePct).toFixed(0)}%`);
   if(Number.isFinite(c.proUsagePct)) out.push(`Pros ${Number(c.proUsagePct).toFixed(0)}%`);
-  if(Number.isFinite(c.usagePct) && !Number.isFinite(c.communityUsagePct) && !Number.isFinite(c.proUsagePct)) out.push(`FUT.GG Nutzung ${Number(c.usagePct).toFixed(0)}%${c.usageVersionMatched?' OK':''}`);
+  
   if(Number(c.usagePositionCount||0)>=2) out.push(`${c.usagePositionCount} Usage-Positionen`);
   if(c.momentumHit) out.push('Momentum OK');
   if(c.inPacksHit) out.push('In Packs WARN Supply');
@@ -223,7 +223,7 @@ function renderDetail(c, pricing, status, quality){
   const r = hasCurrentRecheck(c) ? c._recheck : null;
   const reason = r?.reasons?.[0] || c.weakReasons?.[0] || c.riskFlags?.[0] || 'Keine zusätzliche Warnung.';
   const liveDrift = finite(r?.priceDriftPct) ? `${Number(r.priceDriftPct)>0?'+':''}${Number(r.priceDriftPct).toFixed(1)} %` : '-';
-  const marketSource = c.futbinPrice ? `FUT.GG ${coins(pricing.market)}  |  FUTBIN ${coins(c.futbinPrice)}` : `FUT.GG ${coins(pricing.market)}`;
+  const marketSource = `FUTBIN ${coins(c.futbinPrice || pricing.market)}`;
   const riskPenalty = finite(r?.fresh?.riskPenalty) ? Number(r.fresh.riskPenalty).toFixed(0) : Number(c.riskPenalty||0).toFixed(0);
   const traderMethodSources = Array.isArray(c.traderKnowledge?.publicMethodologySignals)
     ? c.traderKnowledge.publicMethodologySignals.map(x=>x.source).filter(Boolean).join(', ')
@@ -337,7 +337,7 @@ function renderRows(cards){
       <td data-label="Start"><span class="priceValue">${blocked?'-':coins(pricing.start)}</span><span class="priceHint">${blocked?'gesperrt':'Listenpreis'}</span></td>
       <td data-label="Sofortkauf"><span class="priceValue">${blocked?'-':coins(pricing.sell)}</span><span class="priceHint">${blocked?'gesperrt':status==='REPRICE'?'live aktualisiert':'Listenpreis'}</span></td>
       <td data-label="Netto-Profit"><span class="priceValue profit">${blocked?'-':`+${coins(pricing.profit)}`}</span><span class="priceHint">nach 5 % Steuer</span></td>
-      <td data-label="Marktpreis"><span class="priceValue marketFresh">${coins(pricing.market)}</span><span class="marketSource">${hasCurrentRecheck(c)?'FUT.GG live':'FUT.GG Liste'}</span></td>
+      <td data-label="Marktpreis"><span class="priceValue marketFresh">${coins(pricing.market)}</span><span class="marketSource">${hasCurrentRecheck(c)?'FUTBIN live':'FUTBIN Liste'}</span></td>
       <td class="qualityCell" data-label="Qualität / Risiko"><div class="qualityLine"><span class="qualityGrade ${qualityClass}">${c.qualityGrade||'-'}</span><span class="qualityScore">${quality.score.toFixed(0)}/100</span></div><div class="riskLine ${riskClass}">${riskText}</div>${reason?`<span class="reasonMini">${reason}</span>`:''}</td>
       <td class="detailsCell" data-label="Details"><button class="detailToggle" type="button" data-details="${key}" aria-expanded="${expanded?'true':'false'}" aria-label="Details für ${c.name||'Karte'} ${expanded?'schließen':'öffnen'}">${expanded?'-':'+'}</button></td>
     </tr>`;
@@ -543,7 +543,7 @@ recheckBtn.addEventListener('click', async()=>{
   rebalanceBtn.disabled=true;
   const oldText=recheckBtn.textContent;
   recheckBtn.textContent='Prüfe live...';
-  notice.textContent=`Live-Prüfung für Liste #${lastListId} startet... FUT.GG, FUTBIN, Nachfrage, Markttrend, PostgreSQL-Historie, Risiko und Profit werden neu bewertet.`;
+  notice.textContent=`Live-Prüfung für Liste #${lastListId} startet... FUTBIN Preis, Games, Sales History, Popularität, PostgreSQL-Historie, Risiko und Profit werden neu bewertet.`;
   notice.classList.remove('hidden');
   $('#tableSub').textContent=`Live-Recheck für Liste #${lastListId} startet...`;
   try{
