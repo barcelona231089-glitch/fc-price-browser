@@ -62,7 +62,7 @@ export async function getLiveFutbinCards(pool, platform = 'console', options = {
     applySalesEvidence(card, hit.sales_evidence);
     base.push(card);
   }
-  if (!base.length) throw new Error('Keine frischen FUTBIN-FC27-Snapshots verfügbar. Keine FUT.GG-Ausweichquelle erlaubt.');
+  if (!base.length) throw new Error('Keine frischen FUTBIN-FC27-Snapshots verfügbar.');
 
   const ids = base.map(c => c.eaId);
   let metadata = [];
