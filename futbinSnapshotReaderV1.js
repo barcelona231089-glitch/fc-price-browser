@@ -56,7 +56,8 @@ export async function enrichRowsWithSnapshotFutbinBrain(rows = [], options = {})
   let result;
   try {
     result = await pool.query(`SELECT DISTINCT ON (futbin_id)
-      futbin_id, observed_at, price_console, price_pc, popular_rank, sales_evidence
+      futbin_id, observed_at, price_console, price_pc, popular_rank,
+      games_played_console, games_played_pc, sales_evidence
       FROM fc_futbin_fc27_snapshots
       WHERE futbin_id = ANY($1::bigint[])
         AND observed_at >= NOW() - ($2::int * INTERVAL '1 second')
@@ -69,19 +70,28 @@ export async function enrichRowsWithSnapshotFutbinBrain(rows = [], options = {})
   let enriched = 0;
   let skippedExisting = 0;
   let salesEvidenceEnriched = 0;
+  let gamesEnriched = 0;
+  const platform = options.platform === "pc" ? "pc" : "console";
   for (const row of rows) {
     const mappedId = resolveMappedFutbinId(row);
     const hit = hits.get(String(mappedId));
     if (!hit) continue;
     row.futbinId = mappedId;
     if (hit.popular_rank != null) row.futbinPopularRank = Number(hit.popular_rank);
+    const games = Number(platform === "pc" ? hit.games_played_pc : hit.games_played_console);
+    if (Number.isSafeInteger(games) && games > 0) {
+      row.futbinGamesCount = games;
+      row.futbinGamesPlayed = games;
+      row.futbinGamesPlatform = platform;
+      gamesEnriched += 1;
+    }
     if (applySalesEvidence(row, hit.sales_evidence)) salesEvidenceEnriched += 1;
 
-    if (Number(row.futbinPrice) > 0 && row.futbinProvider && row.futbinProvider !== "FUTBIN_FC27_PC_COLLECTOR") {
+    if (Number(row.futbinPrice) > 0 && row.futbinProvider && !String(row.futbinProvider).startsWith("FUTBIN_FC27_SNAPSHOT_")) {
       skippedExisting += 1;
       continue;
     }
-    const price = Number(hit.price_console || 0);
+    const price = Number(platform === "pc" ? hit.price_pc : hit.price_console);
     if (!(price > 0)) continue;
     const base = Number(row.price || 0);
     const diffPct = base > 0 ? Number((((price - base) / base) * 100).toFixed(2)) : null;
@@ -89,7 +99,7 @@ export async function enrichRowsWithSnapshotFutbinBrain(rows = [], options = {})
     const maxDiff = Number(options.maxDiffPct ?? 12);
     const outlier = Number(options.outlierDiffPct ?? 25);
     row.futbinPrice = price;
-    row.futbinProvider = "FUTBIN_FC27_PC_COLLECTOR";
+    row.futbinProvider = `FUTBIN_FC27_SNAPSHOT_${platform.toUpperCase()}`;
     row.futbinCheckedAt = new Date(hit.observed_at).toISOString();
     row.futbinDiffPct = diffPct;
     const agreement = compareFutggFutbin(base, price);
@@ -103,12 +113,12 @@ export async function enrichRowsWithSnapshotFutbinBrain(rows = [], options = {})
   state.enriched += enriched;
   state.salesEvidenceEnriched += salesEvidenceEnriched;
   return state.lastResult = {
-    ok: true, enriched, salesEvidenceEnriched, available: hits.size,
+    ok: true, enriched, gamesEnriched, salesEvidenceEnriched, available: hits.size, platform,
     resolvedIds: ids.length, resolvedRows, unmapped: unmappedRows,
     skippedExisting, maxAgeSeconds
   };
 }
 
 export function getSnapshotFutbinBrainStatus() {
-  return { ...state, source: "FUTBIN_FC27_PC_COLLECTOR", freshnessSeconds: 5400 };
+  return { ...state, source: "FUTBIN_FC27_SNAPSHOT", platforms: ["console", "pc"], freshnessSeconds: 5400 };
 }
