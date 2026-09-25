@@ -165,7 +165,11 @@ function scheduleGenerationJobCleanup(job) {
 }
 
 async function invokeGenerateRouteInternal(payload) {
-  const layer = app.stack?.find(entry => entry?.route?.path === '/api/uv/generate' && entry.route.methods?.post);
+  // There are two generation endpoints: /generate-job (wrapper) and /generate
+  // (the real synchronous worker). Select the real worker explicitly. Using
+  // Array.find() picked /generate-job first and recursively created generation jobs.
+  const layers = app.stack?.filter(entry => entry?.route?.path === '/api/uv/generate' && entry.route.methods?.post) || [];
+  const layer = layers[layers.length - 1];
   const handler = layer?.route?.stack?.[0]?.handle;
   if (typeof handler !== 'function') throw new Error('Interner UV-Generate-Handler ist nicht registriert.');
 
