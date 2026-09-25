@@ -23,20 +23,18 @@ export const uvRouter = express.Router();
 const UV_VERSION = '2.15.10';
 
 async function getUvMarketContext(platform, liveCards = []) {
-  const realRows = await loadRealMarketRegimeRows(platform).catch(() => []);
-  const real = buildRealMarketRegime(realRows, liveCards);
-  if (real.ok) return {
-    ...real,
-    futbinContext: null,
-    source: 'real FC' + GAME_YEAR + ' price history',
-    direction: real.mood,
-    stabilityScore: real.stabilityScore
-  };
-
-  // Real FC observations are authoritative. FUTBIN/Parse is queried only when
-  // current-season history is too thin to classify the market safely.
   const futbinContext = await getFutbinMarketTrends(platform);
-  return { ...futbinContext, realRegime: real, source: futbinContext?.ok ? 'FUTBIN/Parse fallback' : 'neutral fallback' };
+  if (futbinContext?.ok) return { ...futbinContext, source: 'FUTBIN market trends' };
+  return {
+    ok: true,
+    platform,
+    direction: 'unknown',
+    changePct: null,
+    stabilityScore: 55,
+    movers: [],
+    source: 'FUTBIN snapshots only',
+    degradedReason: futbinContext?.reason || 'FUTBIN market trend endpoint unavailable'
+  };
 }
 
 let uvActive = true;
@@ -417,7 +415,7 @@ app.get('/api/uv/status', (req, res) => {
       postgresHistory: isDbEnabled(), budgetOptimizer100: true, minimumBudget: 20000, budgetAdaptiveSlotsFrom20k: false, hard100FromBudget: 20000, eaTax: true,
       conservativeProfit: true, longTermScore: true, priceActivityProxy: isDbEnabled(),
       sourceRiskFilter: true, adaptiveCardMix: true, specialCardPriority: true, specialCardSoftTarget300k100: 'promo-live-market-adaptive', seasonPhaseRatingGuard: false, calendarPhaseContextOnly: true, promoMarketAdaptive: true, promoInPacksAwareness: true, promoMomentumAwareness: true, dynamicMarketPolicy: true, budgetAwareDynamicRating: true, demandGatedRatingRelaxation: true, budgetFeasibilityFallback: true, balancedLiquidityFallback: true, qualityFirstDynamicCount: true, dynamicPortfolioSize: true, hard100Slots: true, sellabilityFirstRanking: true, demandMarketFitFirstRanker: true, marketTradeableHardGuard: false, confirmedLiveBinRequired: false, marketVerificationFailFast: false, marketMetadataSafeFallback: false, unresolvedSpecialsFailClosed: true, sbcObjectiveRewardHardBlock: false, ratingPrimaryRanker: false, hard100PortfolioSellabilityFallback: true, adaptiveSpecialMix: true, maxExactCardCopies: 2, futggMostUsedDemand: false, futggMomentumDemand: false,
-      backgroundHistoryMonitor: isDbEnabled(), selfLearningPriceSafety: isDbEnabled(), smartBuyCeiling: true, qualityFirstOptimizer: true, budgetTop100Ranking: true, budgetTop100SafetyIsolation: true, budgetSafetyReserveFallback: true, publicTraderEndgameLogic: true, traderConsensusRanker: true, budgetTierAllocator: true, candidatePoolAllocationSeparation: true, budgetTierReferenceMode: 'soft-observed-shape-only', ratingAsSecondaryPortfolioSignal: true, cardVersionClassFromItemRecord: true, traderConsensusSources: ['Futpepi-budget-method','FUT.GG-usage-momentum','PostgreSQL-price-stability','FutStarz-demand-window-method','public-popularity-tiebreak'], endgameLowGoldCaps: true, endgame300kBase82Max: 2, endgame300kBase83OrLessMax: 8, futtiesDemandPriority: true, popularLeagueNationTieBreak: true, savedLists: isDbEnabled(), savedListReopen: isDbEnabled(), manualListSaveChoice: true, autoSaveGeneratedLists: false, persistedLiveRecheck: isDbEnabled(), liveRecheckPost: true, liveRecheckAsyncJob: true, liveRecheckCpuSafeQueue: true, fullLiveRecheckFreshDemand: true, liveRecheckFutbinStructuredEvidence: true, generationCpuSafeBatches: true, generationWaitsForIdleCpuWindow: true, optimizerLinearStateCache: true, liveRecheckDemandCacheOnly: false, liveRecheckBatchSize: LIVE_RECHECK_BATCH_SIZE, liveRecheckBatchPauseMs: LIVE_RECHECK_BATCH_PAUSE_MS, batchedRecheckPersistence: isDbEnabled(), currentBuyPricesVisible: true, capitalEfficiencyScore: true, adaptiveCapitalLadder: true, repeatabilityScore: true, longTermProfitRanker: true, portfolioDiagnostics: true, traderKnowledgePriors: true, verifiedPublicUvMethodConsensus: true, externalTraderPlayerPicksImported: false, bronzeHardBlock: true, normalCardMinimumRating: 82, specialBelow82StrongDemandOnly: true, nonRareDemandGate: true, lowNonRareRatingHardBlockMax: 82, midNonRareDemandGateMin: 83, midNonRareDemandGateMax: 84, traderRulePriceSafetyLearning: isDbEnabled(), saleLikelihoodIndex: true, traderAwarePricingOptimizer: true, empiricalTargetSupportLearning: isDbEnabled(), optionalReportedTradeFeedback: isDbEnabled(), listLifecycleGuard: true, liveStoredListRecheck: isDbEnabled(), portfolioRebalancing: isDbEnabled(), reportedOutcomeLearning: isDbEnabled(), outcomeJournalV2: isDbEnabled(), actualBuyPriceLearning: isDbEnabled(), relistLadder6h24h: true, staleRecommendationGuard: true, tradeJournalStateTracking: isDbEnabled(), fc27IntegrityGuard: true, batchListPersistence: true, terminalJournalMirroring: isDbEnabled(), robustCandidatePipeline: true, apiNamespaceUv: true, futggUsageAudienceSplit: true, futggUsagePositionBreadth: true, futggInPacksSupply: true, demandEvidenceConfidence: true,
+      backgroundHistoryMonitor: isDbEnabled(), selfLearningPriceSafety: isDbEnabled(), smartBuyCeiling: true, qualityFirstOptimizer: true, budgetTop100Ranking: true, budgetTop100SafetyIsolation: true, budgetSafetyReserveFallback: true, publicTraderEndgameLogic: true, traderConsensusRanker: true, budgetTierAllocator: true, candidatePoolAllocationSeparation: true, budgetTierReferenceMode: 'soft-observed-shape-only', ratingAsSecondaryPortfolioSignal: true, cardVersionClassFromItemRecord: true, traderConsensusSources: ['Futpepi-budget-method','FUTBIN-games-sales-popularity','PostgreSQL-futbin-history','FutStarz-demand-window-method','FUTBIN-popularity-tiebreak'], endgameLowGoldCaps: true, endgame300kBase82Max: 2, endgame300kBase83OrLessMax: 8, futtiesDemandPriority: true, popularLeagueNationTieBreak: true, savedLists: isDbEnabled(), savedListReopen: isDbEnabled(), manualListSaveChoice: true, autoSaveGeneratedLists: false, persistedLiveRecheck: isDbEnabled(), liveRecheckPost: true, liveRecheckAsyncJob: true, liveRecheckCpuSafeQueue: true, fullLiveRecheckFreshDemand: true, liveRecheckFutbinStructuredEvidence: true, generationCpuSafeBatches: true, generationWaitsForIdleCpuWindow: true, optimizerLinearStateCache: true, liveRecheckDemandCacheOnly: false, liveRecheckBatchSize: LIVE_RECHECK_BATCH_SIZE, liveRecheckBatchPauseMs: LIVE_RECHECK_BATCH_PAUSE_MS, batchedRecheckPersistence: isDbEnabled(), currentBuyPricesVisible: true, capitalEfficiencyScore: true, adaptiveCapitalLadder: true, repeatabilityScore: true, longTermProfitRanker: true, portfolioDiagnostics: true, traderKnowledgePriors: true, verifiedPublicUvMethodConsensus: true, externalTraderPlayerPicksImported: false, bronzeHardBlock: true, normalCardMinimumRating: 82, specialBelow82StrongDemandOnly: true, nonRareDemandGate: true, lowNonRareRatingHardBlockMax: 82, midNonRareDemandGateMin: 83, midNonRareDemandGateMax: 84, traderRulePriceSafetyLearning: isDbEnabled(), saleLikelihoodIndex: true, traderAwarePricingOptimizer: true, empiricalTargetSupportLearning: isDbEnabled(), optionalReportedTradeFeedback: isDbEnabled(), listLifecycleGuard: true, liveStoredListRecheck: isDbEnabled(), portfolioRebalancing: isDbEnabled(), reportedOutcomeLearning: isDbEnabled(), outcomeJournalV2: isDbEnabled(), actualBuyPriceLearning: isDbEnabled(), relistLadder6h24h: true, staleRecommendationGuard: true, tradeJournalStateTracking: isDbEnabled(), fc27IntegrityGuard: true, batchListPersistence: true, terminalJournalMirroring: isDbEnabled(), robustCandidatePipeline: true, apiNamespaceUv: true, futggUsageAudienceSplit: false, futggUsagePositionBreadth: false, futggInPacksSupply: false, demandEvidenceConfidence: true,
       playerSalesHistory: Boolean(futbinExtended.salesHistoryObserved),
       pgpGames: Boolean(futbinExtended.gamesObserved),
       popularPlayers: Boolean(futbinExtended.gamesObserved || futbinExtended.popularRankObserved),
@@ -604,10 +602,10 @@ app.get('/api/uv/outcome-learning/status', async (req, res) => {
 app.get('/api/uv/demand/status', (req, res) => res.json({
   ok: true,
   version: UV_VERSION,
-  mode: 'FUT.GG real-usage-demand + momentum + in-packs-supply',
+  mode: 'FUTBIN games + sales history + popularity',
   context: lastDemandContext,
   semantics: {
-    usagePercentages: 'real FUT.GG Most Used percentages when matched',
+    usagePercentages: null,
     saleProbability: null,
     salesPerDay: null,
     supplyPressure: 'ordinal risk index from verified In Packs presence, not a sales forecast'
@@ -961,7 +959,7 @@ async function performLiveRecheck(listId, job = null) {
       REPRICE: 'Karte bleibt brauchbar, aber Kauf-/Verkaufspreise oder Qualitaetsprofil wurden live aktualisiert',
       WAIT: 'Qualitaet kann gut bleiben, der aktuelle Markt rechtfertigt aber keinen Kauf an der alten Grenze',
       DROP: 'mindestens eine konservative Markt-/Demand-/Risiko-/Qualitaetsgrenze wurde verletzt',
-      MISSING: 'kein aktueller handelbarer FUT.GG-Marktpreis fuer diese Karten-ID vorhanden'
+      MISSING: 'kein aktueller FUTBIN-Preis fuer diese Karten-ID vorhanden'
     },
     marketContext: { direction: marketContext?.direction || 'unknown', changePct: marketContext?.changePct ?? null, stabilityScore: marketContext?.stabilityScore ?? 55 },
     demandContext: demandAttached.context,
@@ -1388,14 +1386,14 @@ app.post('/api/uv/generate', async (req, res) => {
     });
 
     // FUTBIN-only hard evidence gate: a candidate must have an observed positive FUTBIN price.
-    // No FUT.GG verification or fallback is permitted in this dedicated runtime.
+    // No alternate market-data fallback is permitted in this dedicated runtime.
     scored = scored.filter(card => Number(card.futbinPrice || card.price) > 0);
     if (scored.length < count) {
       throw new Error(`FUTBIN-only evidence gate: only ${scored.length}/${count} candidates have a current FUTBIN price.`);
     }
 
     // Snapshot evidence (price, platform-specific Games, sold prices and rank)
-    // is attached before the final scoring/optimizer. FUT.GG/Parse supplement
+    // is attached before the final scoring/optimizer. Network FUTBIN adapters may supplement
     // missing evidence but never manufacture a FUTBIN observation.
     await enrichRowsWithSnapshotFutbinBrain(scored, { pool: dbPool, gameYear: GAME_YEAR, platform });
     scored = await crosscheckFutbin(scored, platform);
@@ -1608,7 +1606,7 @@ app.post('/api/uv/generate', async (req, res) => {
         moversSeen: Array.isArray(marketContext?.movers) ? marketContext.movers.length : 0
       },
       demandContext: {
-        source: demandContext?.ok ? 'FUT.GG Most Used / Momentum / In Packs' : 'fallback',
+        source: 'FUTBIN Games / Sales / Popularity',
         mostUsedOk: Boolean(demandContext?.mostUsedOk),
         momentumOk: Boolean(demandContext?.momentumOk),
         inPacksOk: Boolean(demandContext?.inPacksOk),
@@ -1622,8 +1620,8 @@ app.post('/api/uv/generate', async (req, res) => {
         errors: Array.isArray(demandContext?.errors) ? demandContext.errors.slice(0, 2) : []
       },
       sources: {
-        primary: 'FUT.GG',
-        secondary: process.env.FUTBIN_PARSE_API_KEY ? 'FUTBIN via Parse API' : 'not configured',
+        primary: 'FUTBIN',
+        secondary: 'none (FUTBIN-only runtime)',
         history: isDbEnabled() ? 'PostgreSQL' : 'not configured',
         traderKnowledge: TRADER_KNOWLEDGE_SOURCES.map(s => s.name)
       },
