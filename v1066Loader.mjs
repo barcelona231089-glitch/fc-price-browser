@@ -1070,7 +1070,12 @@ function markParseCall({ ok = false, price = null, marketTrend = false, error = 
   );
 
   out = out.replace(
-    `    const evidence = result?.evidence || {};
+    `    const evidence = resultEvidence && (
+      resultEvidence.gamesAvailable
+      || resultEvidence.salesHistoryAvailable
+      || Number.isFinite(resultEvidence.futbinPopularRank)
+    ) ? resultEvidence : marketEvidenceFallback;
+    const futbinOwnHistory = futbinHistory.get(String(card.eaId)) || null;
 
     let popularityScore`,
     `    const evidence = result?.evidence || {};
