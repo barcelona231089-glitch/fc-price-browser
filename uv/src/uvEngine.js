@@ -200,9 +200,35 @@ export function buildTraderAwarePricing(card) {
         return profit >= 0 && profit <= 3000;
       }))]
     : [];
+  // In the dedicated FUTBIN evidence runtime a profit may only be claimed
+  // from actually observed FUTBIN sold prices. No modeled markup fallback.
+  const futbinEvidenceMode = card?.futbinEvidenceGate === 'PASS'
+    || Number(card?.futbinEvidenceCount || 0) >= 2
+    || String(card?.priceSource || '').toUpperCase() === 'FUTBIN';
   const targets = observedSoldPrices.length
     ? observedSoldPrices.map(sellPrice => ({ sellPrice, target: null }))
-    : targetProfitCandidates(buy).map(target => ({ sellPrice: null, target }));
+    : futbinEvidenceMode
+      ? []
+      : targetProfitCandidates(buy).map(target => ({ sellPrice: null, target }));
+  if (futbinEvidenceMode && !observedSoldPrices.length) {
+    return {
+      buyPrice: buy,
+      startPrice: null,
+      sellPrice: null,
+      eaTax: null,
+      netAfterTax: null,
+      netProfit: null,
+      markupPct: null,
+      requestedTargetProfit: null,
+      targetProfitBand: 'FUTBIN sales evidence missing',
+      sellPriceEvidence: 'MISSING_FUTBIN_SALES',
+      pricingStrategyScore: 0,
+      priceLikelihoodIndex: 0,
+      futbinSaleTargetSupportScore: null,
+      futbinSaleTargetSupportSamples: soldSamples
+    };
+  }
+
   const candidates = targets.map(({ sellPrice, target }) => {
     const observedTax = sellPrice == null ? null : Math.floor(sellPrice * 0.05);
     const observedProfit = sellPrice == null ? null : sellPrice - observedTax - buy;
