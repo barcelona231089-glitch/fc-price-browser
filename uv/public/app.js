@@ -457,7 +457,14 @@ async function waitForGenerateJob(jobId) {
       const text = await r.text();
       let data;
       try{data=JSON.parse(text)}catch{throw new Error(`Generate-Status war keine JSON-Antwort (HTTP ${r.status}).`)}
-      if(!r.ok) throw new Error(data.error||'Generate-Status nicht abrufbar');
+      if(!r.ok) {
+        // A free host can restart/recycle the process while a generation job is
+        // running. A 404/MISSING is terminal, not a transient network failure.
+        if(r.status===404 || data.status==='MISSING') {
+          throw Object.assign(new Error(data.error||'Generate-Job nicht gefunden oder bereits abgelaufen.'), { terminalGenerateStatus:true });
+        }
+        throw new Error(data.error||'Generate-Status nicht abrufbar');
+      }
       transientFetchErrors = 0;
       if(data.status==='DONE') return data.result;
       if(data.status==='FAILED') throw new Error(data.error||'ÜV-Generierung fehlgeschlagen');
@@ -468,6 +475,7 @@ async function waitForGenerateJob(jobId) {
         notice.classList.remove('hidden');
       }
     }catch(error){
+      if(error?.terminalGenerateStatus) throw error;
       transientFetchErrors += 1;
       if(transientFetchErrors >= 12) throw error;
       $('#tableSub').textContent=`ÜV-Berechnung läuft weiter... Status-Verbindung wird erneut geprüft (${transientFetchErrors}/12)`;
