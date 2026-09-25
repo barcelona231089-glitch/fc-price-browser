@@ -187,8 +187,39 @@ export function buildTraderAwarePricing(card) {
   const confidence = Number(card?.traderPriorConfidence || card?.confidenceScore || 50);
   const capitalLock = Number(card?.capitalLockRisk || 0);
   const contentRisk = Number(card?.contentRiskScore || 0);
-  const candidates = targetProfitCandidates(buy).map(target => {
-    const pricing = buildPricingForTargetProfit(buy, target);
+  const soldSamples = Number(card?.futbinSoldSampleCount || 0);
+  const observedSoldPrices = soldSamples >= 2
+    ? [...new Set([
+        card?.futbinSoldPriceP25,
+        card?.futbinSoldPriceMedian,
+        card?.futbinSoldPriceMode,
+        card?.futbinSoldPriceP75
+      ].map(Number).filter(sell => {
+        if (!Number.isSafeInteger(sell) || sell <= buy) return false;
+        const profit = sell - Math.floor(sell * 0.05) - buy;
+        return profit >= 0 && profit <= 3000;
+      }))]
+    : [];
+  const targets = observedSoldPrices.length
+    ? observedSoldPrices.map(sellPrice => ({ sellPrice, target: null }))
+    : targetProfitCandidates(buy).map(target => ({ sellPrice: null, target }));
+  const candidates = targets.map(({ sellPrice, target }) => {
+    const observedTax = sellPrice == null ? null : Math.floor(sellPrice * 0.05);
+    const observedProfit = sellPrice == null ? null : sellPrice - observedTax - buy;
+    const pricing = sellPrice != null
+      ? {
+          buyPrice: buy,
+          startPrice: sellPrice,
+          sellPrice,
+          eaTax: observedTax,
+          netAfterTax: sellPrice - observedTax,
+          netProfit: observedProfit,
+          markupPct: ((sellPrice - buy) / buy) * 100,
+          requestedTargetProfit: observedProfit,
+          targetProfitBand: 'FUTBIN sold prices',
+          sellPriceEvidence: 'FUTBIN_SOLD'
+        }
+      : buildPricingForTargetProfit(buy, target);
     const pQuality = profitQualityScore(pricing.netProfit);
     const learnedProfile = card?.targetLearningProfiles?.[String(target)] || null;
     const learned = targetLearningAdjustment(learnedProfile);
@@ -204,7 +235,7 @@ export function buildTraderAwarePricing(card) {
     );
     const capitalEfficiency = clamp(70 - Math.max(0, pricing.markupPct - 10) * 0.8 - capitalLock * 0.24 + likelihoodIndex * 0.25 + learned.adjustment * 0.35, 0, 100);
     const futbinSaleTargetSupportScore = scoreObservedSaleTarget(pricing.sellPrice, card);
-    const futbinSaleSamples = Number(card?.futbinSoldSampleCount || 0);
+    const futbinSaleSamples = soldSamples;
     const empiricalWeight = Number.isFinite(futbinSaleTargetSupportScore) ? Math.min(0.24, futbinSaleSamples / 40) : 0;
     const empiricalAdjustment = Number.isFinite(futbinSaleTargetSupportScore) ? (futbinSaleTargetSupportScore - 50) * empiricalWeight : 0;
     const feedbackSamples = Number(learnedProfile?.reportedFeedbackSamples || 0);
@@ -234,7 +265,7 @@ export function buildTraderAwarePricing(card) {
       avgResolutionHours: learnedProfile?.avgResolutionHours ?? null,
       targetLearningProfileKey: learnedProfile?.profileKey || null
     };
-  });
+  }).filter(candidate => candidate.netProfit <= 3000);
   candidates.sort((a, b) => b.pricingStrategyScore - a.pricingStrategyScore || a.netProfit - b.netProfit);
   const chosen = candidates[0] || buildPricing(buy, card?.uvScore, card?.longTermScore, card || {});
   return {
