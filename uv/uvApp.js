@@ -7,7 +7,7 @@ import { GAME_YEAR, HISTORY_SAMPLE_LIMIT, HISTORY_MONITOR_MS, HISTORY_MONITOR_MA
 import { getLiveFutggCards as fetchLiveFutggCards, confirmTradeableMarketCards } from './src/futgg.js';
 import { crosscheckFutbin, getFutbinMarketTrends, attachMarketMoverSignals, getFutbinExtendedDataStatus } from './src/futbin.js';
 import { attachFutggDemandSignals, attachCachedFutggDemandSignals } from './src/demand.js';
-import { initDb, configureDbPool, closeDb, isDbEnabled, saveUvGenerationJob, loadUvGenerationJob, deleteUvGenerationJob, recordSnapshot, upsertCards, loadHistoryFeatures, loadPerformanceFeatures, loadTraderRulePerformance, loadTargetSupportPerformance, recordTradeFeedback, recordTradeJournalEvent, getTradeFeedbackStatus, saveGeneratedList, saveListRecheck, recordMarketSnapshot, recordDemandSnapshot, loadWatchPlatforms, loadWatchedEaIds, recordSmartSnapshot, evaluateGeneratedLists, getLearningStatus, loadGeneratedList, listGeneratedLists, loadRealMarketRegimeRows } from './src/db.js';
+import { pool as dbPool, initDb, configureDbPool, closeDb, isDbEnabled, saveUvGenerationJob, loadUvGenerationJob, deleteUvGenerationJob, recordSnapshot, upsertCards, loadHistoryFeatures, loadPerformanceFeatures, loadTraderRulePerformance, loadTargetSupportPerformance, recordTradeFeedback, recordTradeJournalEvent, getTradeFeedbackStatus, saveGeneratedList, saveListRecheck, recordMarketSnapshot, recordDemandSnapshot, loadWatchPlatforms, loadWatchedEaIds, recordSmartSnapshot, evaluateGeneratedLists, getLearningStatus, loadGeneratedList, listGeneratedLists, loadRealMarketRegimeRows } from './src/db.js';
 import { buildCandidatePool, scoreCard, buildBuyPlan, buildTradingEconomics, assertUvPortfolioIntegrity, buildSelectionScore, buildSellabilityScore, buildBudgetTop100Score, buildPublicTraderEndgameScore, buildTraderConsensusScore, buildBudgetTierScore, buildDemandMarketFitScore, optimizeList, maxAffordablePortfolioCount, filterConservativeCandidates, buildPortfolioSummary, capitalBandForPrice, targetProfitCandidates, specialTargetRatioForBudget, portfolioCountForBudget } from './src/uvEngine.js';
 import { buildRebalanceSeed, rebalancePortfolio } from './src/rebalance.js';
 import { buildRealMarketRegime } from './src/marketRegime.js';
@@ -17,6 +17,7 @@ import { buildRecommendationLifecycle, recheckRecommendation } from './src/lifec
 import { runCandidatePipeline, deriveAdaptiveMarketPolicy, buildHard100SellabilityFallback, buildBudgetAdaptiveSellabilityFallback, buildBudgetSafetyReserveFallback } from './src/candidatePipeline.js';
 import { buildReportedOutcomeScore } from './src/outcomeLearning.js';
 import { attachLocalFutbinFc27 } from './src/futbinLocalFc27.js';
+import { enrichRowsWithSnapshotFutbinBrain } from '../futbinSnapshotReaderV1.js';
 
 export const uvRouter = express.Router();
 const UV_VERSION = '2.15.10';
@@ -831,11 +832,10 @@ async function performLiveRecheck(listId, job = null) {
   const marketContext = await getUvMarketContext(platform, current);
   current = attachMarketMoverSignals(current, marketContext);
 
-  // FUTBIN remains the secondary confirmation source for Games, popularity,
-  // sales history and cross-source price agreement. crosscheckFutbin is quota-
-  // aware and checks only its configured priority slice; unrefreshed rows retain
-  // their previous structured evidence instead of being erased.
+  // The current-season FUTBIN snapshot is primary evidence and must be attached
+  // before final scoring. Network adapters remain a fail-closed supplement.
   if (job) job.phase = 'FUTBIN_CROSSCHECK';
+  await enrichRowsWithSnapshotFutbinBrain(current, { pool: dbPool, gameYear: GAME_YEAR, platform });
   current = await crosscheckFutbin(current, platform);
   current = attachLocalFutbinFc27(current, platform);
 
@@ -1467,8 +1467,10 @@ app.post('/api/uv/generate', async (req, res) => {
     }
     scored = marketTradeability.cards;
 
-    // FUTBIN cross-check happens BEFORE the final 100-card optimizer,
-    // so confirmed source agreement can influence which cards make the list.
+    // Snapshot evidence (price, platform-specific Games, sold prices and rank)
+    // is attached before the final scoring/optimizer. FUT.GG/Parse supplement
+    // missing evidence but never manufacture a FUTBIN observation.
+    await enrichRowsWithSnapshotFutbinBrain(scored, { pool: dbPool, gameYear: GAME_YEAR, platform });
     scored = await crosscheckFutbin(scored, platform);
     scored = attachLocalFutbinFc27(scored, platform);
     scored = await generationCpuSafeMap(scored, card => {

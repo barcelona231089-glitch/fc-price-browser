@@ -35,7 +35,7 @@ test('snapshot ingest uses one batch insert for accepted rows', async () => {
   ]);
   const inserts = calls.filter(x => x.sql.startsWith('INSERT INTO fc_futbin_fc27_snapshots'));
   assert.equal(inserts.length, 1);
-  assert.equal(inserts[0].values.length, 16);
+  assert.equal(inserts[0].values.length, 20);
   assert.deepEqual(out, { inserted: 2, received: 2, salesEvidenceReceived: 0, salesEvidencePersisted: 0 });
 });
 

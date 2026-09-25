@@ -270,20 +270,21 @@ async function loadBrainRows() {
 
   throw new Error("BRAIN_INPUT_TEMPORARILY_UNAVAILABLE");
 }
-function snapshotRowsFromResults(cards, results) {
+export function snapshotRowsFromResults(cards, results) {
   const rows = [];
   for (const card of cards) {
     const result = results?.get?.(String(card.eaId));
-    const observedAt = result?.observedAtConsole || result?.checked || null;
+    const observedAt = result?.observedAtConsole || result?.observedAtPc || result?.checked || null;
     const priceConsole = Number(result?.priceConsole || 0);
-    if (!(priceConsole > 0) || !observedAt || !(Number(result?.id) > 0)) continue;
+    const pricePc = Number(result?.pricePc || 0);
+    if (!(priceConsole > 0 || pricePc > 0) || !observedAt || !(Number(result?.id) > 0)) continue;
     rows.push({
       futbinId: Number(result.id),
       observedAt,
       name: result.name || card.name || "",
       rating: Number(result.rating || card.overall || 0) || null,
-      priceConsole,
-      pricePc: null,
+      priceConsole: priceConsole > 0 ? priceConsole : null,
+      pricePc: pricePc > 0 ? pricePc : null,
       popularRank: Number.isFinite(Number(result.popularRank)) ? Number(result.popularRank) : null,
       gamesPlayedConsole: Number.isFinite(Number(result.gamesPlayedConsole)) ? Number(result.gamesPlayedConsole) : null,
       gamesPlayedPc: Number.isFinite(Number(result.gamesPlayedPc)) ? Number(result.gamesPlayedPc) : null,
