@@ -219,7 +219,19 @@ async function startGenerationJob(payload) {
   generationRuntime.activeJobId = job.jobId;
   generationRuntime.activeJob = job;
   persistGenerationJob(job);
-  void saveUvGenerationJob(job).catch(() => false);
+  // Persist before returning the job ID. On free/container hosting the status
+  // poll may hit another worker, where only PostgreSQL can recover the job.
+  try {
+    const saved = await saveUvGenerationJob(job);
+    if (!saved) throw new Error('PostgreSQL job persistence unavailable');
+    console.log('[UV-GEN] queued job persisted', { jobId: job.jobId });
+  } catch (error) {
+    console.error('[UV-GEN] queued job persistence failed', { jobId: job.jobId, error: error?.message || String(error) });
+    generationJobs.delete(job.jobId);
+    if (generationRuntime.activeJobId === job.jobId) generationRuntime.activeJobId = null;
+    if (generationRuntime.activeJob?.jobId === job.jobId) generationRuntime.activeJob = null;
+    throw new Error('Generate-Job konnte nicht in PostgreSQL gespeichert werden.');
+  }
 
   setImmediate(async () => {
     console.log('[UV-GEN] job running', { jobId: job.jobId });
