@@ -43,7 +43,14 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const GENERATION_JOB_DIR = path.join(__dirname, 'data', 'generation-jobs');
 mkdirSync(GENERATION_JOB_DIR, { recursive: true });
 app.use(express.json({ limit: '1mb' }));
-app.use('/uv', express.static(path.join(__dirname, 'public')));
+app.use('/uv', (req, res, next) => {
+  // The UV frontend changes together with the runtime. Do not let a browser or
+  // hosting proxy keep an older app.js after a deploy.
+  res.set('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+  res.set('Pragma', 'no-cache');
+  res.set('Expires', '0');
+  next();
+}, express.static(path.join(__dirname, 'public'), { etag: false, lastModified: false, maxAge: 0 }));
 
 
 let lastGenerationAt = null;
