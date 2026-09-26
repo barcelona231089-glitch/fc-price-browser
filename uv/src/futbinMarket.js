@@ -31,9 +31,23 @@ export async function getLiveFutbinCards(pool, platform = 'console', options = {
   if (!pool?.query) throw new Error('FUTBIN-only market requires PostgreSQL snapshot storage.');
   const normalized = platform === 'pc' ? 'pc' : 'console';
   const maxAgeSeconds = Math.max(300, Number(options.maxAgeSeconds || process.env.UV_FUTBIN_MAX_AGE_SECONDS || 5400));
-  const result = await pool.query(`SELECT DISTINCT ON (futbin_id)
-      futbin_id, observed_at, price_console, price_pc, popular_rank,
-      games_played_console, games_played_pc, sales_evidence
+  // Snapshot schemas evolved over time. Read only columns that really exist
+  // so an older PostgreSQL table can still provide FUTBIN prices instead of
+  // crashing the whole generator on optional evidence columns.
+  const columnsResult = await pool.query(`
+    SELECT column_name
+    FROM information_schema.columns
+    WHERE table_schema = current_schema()
+      AND table_name = 'fc_futbin_fc27_snapshots'
+  `);
+  const columns = new Set((columnsResult.rows || []).map(row => String(row.column_name)));
+  if (!columns.has('futbin_id') || !columns.has('observed_at')) {
+    throw new Error('FUTBIN snapshot schema missing required futbin_id/observed_at columns.');
+  }
+  const optional = ['price_console', 'price_pc', 'popular_rank', 'games_played_console', 'games_played_pc', 'sales_evidence'];
+  const selectedOptional = optional.filter(name => columns.has(name));
+  const selectList = ['futbin_id', 'observed_at', ...selectedOptional].join(', ');
+  const result = await pool.query(`SELECT DISTINCT ON (futbin_id) ${selectList}
     FROM fc_futbin_fc27_snapshots
     WHERE observed_at >= NOW() - ($1::int * INTERVAL '1 second')
     ORDER BY futbin_id, observed_at DESC`, [maxAgeSeconds]);
