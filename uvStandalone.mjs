@@ -1,5 +1,5 @@
 import express from 'express';
-import { uvRouter, initUvBrain, shutdownUvBrain, getUvRuntimeStatus } from './uv/uvApp.js';
+import { uvRouter, initUvBrain, shutdownUvBrain, getUvRuntimeStatus } from './uv/uvApp.js?uv-standalone';
 
 if (typeof process.loadEnvFile === 'function') {
   try {
