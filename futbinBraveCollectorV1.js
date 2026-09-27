@@ -243,9 +243,9 @@ async function loadCollectorTargets() {
 
     try {
       const market = await fetchJson(
-        `${SNAPSHOT_HOST}/api/futbin-fc27-collector-targets?minRating=82&maxRating=99&limit=1000`,
+        `${SNAPSHOT_HOST}/api/futbin-fc27-collector-targets?minRating=82&maxRating=99&limit=250`,
         {},
-        20_000
+        60_000
       );
       if (market?.ok && Array.isArray(market?.rows) && market.rows.length) {
         return market.rows.map(row => ({
