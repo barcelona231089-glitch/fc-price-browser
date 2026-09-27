@@ -27,6 +27,35 @@ app.get('/healthz', (req, res) => {
   });
 });
 
+app.get('/api/futbin-fc27-collector-targets', async (req, res) => {
+  try {
+    if (!dbPool?.query) return res.status(503).json({ ok: false, error: 'DB_UNAVAILABLE' });
+    const minRating = Math.max(1, Math.min(99, Number(req.query?.minRating || 82)));
+    const maxRating = Math.max(minRating, Math.min(99, Number(req.query?.maxRating || 99)));
+    const limit = Math.max(1, Math.min(2000, Number(req.query?.limit || 1000)));
+    const offset = Math.max(0, Number(req.query?.offset || 0));
+    const result = await dbPool.query(`
+      SELECT ea_id::text AS ea_id, name, rating, version, card_type
+      FROM uv_cards
+      WHERE game_year = 27
+        AND rating BETWEEN $1 AND $2
+      ORDER BY rating DESC, ea_id ASC
+      LIMIT $3 OFFSET $4
+    `, [minRating, maxRating, limit, offset]);
+    const rows = (result.rows || []).map(row => ({
+      eaId: row.ea_id,
+      name: row.name || null,
+      overall: Number(row.rating || 0) || null,
+      rating: Number(row.rating || 0) || null,
+      rarityName: row.version || row.card_type || null,
+      cardType: row.card_type || row.version || null
+    }));
+    return res.json({ ok: true, source: 'UV_METADATA', gameYear: 27, count: rows.length, rows });
+  } catch (error) {
+    return res.status(500).json({ ok: false, error: String(error?.message || error) });
+  }
+});
+
 app.post('/api/futbin-fc27-snapshot', async (req, res) => {
   if (!validIngestToken(req)) return res.status(401).json({ ok: false, error: 'UNAUTHORIZED' });
   try {

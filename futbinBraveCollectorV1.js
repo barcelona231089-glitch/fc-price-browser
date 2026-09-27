@@ -9,11 +9,6 @@ const ROOT = dirname(fileURLToPath(import.meta.url));
 const LOG_DIR = join(ROOT, "logs");
 const STATE_FILE = join(LOG_DIR, "futbin-brave-collector-status.json");
 const LOCK_FILE = join(LOG_DIR, "futbin-brave-collector.lock");
-const BRAIN_HOST = String(
-  process.env.FUTBIN_COLLECTOR_BRAIN_HOST ||
-  process.env.FUTBIN_COLLECTOR_HOST ||
-  "https://fc-trader-brain.hostless.app"
-).replace(/\/$/, "");
 const SNAPSHOT_HOST = String(
   process.env.FUTBIN_SNAPSHOT_HOST ||
   "https://onset-stormy-wolf.abasthan.app"
@@ -44,8 +39,7 @@ function log(message, extra = null) {
 
 function writeStatus(status) {
   writeFileSync(STATE_FILE, JSON.stringify({
-    version: "1.1.0",
-    brainHost: BRAIN_HOST,
+    version: "1.2.0",
     snapshotHost: SNAPSHOT_HOST,
     port: PORT,
     intervalMinutes: Math.round(INTERVAL_MS / 60_000),
@@ -183,40 +177,34 @@ export function selectCollectorCards(rows = [], options = {}) {
   const maxCards = Math.max(1, Math.min(12, Number(options.maxCards || MAX_CARDS)));
   const startCursor = Math.max(0, Number(options.cursor || 0));
   const eligible = (Array.isArray(rows) ? rows : [])
-    .filter(row => Number(row?.price) > 0)
     .filter(row => Number(row?.overall || row?.rating || 0) >= 82)
     .filter(row => Number(FUTBIN_FC27_EA_TO_ID[String(row?.eaId)]) > 0)
-    .map(row => ({ ...row, _collectorScore: collectorScore(row) }))
-    .sort((a, b) => b._collectorScore - a._collectorScore);
+    .sort((a, b) =>
+      Number(b?.overall || b?.rating || 0) - Number(a?.overall || a?.rating || 0) ||
+      Number(a?.eaId || 0) - Number(b?.eaId || 0)
+    );
 
-  const pinned = eligible.filter(row => row.tracked || row.intensiveWatch || /BUY|SELL/i.test(String(row.aiAction || ""))).slice(0, Math.min(2, maxCards));
-  const pinnedIds = new Set(pinned.map(row => String(row.eaId)));
-  const rotatingPool = eligible.filter(row => !pinnedIds.has(String(row.eaId)));
-  const needed = Math.max(0, maxCards - pinned.length);
-  const rotating = [];
-  if (rotatingPool.length && needed > 0) {
-    for (let i = 0; i < Math.min(needed, rotatingPool.length); i += 1) {
-      rotating.push(rotatingPool[(startCursor + i) % rotatingPool.length]);
+  const cards = [];
+  if (eligible.length) {
+    for (let i = 0; i < Math.min(maxCards, eligible.length); i += 1) {
+      const row = eligible[(startCursor + i) % eligible.length];
+      cards.push({
+        eaId: String(row.eaId),
+        futbinId: Number(FUTBIN_FC27_EA_TO_ID[String(row.eaId)]),
+        name: row.name || null,
+        overall: Number(row.overall || row.rating || 0) || null,
+        cardType: row.cardType || row.rarityName || null
+      });
     }
   }
 
-  const cards = [...pinned, ...rotating].map(row => ({
-    eaId: String(row.eaId),
-    futbinId: Number(FUTBIN_FC27_EA_TO_ID[String(row.eaId)]),
-    name: row.name || null,
-    overall: Number(row.overall || row.rating || 0) || null,
-    cardType: row.cardType || row.rarityName || null,
-    brainPrice: Number(row.price) || null,
-    brainAction: row.aiAction || null,
-    brainConfidence: Number(row.aiConfidence) || null
-  }));
-
-  const nextCursor = rotatingPool.length
-    ? (startCursor + Math.max(1, rotating.length)) % rotatingPool.length
+  const nextCursor = eligible.length
+    ? (startCursor + Math.max(1, cards.length)) % eligible.length
     : 0;
 
   return { cards, eligibleCount: eligible.length, nextCursor };
 }
+
 function acquireLock() {
   try {
     if (existsSync(LOCK_FILE)) {
@@ -244,12 +232,10 @@ function releaseLock() {
   try { unlinkSync(LOCK_FILE); } catch {}
 }
 
-async function loadBrainRows() {
+async function loadCollectorTargets() {
   const transientStatuses = new Set([404, 502, 503, 504]);
   const retryDelaysMs = [0, 1500, 3500];
 
-  // Collector input must stay lightweight. The full trading route serializes
-  // the complete Full-Brain payload and can spike the constrained Hostless process.
   for (let attempt = 0; attempt < retryDelaysMs.length; attempt += 1) {
     if (retryDelaysMs[attempt] > 0) {
       await new Promise(resolve => setTimeout(resolve, retryDelaysMs[attempt]));
@@ -257,7 +243,7 @@ async function loadBrainRows() {
 
     try {
       const market = await fetchJson(
-        `${BRAIN_HOST}/api/market/v1/cards?minRating=82&maxRating=99&limit=100&sort=activity`,
+        `${SNAPSHOT_HOST}/api/futbin-fc27-collector-targets?minRating=82&maxRating=99&limit=1000`,
         {},
         20_000
       );
@@ -270,15 +256,16 @@ async function loadBrainRows() {
     } catch (error) {
       const status = Number(error?.status);
       if (!transientStatuses.has(status)) throw error;
-      log("brain-market-retry", {
-        reason: `OWN_MARKET_API_${status || "TRANSIENT"}`,
+      log("uv-targets-retry", {
+        reason: `UV_TARGETS_API_${status || "TRANSIENT"}`,
         attempt: attempt + 1
       });
     }
   }
 
-  throw new Error("BRAIN_INPUT_TEMPORARILY_UNAVAILABLE");
+  throw new Error("UV_TARGETS_TEMPORARILY_UNAVAILABLE");
 }
+
 export function snapshotRowsFromResults(cards, results) {
   const rows = [];
   for (const card of cards) {
@@ -333,8 +320,8 @@ export async function runCollectorCycle() {
   cycleCount += 1;
   const startedAt = nowIso();
   try {
-    const brainRows = await loadBrainRows();
-    const selection = selectCollectorCards(brainRows, { maxCards: MAX_CARDS, cursor });
+    const targetRows = await loadCollectorTargets();
+    const selection = selectCollectorCards(targetRows, { maxCards: MAX_CARDS, cursor });
     cursor = selection.nextCursor;
 
     if (!selection.cards.length) {
