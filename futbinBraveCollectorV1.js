@@ -9,7 +9,15 @@ const ROOT = dirname(fileURLToPath(import.meta.url));
 const LOG_DIR = join(ROOT, "logs");
 const STATE_FILE = join(LOG_DIR, "futbin-brave-collector-status.json");
 const LOCK_FILE = join(LOG_DIR, "futbin-brave-collector.lock");
-const HOST = String(process.env.FUTBIN_COLLECTOR_HOST || "https://fc-trader-brain.hostless.app").replace(/\/$/, "");
+const BRAIN_HOST = String(
+  process.env.FUTBIN_COLLECTOR_BRAIN_HOST ||
+  process.env.FUTBIN_COLLECTOR_HOST ||
+  "https://fc-trader-brain.hostless.app"
+).replace(/\/$/, "");
+const SNAPSHOT_HOST = String(
+  process.env.FUTBIN_SNAPSHOT_HOST ||
+  "https://onset-stormy-wolf.abasthan.app"
+).replace(/\/$/, "");
 const PORT = Math.max(1024, Math.min(65535, Number(process.env.FUTBIN_BRAVE_COLLECTOR_PORT || 9230)));
 const MAX_CARDS = Math.max(1, Math.min(12, Number(process.env.FUTBIN_BRAVE_COLLECTOR_MAX_CARDS || 6)));
 const SALES_CARDS_PER_CYCLE = Math.max(0, Math.min(2, Number(process.env.FUTBIN_BRAVE_SALES_CARDS_PER_CYCLE || 1)));
@@ -37,7 +45,8 @@ function log(message, extra = null) {
 function writeStatus(status) {
   writeFileSync(STATE_FILE, JSON.stringify({
     version: "1.1.0",
-    host: HOST,
+    brainHost: BRAIN_HOST,
+    snapshotHost: SNAPSHOT_HOST,
     port: PORT,
     intervalMinutes: Math.round(INTERVAL_MS / 60_000),
     maxCards: MAX_CARDS,
@@ -248,7 +257,7 @@ async function loadBrainRows() {
 
     try {
       const market = await fetchJson(
-        `${HOST}/api/market/v1/cards?minRating=82&maxRating=99&limit=100&sort=activity`,
+        `${BRAIN_HOST}/api/market/v1/cards?minRating=82&maxRating=99&limit=100&sort=activity`,
         {},
         20_000
       );
@@ -311,7 +320,7 @@ export function snapshotRowsFromResults(cards, results) {
 async function pushSnapshot(rows) {
   if (!TOKEN) throw new Error("FUTBIN_SNAPSHOT_INGEST_TOKEN_MISSING");
   if (!rows.length) return { ok: true, inserted: 0, received: 0 };
-  return await fetchJson(`${HOST}/api/futbin-fc27-snapshot`, {
+  return await fetchJson(`${SNAPSHOT_HOST}/api/futbin-fc27-snapshot`, {
     method: "POST",
     headers: {
       "content-type": "application/json",
