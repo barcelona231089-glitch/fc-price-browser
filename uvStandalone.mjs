@@ -23,7 +23,8 @@ app.get('/healthz', (req, res) => {
     role: 'UV_ONLY',
     version: status?.version || null,
     gameYear: status?.gameYear || null,
-    runtimeMode: status?.runtimeMode || null
+    runtimeMode: status?.runtimeMode || null,
+    ingestTokenConfigured: Boolean(process.env.FUTBIN_SNAPSHOT_INGEST_TOKEN)
   });
 });
 
