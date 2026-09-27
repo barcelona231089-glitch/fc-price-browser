@@ -55,7 +55,7 @@
   function rewriteUi() {
     const note = document.querySelector('.generatorNote');
     if (note) {
-      const desired = 'Top 100 fürs Budget • Speichern ist nur fürs spätere Öffnen • Live prüfen und neu ausbalancieren funktionieren auch OHNE Speichern • FUT.GG + FUTBIN • Demand/Trend vor Rating';
+      const desired = 'Top 100 fürs Budget • Speichern ist nur fürs spätere Öffnen • Live prüfen und neu ausbalancieren funktionieren auch OHNE Speichern • FUTBIN Primary: Preis, Games, Sales History und Popularität';
       if (note.textContent !== desired) note.textContent = desired;
     }
 
