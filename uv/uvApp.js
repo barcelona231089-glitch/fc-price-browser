@@ -1407,12 +1407,22 @@ app.post('/api/uv/generate', async (req, res) => {
       recordDemandSnapshot(demandContext, platform)
     ]);
     const idsForLearning = sampleForHistory.map(c => c.eaId);
-    const [historyMap, performanceMap, traderRulePerformance, targetSupportPerformance] = await Promise.all([
+    const learningLoads = await Promise.allSettled([
       loadHistoryFeatures(idsForLearning, platform),
       loadPerformanceFeatures(idsForLearning, platform),
       loadTraderRulePerformance(platform),
       loadTargetSupportPerformance(platform)
     ]);
+    const historyMap = learningLoads[0].status === 'fulfilled' ? learningLoads[0].value : new Map();
+    const performanceMap = learningLoads[1].status === 'fulfilled' ? learningLoads[1].value : new Map();
+    const traderRulePerformance = learningLoads[2].status === 'fulfilled' ? learningLoads[2].value : new Map();
+    const targetSupportPerformance = learningLoads[3].status === 'fulfilled' ? learningLoads[3].value : new Map();
+    const learningDbErrors = learningLoads
+      .filter(result => result.status === 'rejected')
+      .map(result => String(result.reason?.message || result.reason || 'DB_UNAVAILABLE'));
+    if (learningDbErrors.length) {
+      console.warn('[UV-GEN] PostgreSQL learning degraded; continuing with neutral learning maps', learningDbErrors);
+    }
 
     let scored = await generationCpuSafeMap(pool, card => {
       const history = historyMap.get(String(card.eaId)) || null;

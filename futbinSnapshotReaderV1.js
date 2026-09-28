@@ -1,4 +1,5 @@
 import { FUTBIN_FC27_EA_TO_ID } from "./futbinIdMapFc27.js";
+import { latestFutbinSnapshotsForIds } from "./futbinSnapshotIngestV1.js";
 import { compareFutggFutbin } from "./futbinSecondaryIntelligenceV1.js";
 
 const state = { runs: 0, enriched: 0, salesEvidenceEnriched: 0, lastRunAt: null, lastResult: null };
@@ -40,7 +41,7 @@ export async function enrichRowsWithSnapshotFutbinBrain(rows = [], options = {})
   const year = Number(options.gameYear || 0);
   state.runs += 1;
   state.lastRunAt = new Date().toISOString();
-  if (year !== 27 || !pool?.query || !Array.isArray(rows) || !rows.length) {
+  if (year !== 27 || !Array.isArray(rows) || !rows.length) {
     return state.lastResult = { ok: false, reason: "UNAVAILABLE", enriched: 0 };
   }
 
@@ -53,20 +54,14 @@ export async function enrichRowsWithSnapshotFutbinBrain(rows = [], options = {})
     return state.lastResult = { ok: true, enriched: 0, reason: "NO_FUTBIN_IDS", resolvedIds: 0, resolvedRows: 0, unmapped: rows.length, maxAgeSeconds };
   }
 
-  let result;
+  let snapshots;
   try {
-    result = await pool.query(`SELECT DISTINCT ON (futbin_id)
-      futbin_id, observed_at, price_console, price_pc, popular_rank,
-      games_played_console, games_played_pc, sales_evidence
-      FROM fc_futbin_fc27_snapshots
-      WHERE futbin_id = ANY($1::bigint[])
-        AND observed_at >= NOW() - ($2::int * INTERVAL '1 second')
-      ORDER BY futbin_id, observed_at DESC`, [ids, maxAgeSeconds]);
+    snapshots = await latestFutbinSnapshotsForIds(pool, ids, { maxAgeSeconds });
   } catch (error) {
-    return state.lastResult = { ok: false, enriched: 0, reason: "DB_ERROR", error: String(error?.message || error), maxAgeSeconds };
+    return state.lastResult = { ok: false, enriched: 0, reason: "SNAPSHOT_ERROR", error: String(error?.message || error), maxAgeSeconds };
   }
 
-  const hits = new Map(result.rows.map(r => [String(r.futbin_id), r]));
+  const hits = new Map(snapshots.map(r => [String(r.futbinId), r]));
   let enriched = 0;
   let skippedExisting = 0;
   let salesEvidenceEnriched = 0;
@@ -77,21 +72,21 @@ export async function enrichRowsWithSnapshotFutbinBrain(rows = [], options = {})
     const hit = hits.get(String(mappedId));
     if (!hit) continue;
     row.futbinId = mappedId;
-    if (hit.popular_rank != null) row.futbinPopularRank = Number(hit.popular_rank);
-    const games = Number(platform === "pc" ? hit.games_played_pc : hit.games_played_console);
+    if (hit.popularRank != null) row.futbinPopularRank = Number(hit.popularRank);
+    const games = Number(platform === "pc" ? hit.gamesPlayedPc : hit.gamesPlayedConsole);
     if (Number.isSafeInteger(games) && games > 0) {
       row.futbinGamesCount = games;
       row.futbinGamesPlayed = games;
       row.futbinGamesPlatform = platform;
       gamesEnriched += 1;
     }
-    if (applySalesEvidence(row, hit.sales_evidence)) salesEvidenceEnriched += 1;
+    if (applySalesEvidence(row, hit.salesEvidence)) salesEvidenceEnriched += 1;
 
     if (Number(row.futbinPrice) > 0 && row.futbinProvider && !String(row.futbinProvider).startsWith("FUTBIN_FC27_SNAPSHOT_")) {
       skippedExisting += 1;
       continue;
     }
-    const price = Number(platform === "pc" ? hit.price_pc : hit.price_console);
+    const price = Number(platform === "pc" ? hit.pricePc : hit.priceConsole);
     if (!(price > 0)) continue;
     const base = Number(row.price || 0);
     const diffPct = base > 0 ? Number((((price - base) / base) * 100).toFixed(2)) : null;
@@ -100,7 +95,7 @@ export async function enrichRowsWithSnapshotFutbinBrain(rows = [], options = {})
     const outlier = Number(options.outlierDiffPct ?? 25);
     row.futbinPrice = price;
     row.futbinProvider = `FUTBIN_FC27_SNAPSHOT_${platform.toUpperCase()}`;
-    row.futbinCheckedAt = new Date(hit.observed_at).toISOString();
+    row.futbinCheckedAt = new Date(hit.observedAt).toISOString();
     row.futbinDiffPct = diffPct;
     const agreement = compareFutggFutbin(base, price);
     row.futbinCrossCheck = agreement.ok ? agreement.agreement : (abs == null ? "OBSERVED" : abs >= outlier ? "OUTLIER" : abs >= maxDiff ? "DIVERGENCE" : "MATCH");

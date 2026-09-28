@@ -1,7 +1,7 @@
 import express from 'express';
 import { uvRouter, initUvBrain, shutdownUvBrain, getUvRuntimeStatus } from './uv/uvApp.js?uv-standalone';
 import { pool as dbPool } from './uv/src/db.js';
-import { ensureFutbinSnapshotTable, validIngestToken, ingestFutbinSnapshot, futbinSnapshotHealth } from './futbinSnapshotIngestV1.js';
+import { validIngestToken, ingestFutbinSnapshot, latestFutbinSnapshots, futbinSnapshotHealth } from './futbinSnapshotIngestV1.js';
 
 if (typeof process.loadEnvFile === 'function') {
   try {
@@ -75,6 +75,27 @@ app.get('/api/futbin-fc27-snapshot-health', async (req, res) => {
   }
 });
 
+
+app.get('/api/futbin-fc27-latest', async (req, res) => {
+  try {
+    const rows = await latestFutbinSnapshots(dbPool, {
+      limit: req.query?.limit,
+      evidenceOnly: String(req.query?.evidenceOnly || '').toLowerCase() === 'true'
+    });
+    const health = await futbinSnapshotHealth(dbPool);
+    return res.json({
+      ok: true,
+      gameYear: 27,
+      count: rows.length,
+      storageMode: health.storageMode || null,
+      databaseReachable: health.databaseReachable ?? null,
+      rows
+    });
+  } catch (error) {
+    return res.status(500).json({ ok: false, error: String(error?.message || error) });
+  }
+});
+
 app.use(uvRouter);
 app.get('/', (req, res) => res.redirect('/uv'));
 
@@ -109,11 +130,8 @@ server = app.listen(port, '0.0.0.0', () => {
 
 try {
   await initUvBrain({ active: true });
-  if (dbPool) {
-    await ensureFutbinSnapshotTable(dbPool);
-    const snapshotHealth = await futbinSnapshotHealth(dbPool);
-    console.log('[UV-STANDALONE] FUTBIN snapshot health', snapshotHealth);
-  }
+  const snapshotHealth = await futbinSnapshotHealth(dbPool);
+  console.log('[UV-STANDALONE] FUTBIN snapshot health', snapshotHealth);
 } catch (error) {
   console.error('[UV-STANDALONE] init failed:', error?.stack || error?.message || error);
 }

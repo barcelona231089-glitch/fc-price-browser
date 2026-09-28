@@ -5,8 +5,8 @@ import { readFileSync } from 'node:fs';
 const uv = readFileSync(new URL('../uv/uvApp.js', import.meta.url), 'utf8');
 const app = readFileSync(new URL('../uv/public/app.js', import.meta.url), 'utf8');
 
-test('UV 2.15.3 keeps async generate jobs process-wide and avoids self-HTTP', () => {
-  assert.match(uv, /const UV_VERSION = '2\.15\.3'/);
+test('UV 2.15.10 keeps async generate jobs process-wide and avoids self-HTTP', () => {
+  assert.match(uv, /const UV_VERSION = '2\.15\.10'/);
   assert.match(uv, /app\.post\('\/api\/uv\/generate-job'/);
   assert.match(uv, /app\.get\('\/api\/uv\/generate-job\/:jobId'/);
   assert.match(uv, /Symbol\.for\('fc-trader-brain\.uv-generation-runtime\.v1'\)/);
