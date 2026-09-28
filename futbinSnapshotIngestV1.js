@@ -27,24 +27,11 @@ export async function ensureFutbinSnapshotTable(pool) {
   await pool.query(`CREATE INDEX IF NOT EXISTS ${TABLE}_observed_idx ON ${TABLE}(observed_at DESC)`);
 }
 
-const PINNED_COLLECTOR_KEY_SHA256 = 'fe90fc6012c9814347eda2194a4c7a4f7b917ee275a807a3b9999760e170ce8c';
-
 export function validIngestToken(req) {
   const expected = String(process.env.FUTBIN_SNAPSHOT_INGEST_TOKEN || '');
   const got = String(req.get('x-futbin-ingest-token') || '');
-  if (!got) return false;
-
-  if (expected && expected.length === got.length) {
-    try {
-      if (crypto.timingSafeEqual(Buffer.from(expected), Buffer.from(got))) return true;
-    } catch {}
-  }
-
-  const gotHash = crypto.createHash('sha256').update(got).digest('hex');
-  return crypto.timingSafeEqual(
-    Buffer.from(PINNED_COLLECTOR_KEY_SHA256, 'hex'),
-    Buffer.from(gotHash, 'hex')
-  );
+  if (!expected || !got || expected.length !== got.length) return false;
+  return crypto.timingSafeEqual(Buffer.from(expected), Buffer.from(got));
 }
 
 function positiveInt(value) {
@@ -158,6 +145,24 @@ export async function ingestFutbinSnapshot(pool, rows = []) {
     salesEvidenceReceived,
     salesEvidencePersisted: salesEvidenceReceived
   };
+}
+
+export async function latestFutbinSnapshots(pool, { limit = 250, evidenceOnly = false } = {}) {
+  if (!pool) throw new Error('DB_DISABLED');
+  await ensureFutbinSnapshotTable(pool);
+  const safeLimit = Math.max(1, Math.min(500, Number(limit) || 250));
+  const evidenceClause = evidenceOnly ? 'WHERE sales_evidence IS NOT NULL' : '';
+  const { rows } = await pool.query(`SELECT DISTINCT ON (futbin_id)
+    futbin_id, observed_at, name, rating, price_console, price_pc, popular_rank, sales_evidence, source
+    FROM ${TABLE} ${evidenceClause}
+    ORDER BY futbin_id, observed_at DESC
+    LIMIT $1`, [safeLimit]);
+  return rows.map(row => ({
+    futbinId: Number(row.futbin_id), observedAt: row.observed_at, name: row.name,
+    rating: row.rating, priceConsole: Number(row.price_console) || null,
+    pricePc: Number(row.price_pc) || null, popularRank: row.popular_rank,
+    salesEvidence: row.sales_evidence || null, source: row.source
+  }));
 }
 
 export async function futbinSnapshotHealth(pool) {

@@ -13,7 +13,7 @@ import {
 } from "./traderBrain.js";
 import { uvRouter, initUvBrain, shutdownUvBrain, getUvRuntimeStatus, setUvBrainActive } from "./uv/uvApp.js";
 import { createHaCoordinator } from "./haCoordinator.js";
-import { validIngestToken, ingestFutbinSnapshot, futbinSnapshotHealth } from "./futbinSnapshotIngestV1.js";
+import { validIngestToken, ingestFutbinSnapshot, latestFutbinSnapshots, futbinSnapshotHealth } from "./futbinSnapshotIngestV1.js";
 
 const { Pool } = pg;
 
@@ -12020,6 +12020,17 @@ app.post("/api/futbin-fc27-snapshot", async (req, res) => {
 app.get("/api/futbin-fc27-snapshot-health", async (req,res) => {
   try { res.json({ok:true,...await futbinSnapshotHealth(pool)}); }
   catch (error) { res.status(500).json({ok:false,error:String(error?.message||error)}); }
+});
+
+app.get("/api/futbin-fc27-latest", async (req,res) => {
+  if (GAME_YEAR !== "27") return res.status(409).json({ ok:false, error:"FC27_ONLY" });
+  try {
+    const rows = await latestFutbinSnapshots(pool, {
+      limit: req.query?.limit,
+      evidenceOnly: String(req.query?.evidenceOnly || '').toLowerCase() === 'true'
+    });
+    res.json({ ok:true, gameYear:27, count:rows.length, rows });
+  } catch (error) { res.status(500).json({ok:false,error:String(error?.message||error)}); }
 });
 
 app.get("/health", (req, res) => {
