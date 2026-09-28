@@ -147,6 +147,24 @@ export async function ingestFutbinSnapshot(pool, rows = []) {
   };
 }
 
+export async function latestFutbinSnapshots(pool, { limit = 250, evidenceOnly = false } = {}) {
+  if (!pool) throw new Error('DB_DISABLED');
+  await ensureFutbinSnapshotTable(pool);
+  const safeLimit = Math.max(1, Math.min(500, Number(limit) || 250));
+  const evidenceClause = evidenceOnly ? 'WHERE sales_evidence IS NOT NULL' : '';
+  const { rows } = await pool.query(`SELECT DISTINCT ON (futbin_id)
+    futbin_id, observed_at, name, rating, price_console, price_pc, popular_rank, sales_evidence, source
+    FROM ${TABLE} ${evidenceClause}
+    ORDER BY futbin_id, observed_at DESC
+    LIMIT $1`, [safeLimit]);
+  return rows.map(row => ({
+    futbinId: Number(row.futbin_id), observedAt: row.observed_at, name: row.name,
+    rating: row.rating, priceConsole: Number(row.price_console) || null,
+    pricePc: Number(row.price_pc) || null, popularRank: row.popular_rank,
+    salesEvidence: row.sales_evidence || null, source: row.source
+  }));
+}
+
 export async function futbinSnapshotHealth(pool) {
   if (!pool) return { configured: false };
   await ensureFutbinSnapshotTable(pool);
