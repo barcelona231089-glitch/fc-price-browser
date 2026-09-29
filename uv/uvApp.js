@@ -20,7 +20,7 @@ import { attachLocalFutbinFc27 } from './src/futbinLocalFc27.js';
 import { enrichRowsWithSnapshotFutbinBrain } from '../futbinSnapshotReaderV1.js';
 
 export const uvRouter = express.Router();
-const UV_VERSION = '2.15.10';
+const UV_VERSION = '2.15.11';
 
 async function getUvMarketContext(platform, liveCards = []) {
   const futbinContext = await getFutbinMarketTrends(platform);
@@ -228,24 +228,22 @@ async function startGenerationJob(payload) {
   generationRuntime.activeJobId = job.jobId;
   generationRuntime.activeJob = job;
   persistGenerationJob(job);
-  // Local file + process memory are sufficient to run and poll a generation
-  // job on the active UV runtime. PostgreSQL is an optional durability layer,
-  // never a blocker for creating a FUTBIN-only list.
-  try {
-    const saved = await saveUvGenerationJob(job);
-    if (saved) {
-      job.persistenceMode = 'POSTGRES_AND_LOCAL';
-      persistGenerationJob(job);
-      console.log('[UV-GEN] queued job persisted', { jobId: job.jobId, mode: job.persistenceMode });
-    } else {
-      console.warn('[UV-GEN] PostgreSQL unavailable; continuing with local job persistence', { jobId: job.jobId });
+  // Local file + process memory start the job immediately. PostgreSQL is only
+  // an optional asynchronous durability layer and never delays FUTBIN-only generation.
+  void saveUvGenerationJob(job).then(saved => {
+    if (!saved) {
+      console.warn('[UV-GEN] PostgreSQL unavailable; local job persistence remains active', { jobId: job.jobId });
+      return;
     }
-  } catch (error) {
+    job.persistenceMode = 'POSTGRES_AND_LOCAL';
+    persistGenerationJob(job);
+    console.log('[UV-GEN] queued job additionally persisted', { jobId: job.jobId, mode: job.persistenceMode });
+  }).catch(error => {
     console.warn('[UV-GEN] PostgreSQL job persistence unavailable; continuing locally', {
       jobId: job.jobId,
       error: error?.message || String(error)
     });
-  }
+  });
 
   setImmediate(async () => {
     console.log('[UV-GEN] job running', { jobId: job.jobId });
