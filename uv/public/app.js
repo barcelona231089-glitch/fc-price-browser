@@ -429,8 +429,8 @@ btn.addEventListener('click', async()=>{
   btn.disabled=true;loading.classList.remove('hidden');summary.classList.add('hidden');notice.classList.add('hidden');
   rows.innerHTML='<tr><td colspan="9" class="empty">Live-Marktdaten, Nachfrage, Outcome-Lernen und robuste Kandidaten-Gates werden geprüft; danach werden bis zu 100 hochwertige Karten innerhalb des Budgets optimiert...</td></tr>';
   try{
-    const started=await startGenerateJob({budget,platform,saveList});
-    const data=await waitForGenerateJob(started.jobId);
+    $('#tableSub').textContent='ÜV-Liste wird direkt aus dem aktuellen FUTBIN-Pool berechnet...';
+    const data=await generateDirect({budget,platform,saveList});
     lastListId=data.listId||null;
     lastCards=(data.cards||[]).map((card,index)=>({...card,_savedSlot:lastListId?index+1:null}));
     lastCheckedListId=null; resetListUiState(); renderSummary(data); renderCurrentRows(); filter.disabled=false; recheckBtn.disabled=!lastListId; rebalanceBtn.disabled=true;
@@ -445,6 +445,20 @@ btn.addEventListener('click', async()=>{
 });
 
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
+
+async function generateDirect(payload) {
+  const r = await fetch('/api/uv/generate', {
+    method:'POST',
+    headers:{'content-type':'application/json'},
+    body:JSON.stringify(payload),
+    cache:'no-store'
+  });
+  const text = await r.text();
+  let data;
+  try{data=JSON.parse(text)}catch{throw new Error(`Generate-Antwort war keine JSON-Antwort (HTTP ${r.status}).`)}
+  if(!r.ok) throw new Error(data.error||'ÜV-Liste konnte nicht generiert werden');
+  return data;
+}
 
 async function startGenerateJob(payload) {
   const r = await fetch('/api/uv/generate-job', {
