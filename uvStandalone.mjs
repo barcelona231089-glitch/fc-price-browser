@@ -1,8 +1,6 @@
 import express from 'express';
 import { uvRouter, initUvBrain, shutdownUvBrain, getUvRuntimeStatus } from './uv/uvApp.js?uv-standalone';
 import { pool as dbPool } from './uv/src/db.js';
-import { ensureUniverse as ensureFutggUniverse } from './uv/src/futgg.js';
-import { FUTBIN_FC27_EA_TO_ID } from './futbinIdMapFc27.js';
 import { validIngestToken, ingestFutbinSnapshot, latestFutbinSnapshots, futbinSnapshotHealth } from './futbinSnapshotIngestV1.js';
 
 if (typeof process.loadEnvFile === 'function') {
@@ -31,62 +29,31 @@ app.get('/healthz', (req, res) => {
 });
 
 app.get('/api/futbin-fc27-collector-targets', async (req, res) => {
-  const minRating = Math.max(1, Math.min(99, Number(req.query?.minRating || 82)));
-  const maxRating = Math.max(minRating, Math.min(99, Number(req.query?.maxRating || 99)));
-  const limit = Math.max(1, Math.min(2000, Number(req.query?.limit || 1000)));
-  const offset = Math.max(0, Number(req.query?.offset || 0));
-
-  if (dbPool?.query) {
-    try {
-      const result = await dbPool.query(`
-        SELECT ea_id::text AS ea_id, name, rating, version, card_type
-        FROM uv_cards
-        WHERE game_year = 27
-          AND rating BETWEEN $1 AND $2
-        ORDER BY rating DESC, ea_id ASC
-        LIMIT $3 OFFSET $4
-      `, [minRating, maxRating, limit, offset]);
-      const rows = (result.rows || []).map(row => ({
-        eaId: row.ea_id,
-        name: row.name || null,
-        overall: Number(row.rating || 0) || null,
-        rating: Number(row.rating || 0) || null,
-        rarityName: row.version || row.card_type || null,
-        cardType: row.card_type || row.version || null
-      }));
-      if (rows.length) return res.json({ ok: true, source: 'UV_METADATA', gameYear: 27, count: rows.length, rows });
-    } catch (error) {
-      console.warn('[UV-STANDALONE] collector targets DB degraded:', error?.code || error?.message || error);
-    }
-  }
-
   try {
-    const universe = await ensureFutggUniverse(false);
-    const eligible = (Array.isArray(universe) ? universe : [])
-      .filter(card => Number(card?.overall || 0) >= minRating && Number(card?.overall || 0) <= maxRating)
-      .filter(card => Number(FUTBIN_FC27_EA_TO_ID[String(card?.eaId)]) > 0)
-      .sort((a, b) => Number(b?.overall || 0) - Number(a?.overall || 0) || Number(a?.eaId || 0) - Number(b?.eaId || 0));
-
-    const rows = eligible.slice(offset, offset + limit).map(card => ({
-      eaId: String(card.eaId),
-      name: card.name || card.cardName || null,
-      overall: Number(card.overall || 0) || null,
-      rating: Number(card.overall || 0) || null,
-      rarityName: card.rarityName || card.rarityGroupName || card.cardType || null,
-      cardType: card.cardType || null,
-      futbinId: Number(FUTBIN_FC27_EA_TO_ID[String(card.eaId)]) || null
+    if (!dbPool?.query) return res.status(503).json({ ok: false, error: 'DB_UNAVAILABLE' });
+    const minRating = Math.max(1, Math.min(99, Number(req.query?.minRating || 82)));
+    const maxRating = Math.max(minRating, Math.min(99, Number(req.query?.maxRating || 99)));
+    const limit = Math.max(1, Math.min(2000, Number(req.query?.limit || 1000)));
+    const offset = Math.max(0, Number(req.query?.offset || 0));
+    const result = await dbPool.query(`
+      SELECT ea_id::text AS ea_id, name, rating, version, card_type
+      FROM uv_cards
+      WHERE game_year = 27
+        AND rating BETWEEN $1 AND $2
+      ORDER BY rating DESC, ea_id ASC
+      LIMIT $3 OFFSET $4
+    `, [minRating, maxRating, limit, offset]);
+    const rows = (result.rows || []).map(row => ({
+      eaId: row.ea_id,
+      name: row.name || null,
+      overall: Number(row.rating || 0) || null,
+      rating: Number(row.rating || 0) || null,
+      rarityName: row.version || row.card_type || null,
+      cardType: row.card_type || row.version || null
     }));
-    return res.json({
-      ok: true,
-      source: 'FUTGG_METADATA_FALLBACK',
-      gameYear: 27,
-      count: rows.length,
-      totalEligible: eligible.length,
-      databaseReachable: false,
-      rows
-    });
+    return res.json({ ok: true, source: 'UV_METADATA', gameYear: 27, count: rows.length, rows });
   } catch (error) {
-    return res.status(503).json({ ok: false, error: 'COLLECTOR_TARGETS_UNAVAILABLE' });
+    return res.status(500).json({ ok: false, error: String(error?.message || error) });
   }
 });
 
