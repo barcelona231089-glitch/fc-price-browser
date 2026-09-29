@@ -20,7 +20,7 @@ import { attachLocalFutbinFc27 } from './src/futbinLocalFc27.js';
 import { enrichRowsWithSnapshotFutbinBrain } from '../futbinSnapshotReaderV1.js';
 
 export const uvRouter = express.Router();
-const UV_VERSION = '2.15.12';
+const UV_VERSION = '2.15.13';
 
 async function getUvMarketContext(platform, liveCards = []) {
   const futbinContext = await getFutbinMarketTrends(platform);
@@ -250,7 +250,7 @@ async function startGenerationJob(payload) {
     job.status = 'RUNNING';
     job.startedAt = new Date().toISOString();
     persistGenerationJob(job);
-    await saveUvGenerationJob(job).catch(() => false);
+    void saveUvGenerationJob(job).catch(() => false);
     const timer = setTimeout(() => {
       if (job.status === 'RUNNING') {
         job.error = 'UV-Generierung hat das 12-Minuten-Limit überschritten.';
@@ -273,7 +273,7 @@ async function startGenerationJob(payload) {
       clearTimeout(timer);
       job.finishedAt = new Date().toISOString();
       persistGenerationJob(job);
-      await saveUvGenerationJob(job).catch(() => false);
+      void saveUvGenerationJob(job).catch(() => false);
       if (generationRuntime.activeJobId === job.jobId) generationRuntime.activeJobId = null;
       scheduleGenerationJobCleanup(job);
     }
