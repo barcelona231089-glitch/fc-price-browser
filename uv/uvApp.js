@@ -20,7 +20,7 @@ import { attachLocalFutbinFc27 } from './src/futbinLocalFc27.js';
 import { enrichRowsWithSnapshotFutbinBrain } from '../futbinSnapshotReaderV1.js';
 
 export const uvRouter = express.Router();
-const UV_VERSION = '2.15.11';
+const UV_VERSION = '2.15.12';
 
 async function getUvMarketContext(platform, liveCards = []) {
   const futbinContext = await getFutbinMarketTrends(platform);
@@ -1458,27 +1458,29 @@ app.post('/api/uv/generate', async (req, res) => {
     console.log('[UV-GEN] FUTBIN crosscheck complete');
     scored = attachLocalFutbinFc27(scored, platform);
 
-    // Dedicated FUTBIN evidence gate. Price is mandatory and at least two of the
-    // three independent FUTBIN demand/liquidity signals must be genuinely observed.
+    // Dedicated FUTBIN evidence gate. The UV decision uses only the three
+    // user-facing market signals we actually need: Games, number of observed
+    // listings, and real sold-price evidence. Popular Rank is not required.
+    // A positive current FUTBIN price remains mandatory for buy/sell economics.
     scored = scored.map(card => {
       const futbinGamesObserved = Number(card.futbinGamesPlayed || card.futbinGamesCount) > 0;
-      const futbinSalesObserved = Number(card.futbinSoldSampleCount || 0) >= 2
+      const futbinListingsObserved = Number(card.futbinListedSampleCount || 0) > 0;
+      const futbinSoldPricesObserved = Number(card.futbinSoldSampleCount || 0) >= 2
         && [card.futbinSoldPriceP25, card.futbinSoldPriceMedian, card.futbinSoldPriceMode, card.futbinSoldPriceP75]
           .some(value => Number(value) > 0);
-      const futbinPopularObserved = Number(card.futbinPopularRank) > 0;
-      const futbinEvidenceCount = [futbinGamesObserved, futbinSalesObserved, futbinPopularObserved].filter(Boolean).length;
+      const futbinEvidenceCount = [futbinGamesObserved, futbinListingsObserved, futbinSoldPricesObserved].filter(Boolean).length;
       return {
         ...card,
         futbinGamesObserved,
-        futbinSalesObserved,
-        futbinPopularObserved,
+        futbinListingsObserved,
+        futbinSoldPricesObserved,
         futbinEvidenceCount,
-        futbinEvidenceGate: futbinEvidenceCount >= 2 ? 'PASS' : 'FAIL'
+        futbinEvidenceGate: futbinEvidenceCount === 3 ? 'PASS' : 'FAIL'
       };
-    }).filter(card => Number(card.futbinPrice || card.price) > 0 && card.futbinEvidenceCount >= 2);
+    }).filter(card => Number(card.futbinPrice || card.price) > 0 && card.futbinEvidenceCount === 3);
 
     if (scored.length < count) {
-      throw new Error(`FUTBIN evidence gate: only ${scored.length}/${count} candidates have price plus at least 2/3 observed criteria (Games, Sales History, Popular Rank).`);
+      throw new Error(`FUTBIN evidence gate: only ${scored.length}/${count} candidates have current price plus all 3 required signals (Games, Listings, sold prices).`);
     }
     scored = await generationCpuSafeMap(scored, card => {
       const history = historyMap.get(String(card.eaId)) || null;
