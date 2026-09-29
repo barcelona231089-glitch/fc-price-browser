@@ -254,7 +254,7 @@ function snapshotRowsFromResults(cards, results) {
   const rows = [];
   for (const card of cards) {
     const result = results?.get?.(String(card.eaId));
-    const observedAt = result?.observedAtConsole || result?.checked || null;
+    const observedAt = result?.observedAtConsole || result?.checked || result?.retrievedAt || null;
     const priceConsole = Number(result?.priceConsole || 0);
     const observedRating = Number(result?.rating || 0);
     if (!(priceConsole > 0) || !observedAt || !(Number(result?.id) > 0) || observedRating < 82) continue;
