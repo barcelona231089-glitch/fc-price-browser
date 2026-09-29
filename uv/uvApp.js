@@ -20,7 +20,7 @@ import { attachLocalFutbinFc27 } from './src/futbinLocalFc27.js';
 import { enrichRowsWithSnapshotFutbinBrain } from '../futbinSnapshotReaderV1.js';
 
 export const uvRouter = express.Router();
-const UV_VERSION = '2.15.13';
+const UV_VERSION = '2.15.14';
 
 async function getUvMarketContext(platform, liveCards = []) {
   const futbinContext = await getFutbinMarketTrends(platform);
@@ -1405,28 +1405,38 @@ app.post('/api/uv/generate', async (req, res) => {
     const sampleForHistory = [...pool]
       .sort((a, b) => Math.abs(a.price - ideal) - Math.abs(b.price - ideal))
       .slice(0, HISTORY_SAMPLE_LIMIT);
-    await Promise.allSettled([
+    // Persistence is enrichment, not a prerequisite for a FUTBIN-only list.
+    // Never hold the user's generation request open when PostgreSQL is unavailable.
+    void Promise.allSettled([
       recordSnapshot(sampleForHistory, platform, HISTORY_SAMPLE_LIMIT),
       upsertCards(sampleForHistory),
       recordMarketSnapshot(marketContext, platform),
       recordDemandSnapshot(demandContext, platform)
-    ]);
+    ]).catch(() => {});
     const idsForLearning = sampleForHistory.map(c => c.eaId);
-    const learningLoads = await Promise.allSettled([
+    const learningPromise = Promise.allSettled([
       loadHistoryFeatures(idsForLearning, platform),
       loadPerformanceFeatures(idsForLearning, platform),
       loadTraderRulePerformance(platform),
       loadTargetSupportPerformance(platform)
     ]);
-    const historyMap = learningLoads[0].status === 'fulfilled' ? learningLoads[0].value : new Map();
-    const performanceMap = learningLoads[1].status === 'fulfilled' ? learningLoads[1].value : new Map();
-    const traderRulePerformance = learningLoads[2].status === 'fulfilled' ? learningLoads[2].value : new Map();
-    const targetSupportPerformance = learningLoads[3].status === 'fulfilled' ? learningLoads[3].value : new Map();
-    const learningDbErrors = learningLoads
-      .filter(result => result.status === 'rejected')
-      .map(result => String(result.reason?.message || result.reason || 'DB_UNAVAILABLE'));
-    if (learningDbErrors.length) {
-      console.warn('[UV-GEN] PostgreSQL learning degraded; continuing with neutral learning maps', learningDbErrors);
+    const learningLoads = await Promise.race([
+      learningPromise,
+      new Promise(resolve => setTimeout(() => resolve(null), 1200))
+    ]);
+    const historyMap = Array.isArray(learningLoads) && learningLoads[0]?.status === 'fulfilled' ? learningLoads[0].value : new Map();
+    const performanceMap = Array.isArray(learningLoads) && learningLoads[1]?.status === 'fulfilled' ? learningLoads[1].value : new Map();
+    const traderRulePerformance = Array.isArray(learningLoads) && learningLoads[2]?.status === 'fulfilled' ? learningLoads[2].value : new Map();
+    const targetSupportPerformance = Array.isArray(learningLoads) && learningLoads[3]?.status === 'fulfilled' ? learningLoads[3].value : new Map();
+    if (!Array.isArray(learningLoads)) {
+      console.warn('[UV-GEN] PostgreSQL learning timed out; continuing immediately with neutral learning maps');
+    } else {
+      const learningDbErrors = learningLoads
+        .filter(result => result.status === 'rejected')
+        .map(result => String(result.reason?.message || result.reason || 'DB_UNAVAILABLE'));
+      if (learningDbErrors.length) {
+        console.warn('[UV-GEN] PostgreSQL learning degraded; continuing with neutral learning maps', learningDbErrors);
+      }
     }
 
     let scored = await generationCpuSafeMap(pool, card => {
