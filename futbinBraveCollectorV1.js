@@ -1,4 +1,4 @@
-﻿import { existsSync, mkdirSync, readFileSync, writeFileSync, unlinkSync, openSync, closeSync, appendFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync, unlinkSync, openSync, closeSync, appendFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -20,7 +20,12 @@ const INTERVAL_MS = Math.max(15 * 60_000, Number(process.env.FUTBIN_BRAVE_COLLEC
 const PAGE_WAIT_MS = Math.max(1500, Math.min(20_000, Number(process.env.FUTBIN_BRAVE_PAGE_WAIT_MS || 4500)));
 const SPACING_MS = Math.max(1500, Math.min(60_000, Number(process.env.FUTBIN_BRAVE_SPACING_MS || 3000)));
 const CLOSE_AFTER_CYCLE = !["0", "false", "no", "off"].includes(String(process.env.FUTBIN_BRAVE_CLOSE_AFTER_CYCLE || "1").trim().toLowerCase());
-const TOKEN = String(process.env.FUTBIN_SNAPSHOT_INGEST_TOKEN || "");
+const TOKEN_FILE = process.env.FUTBIN_SNAPSHOT_INGEST_TOKEN_FILE
+  || join(process.env.LOCALAPPDATA || ROOT, "FCTraderBrain", "futbin-snapshot-ingest.token");
+const TOKEN = String(
+  process.env.FUTBIN_SNAPSHOT_INGEST_TOKEN
+  || (existsSync(TOKEN_FILE) ? readFileSync(TOKEN_FILE, "utf8").trim() : "")
+).trim();
 const PROFILE_DIR = process.env.FUTBIN_BRAVE_COLLECTOR_PROFILE
   || join(process.env.LOCALAPPDATA || ROOT, "FCTraderBrain", "BraveFutbinCollectorProfile");
 
@@ -233,7 +238,7 @@ function releaseLock() {
 }
 
 async function loadCollectorTargets() {
-  const transientStatuses = new Set([404, 502, 503, 504]);
+  const transientStatuses = new Set([404, 500, 502, 503, 504]);
   const retryDelaysMs = [0, 1500, 3500];
 
   for (let attempt = 0; attempt < retryDelaysMs.length; attempt += 1) {
@@ -245,7 +250,7 @@ async function loadCollectorTargets() {
       const market = await fetchJson(
         `${SNAPSHOT_HOST}/api/futbin-fc27-collector-targets?minRating=82&maxRating=99&limit=250`,
         {},
-        60_000
+        20_000
       );
       if (market?.ok && Array.isArray(market?.rows) && market.rows.length) {
         return market.rows.map(row => ({
@@ -266,21 +271,20 @@ async function loadCollectorTargets() {
   throw new Error("UV_TARGETS_TEMPORARILY_UNAVAILABLE");
 }
 
-export function snapshotRowsFromResults(cards, results) {
+function snapshotRowsFromResults(cards, results) {
   const rows = [];
   for (const card of cards) {
     const result = results?.get?.(String(card.eaId));
-    const observedAt = result?.observedAtConsole || result?.observedAtPc || result?.checked || null;
+    const observedAt = result?.observedAtConsole || result?.checked || null;
     const priceConsole = Number(result?.priceConsole || 0);
-    const pricePc = Number(result?.pricePc || 0);
-    if (!(priceConsole > 0 || pricePc > 0) || !observedAt || !(Number(result?.id) > 0)) continue;
+    if (!(priceConsole > 0) || !observedAt || !(Number(result?.id) > 0)) continue;
     rows.push({
       futbinId: Number(result.id),
       observedAt,
       name: result.name || card.name || "",
       rating: Number(result.rating || card.overall || 0) || null,
-      priceConsole: priceConsole > 0 ? priceConsole : null,
-      pricePc: pricePc > 0 ? pricePc : null,
+      priceConsole,
+      pricePc: null,
       popularRank: Number.isFinite(Number(result.popularRank)) ? Number(result.popularRank) : null,
       gamesPlayedConsole: Number.isFinite(Number(result.gamesPlayedConsole)) ? Number(result.gamesPlayedConsole) : null,
       gamesPlayedPc: Number.isFinite(Number(result.gamesPlayedPc)) ? Number(result.gamesPlayedPc) : null,
