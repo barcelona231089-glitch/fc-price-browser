@@ -20,7 +20,7 @@ import { attachLocalFutbinFc27 } from './src/futbinLocalFc27.js';
 import { enrichRowsWithSnapshotFutbinBrain } from '../futbinSnapshotReaderV1.js';
 
 export const uvRouter = express.Router();
-const UV_VERSION = '2.15.14';
+const UV_VERSION = '2.15.15';
 
 async function getUvMarketContext(platform, liveCards = []) {
   const futbinContext = await getFutbinMarketTrends(platform);
