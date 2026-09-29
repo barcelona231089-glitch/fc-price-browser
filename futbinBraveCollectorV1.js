@@ -23,8 +23,9 @@ const CLOSE_AFTER_CYCLE = !["0", "false", "no", "off"].includes(String(process.e
 const TOKEN_FILE = process.env.FUTBIN_SNAPSHOT_INGEST_TOKEN_FILE
   || join(process.env.LOCALAPPDATA || ROOT, "FCTraderBrain", "futbin-snapshot-ingest.token");
 const TOKEN = String(
-  process.env.FUTBIN_SNAPSHOT_INGEST_TOKEN
-  || (existsSync(TOKEN_FILE) ? readFileSync(TOKEN_FILE, "utf8").trim() : "")
+  (existsSync(TOKEN_FILE) ? readFileSync(TOKEN_FILE, "utf8").trim() : "")
+  || process.env.FUTBIN_SNAPSHOT_INGEST_TOKEN
+  || ""
 ).trim();
 const PROFILE_DIR = process.env.FUTBIN_BRAVE_COLLECTOR_PROFILE
   || join(process.env.LOCALAPPDATA || ROOT, "FCTraderBrain", "BraveFutbinCollectorProfile");
