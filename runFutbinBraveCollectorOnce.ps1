@@ -5,6 +5,10 @@ $collector = Join-Path $repo 'futbinBraveCollectorV1.js'
 
 $token = [Environment]::GetEnvironmentVariable('FUTBIN_SNAPSHOT_INGEST_TOKEN', 'User')
 if (-not $token) { $token = [Environment]::GetEnvironmentVariable('FUTBIN_SNAPSHOT_INGEST_TOKEN', 'Machine') }
+if (-not $token) {
+  $tokenFile = Join-Path $env:LOCALAPPDATA 'FCTraderBrain\futbin-snapshot-ingest.token'
+  if (Test-Path $tokenFile) { $token = (Get-Content $tokenFile -Raw).Trim() }
+}
 if (-not $token) { exit 2 }
 
 $env:FUTBIN_SNAPSHOT_INGEST_TOKEN = $token

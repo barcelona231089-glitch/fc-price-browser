@@ -182,10 +182,11 @@ export function selectCollectorCards(rows = [], options = {}) {
   const maxCards = Math.max(1, Math.min(12, Number(options.maxCards || MAX_CARDS)));
   const startCursor = Math.max(0, Number(options.cursor || 0));
   const eligible = (Array.isArray(rows) ? rows : [])
-    .filter(row => Number(row?.overall || row?.rating || 0) >= 82)
-    .filter(row => Number(FUTBIN_FC27_EA_TO_ID[String(row?.eaId)]) > 0)
+    .filter(row => row?.futbinOnlyTarget === true || Number(row?.overall || row?.rating || 0) >= 82)
+    .filter(row => Number(row?.futbinId || FUTBIN_FC27_EA_TO_ID[String(row?.eaId)]) > 0)
     .sort((a, b) =>
       Number(b?.overall || b?.rating || 0) - Number(a?.overall || a?.rating || 0) ||
+      Number(a?.futbinId || FUTBIN_FC27_EA_TO_ID[String(a?.eaId)] || 0) - Number(b?.futbinId || FUTBIN_FC27_EA_TO_ID[String(b?.eaId)] || 0) ||
       Number(a?.eaId || 0) - Number(b?.eaId || 0)
     );
 
@@ -195,7 +196,7 @@ export function selectCollectorCards(rows = [], options = {}) {
       const row = eligible[(startCursor + i) % eligible.length];
       cards.push({
         eaId: String(row.eaId),
-        futbinId: Number(FUTBIN_FC27_EA_TO_ID[String(row.eaId)]),
+        futbinId: Number(row.futbinId || FUTBIN_FC27_EA_TO_ID[String(row.eaId)]),
         name: row.name || null,
         overall: Number(row.overall || row.rating || 0) || null,
         cardType: row.cardType || row.rarityName || null
@@ -238,46 +239,25 @@ function releaseLock() {
 }
 
 async function loadCollectorTargets() {
-  const transientStatuses = new Set([404, 500, 502, 503, 504]);
-  const retryDelaysMs = [0, 1500, 3500];
-
-  for (let attempt = 0; attempt < retryDelaysMs.length; attempt += 1) {
-    if (retryDelaysMs[attempt] > 0) {
-      await new Promise(resolve => setTimeout(resolve, retryDelaysMs[attempt]));
-    }
-
-    try {
-      const market = await fetchJson(
-        `${SNAPSHOT_HOST}/api/futbin-fc27-collector-targets?minRating=82&maxRating=99&limit=250`,
-        {},
-        20_000
-      );
-      if (market?.ok && Array.isArray(market?.rows) && market.rows.length) {
-        return market.rows.map(row => ({
-          ...row,
-          overall: Number(row?.overall || row?.rating || 0) || null
-        }));
-      }
-    } catch (error) {
-      const status = Number(error?.status);
-      if (!transientStatuses.has(status)) throw error;
-      log("uv-targets-retry", {
-        reason: `UV_TARGETS_API_${status || "TRANSIENT"}`,
-        attempt: attempt + 1
-      });
-    }
-  }
-
-  throw new Error("UV_TARGETS_TEMPORARILY_UNAVAILABLE");
+  const rows = Object.entries(FUTBIN_FC27_EA_TO_ID)
+    .filter(([, futbinId]) => Number(futbinId) > 0)
+    .map(([eaId, futbinId]) => ({
+      eaId,
+      futbinId: Number(futbinId),
+      futbinOnlyTarget: true
+    }));
+  if (!rows.length) throw new Error("FUTBIN_TARGETS_UNAVAILABLE");
+  log("futbin-only-targets", { count: rows.length });
+  return rows;
 }
-
 function snapshotRowsFromResults(cards, results) {
   const rows = [];
   for (const card of cards) {
     const result = results?.get?.(String(card.eaId));
     const observedAt = result?.observedAtConsole || result?.checked || null;
     const priceConsole = Number(result?.priceConsole || 0);
-    if (!(priceConsole > 0) || !observedAt || !(Number(result?.id) > 0)) continue;
+    const observedRating = Number(result?.rating || 0);
+    if (!(priceConsole > 0) || !observedAt || !(Number(result?.id) > 0) || observedRating < 82) continue;
     rows.push({
       futbinId: Number(result.id),
       observedAt,
