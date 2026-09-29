@@ -432,11 +432,60 @@ export async function crosscheckFutbin(cards, platform = 'console') {
       sales_history: card?.evidenceSalesHistory ?? card?.marketEvidence?.salesHistory ?? []
     }, futbinPrice || card.price);
     const resultEvidence = result?.evidence || null;
-    const evidence = resultEvidence && (
+    const candidateEvidence = resultEvidence && (
       resultEvidence.gamesAvailable
       || resultEvidence.salesHistoryAvailable
       || Number.isFinite(resultEvidence.futbinPopularRank)
     ) ? resultEvidence : marketEvidenceFallback;
+
+    // Never let an empty Direct/Parse fallback erase already observed snapshot
+    // evidence. The dedicated FC27 UV runtime receives real Games + Listings +
+    // Sold-price evidence from the collector before this cross-check runs.
+    const existingGames = Number(card?.futbinGamesPlayed || card?.futbinGamesCount || 0);
+    const existingRows = Number(card?.futbinSalesRowCount || 0);
+    const existingListed = Number(card?.futbinListedSampleCount || 0);
+    const existingSold = Number(card?.futbinSoldSampleCount || 0);
+    const candidateGamesAvailable = candidateEvidence?.gamesAvailable === true
+      && Number(candidateEvidence?.futbinGamesCount || 0) > 0;
+    const candidateSalesAvailable = candidateEvidence?.salesHistoryAvailable === true
+      && Number(candidateEvidence?.futbinSoldSampleCount || 0) > 0;
+
+    const preferObserved = (candidateValue, existingValue, candidateAvailable) => {
+      const candidateNumber = Number(candidateValue);
+      if (candidateAvailable && Number.isFinite(candidateNumber) && candidateNumber > 0) return candidateNumber;
+      const existingNumber = Number(existingValue);
+      if (Number.isFinite(existingNumber) && existingNumber > 0) return existingNumber;
+      return Number.isFinite(candidateNumber) ? candidateNumber : null;
+    };
+
+    const evidence = {
+      ...candidateEvidence,
+      gamesAvailable: candidateGamesAvailable || existingGames > 0,
+      futbinGamesCount: preferObserved(candidateEvidence?.futbinGamesCount, existingGames, candidateGamesAvailable),
+      futbinGamesScore: candidateGamesAvailable && Number.isFinite(Number(candidateEvidence?.futbinGamesScore))
+        ? Number(candidateEvidence.futbinGamesScore)
+        : (Number.isFinite(Number(card?.futbinGamesScore))
+          ? Number(card.futbinGamesScore)
+          : (existingGames > 0 ? gamesDemandScore(existingGames) : null)),
+      futbinPopularRank: preferObserved(candidateEvidence?.futbinPopularRank, card?.futbinPopularRank, Number(candidateEvidence?.futbinPopularRank) > 0),
+      salesHistoryAvailable: candidateSalesAvailable || existingListed > 0 || existingSold > 0,
+      futbinSalesRowCount: preferObserved(candidateEvidence?.futbinSalesRowCount, existingRows, candidateSalesAvailable),
+      futbinListedSampleCount: preferObserved(candidateEvidence?.futbinListedSampleCount, existingListed, candidateSalesAvailable),
+      futbinSoldSampleCount: preferObserved(candidateEvidence?.futbinSoldSampleCount, existingSold, candidateSalesAvailable),
+      futbinUnsoldSampleCount: candidateSalesAvailable
+        ? Number(candidateEvidence?.futbinUnsoldSampleCount || 0)
+        : Number(card?.futbinUnsoldSampleCount || 0),
+      futbinSoldPriceMedian: preferObserved(candidateEvidence?.futbinSoldPriceMedian, card?.futbinSoldPriceMedian, candidateSalesAvailable),
+      futbinSoldPriceP25: preferObserved(candidateEvidence?.futbinSoldPriceP25, card?.futbinSoldPriceP25, candidateSalesAvailable),
+      futbinSoldPriceP75: preferObserved(candidateEvidence?.futbinSoldPriceP75, card?.futbinSoldPriceP75, candidateSalesAvailable),
+      futbinSoldPriceMin: preferObserved(candidateEvidence?.futbinSoldPriceMin, card?.futbinSoldPriceMin, candidateSalesAvailable),
+      futbinSoldPriceMax: preferObserved(candidateEvidence?.futbinSoldPriceMax, card?.futbinSoldPriceMax, candidateSalesAvailable),
+      futbinSoldPriceMode: preferObserved(candidateEvidence?.futbinSoldPriceMode, card?.futbinSoldPriceMode, candidateSalesAvailable),
+      futbinSalesEvidenceScore: preferObserved(candidateEvidence?.futbinSalesEvidenceScore, card?.futbinSalesEvidenceScore, candidateSalesAvailable),
+      futbinLatestSoldAt: candidateSalesAvailable
+        ? (candidateEvidence?.futbinLatestSoldAt || card?.futbinLatestSoldAt || null)
+        : (card?.futbinLatestSoldAt || candidateEvidence?.futbinLatestSoldAt || null)
+    };
 
     let popularityScore = Number.isFinite(card.popularityScore) ? Number(card.popularityScore) : null;
     let demandEvidenceScore = Number.isFinite(card.demandEvidenceScore) ? Number(card.demandEvidenceScore) : popularityScore;
