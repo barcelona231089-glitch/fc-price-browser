@@ -157,6 +157,7 @@ function publicGenerationJob(job) {
     startedAt: job.startedAt || null,
     finishedAt: job.finishedAt || null,
     error: job.error || null,
+    persistenceMode: job.persistenceMode || null,
     result: job.status === 'DONE' ? job.result : null
   };
 }
@@ -220,24 +221,30 @@ async function startGenerationJob(payload) {
     startedAt: null,
     finishedAt: null,
     error: null,
+    persistenceMode: 'LOCAL_FILE',
     result: null
   };
   generationJobs.set(job.jobId, job);
   generationRuntime.activeJobId = job.jobId;
   generationRuntime.activeJob = job;
   persistGenerationJob(job);
-  // Persist before returning the job ID. On free/container hosting the status
-  // poll may hit another worker, where only PostgreSQL can recover the job.
+  // Local file + process memory are sufficient to run and poll a generation
+  // job on the active UV runtime. PostgreSQL is an optional durability layer,
+  // never a blocker for creating a FUTBIN-only list.
   try {
     const saved = await saveUvGenerationJob(job);
-    if (!saved) throw new Error('PostgreSQL job persistence unavailable');
-    console.log('[UV-GEN] queued job persisted', { jobId: job.jobId });
+    if (saved) {
+      job.persistenceMode = 'POSTGRES_AND_LOCAL';
+      persistGenerationJob(job);
+      console.log('[UV-GEN] queued job persisted', { jobId: job.jobId, mode: job.persistenceMode });
+    } else {
+      console.warn('[UV-GEN] PostgreSQL unavailable; continuing with local job persistence', { jobId: job.jobId });
+    }
   } catch (error) {
-    console.error('[UV-GEN] queued job persistence failed', { jobId: job.jobId, error: error?.message || String(error) });
-    generationJobs.delete(job.jobId);
-    if (generationRuntime.activeJobId === job.jobId) generationRuntime.activeJobId = null;
-    if (generationRuntime.activeJob?.jobId === job.jobId) generationRuntime.activeJob = null;
-    throw new Error('Generate-Job konnte nicht in PostgreSQL gespeichert werden.');
+    console.warn('[UV-GEN] PostgreSQL job persistence unavailable; continuing locally', {
+      jobId: job.jobId,
+      error: error?.message || String(error)
+    });
   }
 
   setImmediate(async () => {
