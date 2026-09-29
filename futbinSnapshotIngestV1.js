@@ -13,8 +13,28 @@ const FALLBACK_FILE = String(process.env.FUTBIN_SNAPSHOT_FALLBACK_FILE
 const runtimeStore = {
   loaded: false, rows: new Map(), lastIngestAt: null,
   fallbackFilePersisted: false, fallbackFileError: null,
-  databaseReachable: null, databaseError: null
+  databaseReachable: null, databaseError: null, databaseRetryAfter: 0
 };
+
+const DATABASE_RETRY_MS = Math.max(15_000, Number(process.env.FUTBIN_SNAPSHOT_DB_RETRY_MS || 60_000));
+
+function markDatabaseSuccess() {
+  runtimeStore.databaseReachable = true;
+  runtimeStore.databaseError = null;
+  runtimeStore.databaseRetryAfter = 0;
+}
+
+function markDatabaseFailure(error) {
+  runtimeStore.databaseReachable = false;
+  runtimeStore.databaseError = safeError(error);
+  runtimeStore.databaseRetryAfter = Date.now() + DATABASE_RETRY_MS;
+}
+
+function shouldTryDatabase(hasRuntimeFallback = false) {
+  if (!hasRuntimeFallback) return true;
+  if (runtimeStore.databaseReachable !== false) return true;
+  return Date.now() >= Number(runtimeStore.databaseRetryAfter || 0);
+}
 
 function safeError(error) {
   return String(error?.message || error || 'UNKNOWN').slice(0, 500);
@@ -279,11 +299,9 @@ export async function ingestFutbinSnapshot(pool, rows = []) {
           sales_evidence = COALESCE(EXCLUDED.sales_evidence, ${TABLE}.sales_evidence)`, values);
       dbInserted = result.rowCount || 0;
       dbPersisted = true;
-      runtimeStore.databaseReachable = true;
-      runtimeStore.databaseError = null;
+      markDatabaseSuccess();
     } catch (error) {
-      runtimeStore.databaseReachable = false;
-      runtimeStore.databaseError = safeError(error);
+      markDatabaseFailure(error);
     }
   }
 
@@ -305,7 +323,7 @@ export async function ingestFutbinSnapshot(pool, rows = []) {
 export async function latestFutbinSnapshots(pool, { limit = 250, evidenceOnly = false } = {}) {
   const safeLimit = Math.max(1, Math.min(500, Number(limit) || 250));
   const fallback = runtimeRows({ limit: safeLimit, evidenceOnly });
-  if (!pool?.query) return fallback;
+  if (!pool?.query || !shouldTryDatabase(fallback.length > 0)) return fallback;
 
   try {
     await ensureFutbinSnapshotTable(pool);
@@ -331,7 +349,7 @@ export async function latestFutbinSnapshotsForIds(pool, ids = [], { maxAgeSecond
   const cleanIds = [...new Set((Array.isArray(ids) ? ids : []).map(positiveInt).filter(Boolean))].slice(0, 500);
   if (!cleanIds.length) return [];
   const fallback = runtimeRows({ limit: cleanIds.length, ids: cleanIds, maxAgeSeconds });
-  if (!pool?.query) return fallback;
+  if (!pool?.query || !shouldTryDatabase(fallback.length > 0)) return fallback;
 
   try {
     await ensureFutbinSnapshotTable(pool);
@@ -372,8 +390,7 @@ export async function futbinSnapshotHealth(pool) {
       const latest = [x.latest, runtimeLatest].filter(Boolean)
         .sort((a, b) => Date.parse(b) - Date.parse(a))[0] || null;
       const age = latest ? Math.round((Date.now() - new Date(latest).getTime()) / 1000) : null;
-      runtimeStore.databaseReachable = true;
-      runtimeStore.databaseError = null;
+      markDatabaseSuccess();
       return {
         configured: true, databaseConfigured: true, databaseReachable: true,
         storageMode: 'POSTGRES+RUNTIME_FALLBACK',
@@ -388,8 +405,7 @@ export async function futbinSnapshotHealth(pool) {
         fresh: Number.isFinite(age) && age <= 5400
       };
     } catch (error) {
-      runtimeStore.databaseReachable = false;
-      runtimeStore.databaseError = safeError(error);
+      markDatabaseFailure(error);
     }
   }
 
