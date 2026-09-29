@@ -31,6 +31,7 @@ const PROFILE_DIR = process.env.FUTBIN_BRAVE_COLLECTOR_PROFILE
 
 let cursor = 0;
 let cycleCount = 0;
+let targetRating = 82;
  mkdirSync(LOG_DIR, { recursive: true });
 
 function nowIso() {
@@ -44,7 +45,7 @@ function log(message, extra = null) {
 
 function writeStatus(status) {
   writeFileSync(STATE_FILE, JSON.stringify({
-    version: "1.2.0",
+    version: "1.3.0",
     snapshotHost: SNAPSHOT_HOST,
     port: PORT,
     intervalMinutes: Math.round(INTERVAL_MS / 60_000),
@@ -239,16 +240,49 @@ function releaseLock() {
 }
 
 async function loadCollectorTargets() {
-  const rows = Object.entries(FUTBIN_FC27_EA_TO_ID)
-    .filter(([, futbinId]) => Number(futbinId) > 0)
-    .map(([eaId, futbinId]) => ({
-      eaId,
-      futbinId: Number(futbinId),
-      futbinOnlyTarget: true
-    }));
-  if (!rows.length) throw new Error("FUTBIN_TARGETS_UNAVAILABLE");
-  log("futbin-only-targets", { count: rows.length });
-  return rows;
+  for (let offset = 0; offset < 18; offset += 1) {
+    const rating = 82 + ((targetRating - 82 + offset) % 18);
+    const url = `https://www.futbin.org/futbin/api/27/getFilteredPlayers?platform=PS&rating=${rating}-${rating}&sort=rating&order=desc&page=1`;
+    let payload;
+    try {
+      payload = await fetchJson(url, {
+        headers: { accept: "application/json", "user-agent": "Mozilla/5.0" }
+      }, 20_000);
+    } catch (error) {
+      log("futbin-target-api-error", { rating, error: String(error?.message || error) });
+      continue;
+    }
+
+    const rows = (Array.isArray(payload?.data) ? payload.data : [])
+      .map(row => {
+        const eaId = String(row?.resource_id || row?.Player_Resource || row?.playerid || "");
+        const futbinId = Number(row?.ID || row?.id || 0);
+        const overall = Number(row?.rating || 0);
+        const livePrice = Number(row?.ps_LCPrice || 0);
+        return {
+          eaId,
+          futbinId,
+          name: row?.playername || row?.name || row?.common_name || null,
+          overall,
+          rating: overall,
+          cardType: row?.rareTypeName || null,
+          futbinOnlyTarget: true,
+          livePrice
+        };
+      })
+      .filter(row => row.eaId && row.futbinId > 0)
+      .filter(row => row.overall === rating && row.overall >= 82 && row.overall <= 99)
+      .filter(row => Number(FUTBIN_FC27_EA_TO_ID[row.eaId] || 0) === row.futbinId)
+      .filter(row => row.livePrice > 0);
+
+    if (rows.length) {
+      targetRating = rating;
+      log("futbin-only-filtered-targets", { rating, count: rows.length });
+      return rows;
+    }
+  }
+
+  throw new Error("FUTBIN_FILTERED_TARGETS_UNAVAILABLE");
 }
 function snapshotRowsFromResults(cards, results) {
   const rows = [];
@@ -307,6 +341,8 @@ export async function runCollectorCycle() {
     const targetRows = await loadCollectorTargets();
     const selection = selectCollectorCards(targetRows, { maxCards: MAX_CARDS, cursor });
     cursor = selection.nextCursor;
+    const usedTargetRating = targetRating;
+    const nextTargetRating = usedTargetRating >= 99 ? 82 : usedTargetRating + 1;
 
     if (!selection.cards.length) {
       const status = { ok: true, cycleCount, startedAt, finishedAt: nowIso(), eligibleCount: selection.eligibleCount, selected: 0, inserted: 0, nextCursor: cursor, browserClosedAfterCycle: CLOSE_AFTER_CYCLE, reason: "NO_ELIGIBLE_CARDS" };
@@ -373,6 +409,8 @@ export async function runCollectorCycle() {
       startedAt,
       finishedAt: nowIso(),
       eligibleCount: selection.eligibleCount,
+      targetRating: usedTargetRating,
+      nextTargetRating,
       selected: selection.cards.length,
       observedRows: rows.length,
       inserted: Number(pushed?.inserted || 0),
@@ -422,6 +460,7 @@ async function main() {
   acquireLock();
   const previous = readStatus();
   cursor = Math.max(0, Number(previous?.nextCursor || 0));
+  targetRating = Math.max(82, Math.min(99, Number(previous?.nextTargetRating || 82)));
 
   const cleanup = () => {
     releaseLock();
