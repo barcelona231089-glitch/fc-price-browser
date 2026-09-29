@@ -25,12 +25,26 @@ const finite = v => v !== null && v !== '' && v !== undefined && Number.isFinite
 
 async function loadStatus(){
   try{
-    const r = await fetch('/api/uv/status'); const s = await r.json();
+    const [statusResponse, evidenceResponse] = await Promise.all([
+      fetch('/api/uv/status', {cache:'no-store'}),
+      fetch('/api/futbin-fc27-latest?limit=50&evidenceOnly=false', {cache:'no-store'})
+    ]);
+    const s = await statusResponse.json();
+    const evidence = evidenceResponse.ok ? await evidenceResponse.json() : { rows: [] };
+    const evidenceRows = Array.isArray(evidence?.rows) ? evidence.rows : [];
+    const gamesCount = evidenceRows.filter(row => Number(row?.gamesPlayedConsole || row?.gamesPlayedPc) > 0).length;
+    const listingsCount = evidenceRows.filter(row => Number(row?.salesEvidence?.listedSampleCount || 0) > 0).length;
+    const soldCount = evidenceRows.filter(row =>
+      Number(row?.salesEvidence?.soldSampleCount || 0) >= 2 &&
+      [row?.salesEvidence?.soldPriceMedian, row?.salesEvidence?.soldPriceP25, row?.salesEvidence?.soldPriceP75, row?.salesEvidence?.soldPriceMode]
+        .some(value => Number(value) > 0)
+    ).length;
     const badge = $('#statusBadge');
-    const fullStatus = `FC${s.gameYear} | FUTBIN PRIMARY ${s.currentCapabilities.futbinPrimaryPrices?'OK':'NO'} | DB ${s.databaseConfigured?'OK':'NO'} | Games ${s.currentCapabilities.pgpGames?'OK':'NO'} | Sales ${s.currentCapabilities.playerSalesHistory?'OK':'NO'} | Popular ${s.currentCapabilities.popularPlayers?'OK':'NO'} | v${s.version}`;
-    badge.textContent = `FC${s.gameYear} | FUTBIN PRIMARY ${s.currentCapabilities.futbinPrimaryPrices?'OK':'NO'} | DB ${s.databaseConfigured?'OK':'NO'} | Games ${s.currentCapabilities.pgpGames?'OK':'NO'} | Sales ${s.currentCapabilities.playerSalesHistory?'OK':'NO'} | Popular ${s.currentCapabilities.popularPlayers?'OK':'NO'} | v${s.version}`;
+    const primaryOk = s?.currentCapabilities?.futbinPrimaryPrices === true;
+    const fullStatus = `FC${s.gameYear} | FUTBIN PRIMARY ${primaryOk?'OK':'NO'} | Games ${gamesCount?'OK':'NO'} (${gamesCount}) | Listings ${listingsCount?'OK':'NO'} (${listingsCount}) | Sold ${soldCount?'OK':'NO'} (${soldCount}) | v${s.version}`;
+    badge.textContent = fullStatus;
     badge.title = fullStatus;
-    badge.classList.add('good');
+    badge.classList.toggle('good', primaryOk && gamesCount > 0 && listingsCount > 0 && soldCount > 0);
   }catch{ $('#statusBadge').textContent='Status nicht erreichbar'; }
 }
 
@@ -551,7 +565,7 @@ recheckBtn.addEventListener('click', async()=>{
   rebalanceBtn.disabled=true;
   const oldText=recheckBtn.textContent;
   recheckBtn.textContent='Prüfe live...';
-  notice.textContent=`Live-Prüfung für Liste #${lastListId} startet... FUTBIN Preis, Games, Sales History, Popularität, PostgreSQL-Historie, Risiko und Profit werden neu bewertet.`;
+  notice.textContent=`Live-Prüfung für Liste #${lastListId} startet... FUTBIN Preis, Games, Listings, echte Verkaufspreise, PostgreSQL-Historie, Risiko und Profit werden neu bewertet.`;
   notice.classList.remove('hidden');
   $('#tableSub').textContent=`Live-Recheck für Liste #${lastListId} startet...`;
   try{
