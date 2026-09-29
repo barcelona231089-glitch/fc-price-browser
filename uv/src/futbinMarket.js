@@ -16,7 +16,9 @@ function applySalesEvidence(card, raw) {
     const v = Number(e[key]);
     return Number.isFinite(v) ? v : null;
   };
+  card.futbinSalesRowCount = n('rowCount') ?? 0;
   card.futbinSoldSampleCount = n('soldSampleCount') ?? 0;
+  card.futbinListedSampleCount = n('listedSampleCount') ?? 0;
   card.futbinUnsoldSampleCount = n('unsoldSampleCount') ?? 0;
   card.futbinSoldPriceMedian = n('soldPriceMedian');
   card.futbinSoldPriceP25 = n('soldPriceP25');
