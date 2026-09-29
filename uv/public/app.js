@@ -188,7 +188,7 @@ function signalText(c){
   if(Number.isFinite(c.priceActivityScore)) out.push(`Aktivität ${Number(c.priceActivityScore).toFixed(0)}`);
   if(c.futbinPrice) out.push('2 Quellen');
   if(finite(c.futbinGamesCount)) out.push(`FUTBIN Games ${coins(c.futbinGamesCount)}`);
-  if(finite(c.futbinPopularRank)) out.push(`FUTBIN Popular #${coins(c.futbinPopularRank)}`);
+  if(Number(c.futbinListedSampleCount||0)>0) out.push(`FUTBIN Listings n=${c.futbinListedSampleCount}`);
   if(Number(c.futbinSoldSampleCount||0)>0) out.push(`FUTBIN Sold n=${c.futbinSoldSampleCount}${finite(c.futbinSoldPriceMedian)?`  |  Median ${coins(c.futbinSoldPriceMedian)}`:''}`);
   if(finite(c.futbinSaleTargetSupportScore)) out.push(`Realpreis-Support ${Number(c.futbinSaleTargetSupportScore).toFixed(0)}/100`);
   if((c.learning?.evalCount||0)>0) out.push(`Lernen ${Number(c.learningScore||50).toFixed(0)}/100  |  ${c.learning.horizonHours}h n=${c.learning.evalCount}`);
@@ -257,7 +257,7 @@ function renderDetail(c, pricing, status, quality){
       ${detailMetric('Live-Drift',liveDrift)}
       ${detailMetric('Risiko-Penalty',`${riskPenalty}/100`)}
       ${detailMetric('FUTBIN Games',finite(c.futbinGamesCount)?coins(c.futbinGamesCount):'-')}
-      ${detailMetric('FUTBIN Popular-Rank',finite(c.futbinPopularRank)?`#${coins(c.futbinPopularRank)}`:'-')}
+      ${detailMetric('FUTBIN Listings',Number(c.futbinListedSampleCount||0)>0?`n=${c.futbinListedSampleCount}`:'-')}
       ${detailMetric('FUTBIN Sold-Sample',Number(c.futbinSoldSampleCount||0)>0?`n=${c.futbinSoldSampleCount}`:'-')}
       ${detailMetric('Sold-Median',finite(c.futbinSoldPriceMedian)?`${coins(c.futbinSoldPriceMedian)} Coins`:'-')}
       ${detailMetric('Sold P25-P75',finite(c.futbinSoldPriceP25)&&finite(c.futbinSoldPriceP75)?`${coins(c.futbinSoldPriceP25)}-${coins(c.futbinSoldPriceP75)} Coins`:'-')}
