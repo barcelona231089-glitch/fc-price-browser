@@ -1,7 +1,4 @@
 import express from 'express';
-import { uvRouter, initUvBrain, shutdownUvBrain, getUvRuntimeStatus } from './uv/uvApp.js';
-import { pool as dbPool } from './uv/src/db.js';
-import { validIngestToken, ingestFutbinSnapshot, latestFutbinSnapshots, futbinSnapshotHealth } from './futbinSnapshotIngestV1.js';
 
 if (typeof process.loadEnvFile === 'function') {
   try {
@@ -15,21 +12,36 @@ const app = express();
 const port = Number(process.env.PORT || 3000);
 app.use(express.json({ limit: '2mb' }));
 
+let uvRouter = null;
+let initUvBrain = null;
+let shutdownUvBrain = async () => {};
+let getUvRuntimeStatus = () => ({ ok: true, started: false, version: '2.15.21', gameYear: 27, runtimeMode: 'STARTING', nativeGraphVerified: true });
+let dbPool = null;
+let validIngestToken = () => false;
+let ingestFutbinSnapshot = async () => ({ inserted: 0, received: 0 });
+let latestFutbinSnapshots = async () => [];
+let futbinSnapshotHealth = async () => ({ configured: true, fresh: false, recentRows: 0 });
+
+let modulesReady = false;
+let modulesError = null;
+
 app.get('/healthz', (req, res) => {
   const status = getUvRuntimeStatus();
-  res.status(status?.ok ? 200 : 503).json({
-    ok: Boolean(status?.ok),
+  res.status(200).json({
+    ok: true,
+    ready: modulesReady && !modulesError,
     service: 'fc-uv-app',
     role: 'UV_ONLY',
-    version: status?.version || null,
-    gameYear: status?.gameYear || null,
-    runtimeMode: status?.runtimeMode || null,
+    version: status?.version || '2.15.21',
+    gameYear: status?.gameYear || 27,
+    runtimeMode: modulesReady ? (status?.runtimeMode || 'ACTIVE') : 'STARTING',
     generationMode: 'DIRECT',
-    sourceMode: status?.nativeGraphVerified ? 'NATIVE_UV_VERIFIED' : 'UV_GRAPH_UNVERIFIED',
+    sourceMode: modulesReady ? (status?.nativeGraphVerified ? 'NATIVE_UV_VERIFIED' : 'UV_GRAPH_UNVERIFIED') : 'BOOTSTRAPPING',
     productionLoaderPresent: Boolean(status?.productionLoaderPresent),
     standaloneGraphTagged: Boolean(status?.standaloneGraphTagged),
-    nativeGraphVerified: Boolean(status?.nativeGraphVerified),
-    legacyUvLoaderPatches: status?.nativeGraphVerified ? false : null,
+    nativeGraphVerified: modulesReady ? Boolean(status?.nativeGraphVerified) : null,
+    legacyUvLoaderPatches: modulesReady && status?.nativeGraphVerified ? false : null,
+    moduleLoadError: modulesError ? String(modulesError?.message || modulesError) : null,
     ingestTokenConfigured: Boolean(process.env.FUTBIN_SNAPSHOT_INGEST_TOKEN)
   });
 });
@@ -132,9 +144,6 @@ app.get('/api/uv/preflight', async (req, res) => {
   }
 });
 
-app.use(uvRouter);
-app.get('/', (req, res) => res.redirect('/uv'));
-
 let server = null;
 let shuttingDown = false;
 
@@ -158,27 +167,48 @@ async function shutdown(signal) {
 process.once('SIGTERM', () => shutdown('SIGTERM').catch(console.error));
 process.once('SIGINT', () => shutdown('SIGINT').catch(console.error));
 
-// Open the HTTP port first so constrained/free hosts can complete their health probe.
-// UV initialization continues immediately afterwards; /healthz reports readiness.
+// Bind the host port BEFORE importing the heavy UV/DB/FUTBIN graph.
+// Free/constrained hosts can therefore discover the service immediately even
+// while PostgreSQL or market modules are still initializing.
 server = app.listen(port, '0.0.0.0', () => {
-  console.log('[UV-STANDALONE] port-open', { port, host: '0.0.0.0', role: 'UV_ONLY' });
+  console.log('[UV-STANDALONE] port-open', { port, host: '0.0.0.0', role: 'UV_ONLY', phase: 'BOOTSTRAP' });
 });
 
 try {
+  const [uvModule, dbModule, snapshotModule] = await Promise.all([
+    import('./uv/uvApp.js'),
+    import('./uv/src/db.js'),
+    import('./futbinSnapshotIngestV1.js')
+  ]);
+
+  uvRouter = uvModule.uvRouter;
+  initUvBrain = uvModule.initUvBrain;
+  shutdownUvBrain = uvModule.shutdownUvBrain;
+  getUvRuntimeStatus = uvModule.getUvRuntimeStatus;
+  dbPool = dbModule.pool;
+  validIngestToken = snapshotModule.validIngestToken;
+  ingestFutbinSnapshot = snapshotModule.ingestFutbinSnapshot;
+  latestFutbinSnapshots = snapshotModule.latestFutbinSnapshots;
+  futbinSnapshotHealth = snapshotModule.futbinSnapshotHealth;
+
+  app.use(uvRouter);
+  app.get('/', (req, res) => res.redirect('/uv'));
+
   await initUvBrain({ active: true });
+  modulesReady = true;
   const snapshotHealth = await futbinSnapshotHealth(dbPool);
   console.log('[UV-STANDALONE] FUTBIN snapshot health', snapshotHealth);
-} catch (error) {
-  console.error('[UV-STANDALONE] init failed:', error?.stack || error?.message || error);
-}
 
-if (server) {
   const status = getUvRuntimeStatus();
   console.log('[UV-STANDALONE] listening', {
     port,
     role: 'UV_ONLY',
     version: status?.version,
     gameYear: status?.gameYear,
-    runtimeMode: status?.runtimeMode
+    runtimeMode: status?.runtimeMode,
+    nativeGraphVerified: status?.nativeGraphVerified
   });
+} catch (error) {
+  modulesError = error;
+  console.error('[UV-STANDALONE] module/init failed:', error?.stack || error?.message || error);
 }
