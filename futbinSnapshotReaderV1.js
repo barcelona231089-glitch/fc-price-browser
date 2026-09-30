@@ -1,6 +1,5 @@
 import { FUTBIN_FC27_EA_TO_ID } from "./futbinIdMapFc27.js";
 import { latestFutbinSnapshotsForIds } from "./futbinSnapshotIngestV1.js";
-import { compareFutggFutbin } from "./futbinSecondaryIntelligenceV1.js";
 
 const state = { runs: 0, enriched: 0, salesEvidenceEnriched: 0, lastRunAt: null, lastResult: null };
 
@@ -97,9 +96,8 @@ export async function enrichRowsWithSnapshotFutbinBrain(rows = [], options = {})
     row.futbinProvider = `FUTBIN_FC27_SNAPSHOT_${platform.toUpperCase()}`;
     row.futbinCheckedAt = new Date(hit.observedAt).toISOString();
     row.futbinDiffPct = diffPct;
-    const agreement = compareFutggFutbin(base, price);
-    row.futbinCrossCheck = agreement.ok ? agreement.agreement : (abs == null ? "OBSERVED" : abs >= outlier ? "OUTLIER" : abs >= maxDiff ? "DIVERGENCE" : "MATCH");
-    row.futbinTrustMultiplier = agreement.ok ? agreement.trustMultiplier : 1;
+    row.futbinCrossCheck = abs == null ? "OBSERVED" : abs >= outlier ? "OUTLIER" : abs >= maxDiff ? "DIVERGENCE" : "MATCH";
+    row.futbinTrustMultiplier = row.futbinCrossCheck === "OUTLIER" ? 0.75 : row.futbinCrossCheck === "DIVERGENCE" ? 0.90 : 1;
     row.futbinMatchConfidence = Math.round(100 * row.futbinTrustMultiplier);
     row.futbinSnapshotFresh = true;
     enriched += 1;
