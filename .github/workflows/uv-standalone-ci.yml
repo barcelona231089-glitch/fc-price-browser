@@ -36,5 +36,8 @@ jobs:
       - name: Verify native module graph loads
         run: node -e "import('./uv/uvApp.js').then(m=>{if(typeof m.getUvRuntimeStatus!=='function')process.exit(2)})"
 
+      - name: Verify standalone query import stays native through production loader
+        run: node --loader ./v1066Loader.mjs -e "process.argv.push('./uvStandalone.mjs'); import('./uv/uvApp.js?uv-standalone').then(m=>{if(typeof m.getUvRuntimeStatus!=='function')process.exit(2)})"
+
       - name: Run FUTBIN and standalone regression tests
         run: node --test uv/test/futbinEvidence.test.js uv/test/standaloneRuntimeContract.test.js
