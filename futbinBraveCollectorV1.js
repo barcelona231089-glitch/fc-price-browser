@@ -46,7 +46,7 @@ function log(message, extra = null) {
 
 function writeStatus(status) {
   writeFileSync(STATE_FILE, JSON.stringify({
-    version: "1.3.0",
+    version: "1.4.0",
     snapshotHost: SNAPSHOT_HOST,
     port: PORT,
     intervalMinutes: Math.round(INTERVAL_MS / 60_000),
@@ -186,31 +186,43 @@ export function selectCollectorCards(rows = [], options = {}) {
   const eligible = (Array.isArray(rows) ? rows : [])
     .filter(row => row?.futbinOnlyTarget === true || Number(row?.overall || row?.rating || 0) >= 82)
     .filter(row => Number(row?.futbinId || FUTBIN_FC27_EA_TO_ID[String(row?.eaId)]) > 0)
+    .filter(row => Number(row?.livePrice || 0) > 0)
     .sort((a, b) =>
-      Number(b?.overall || b?.rating || 0) - Number(a?.overall || a?.rating || 0) ||
-      Number(a?.futbinId || FUTBIN_FC27_EA_TO_ID[String(a?.eaId)] || 0) - Number(b?.futbinId || FUTBIN_FC27_EA_TO_ID[String(b?.eaId)] || 0) ||
-      Number(a?.eaId || 0) - Number(b?.eaId || 0)
+      Number(a.livePrice) - Number(b.livePrice) ||
+      Number(a?.overall || a?.rating || 0) - Number(b?.overall || b?.rating || 0) ||
+      Number(a?.futbinId || FUTBIN_FC27_EA_TO_ID[String(a?.eaId)] || 0) - Number(b?.futbinId || FUTBIN_FC27_EA_TO_ID[String(b?.eaId)] || 0)
     );
 
+  // One card from each live-price slice keeps every collector cycle useful for
+  // small, medium and large budgets instead of collecting twelve cards from one
+  // rating/price neighborhood. Cursor rotates the pick inside each slice.
   const cards = [];
-  if (eligible.length) {
-    for (let i = 0; i < Math.min(maxCards, eligible.length); i += 1) {
-      const row = eligible[(startCursor + i) % eligible.length];
-      cards.push({
-        eaId: String(row.eaId),
-        futbinId: Number(row.futbinId || FUTBIN_FC27_EA_TO_ID[String(row.eaId)]),
-        name: row.name || null,
-        overall: Number(row.overall || row.rating || 0) || null,
-        cardType: row.cardType || row.rarityName || null
-      });
-    }
+  const take = Math.min(maxCards, eligible.length);
+  for (let i = 0; i < take; i += 1) {
+    const start = Math.floor((i * eligible.length) / take);
+    const endExclusive = Math.max(start + 1, Math.floor(((i + 1) * eligible.length) / take));
+    const span = Math.max(1, endExclusive - start);
+    const idx = start + ((startCursor + i) % span);
+    const row = eligible[Math.min(eligible.length - 1, idx)];
+    cards.push({
+      eaId: String(row.eaId),
+      futbinId: Number(row.futbinId || FUTBIN_FC27_EA_TO_ID[String(row.eaId)]),
+      name: row.name || null,
+      overall: Number(row.overall || row.rating || 0) || null,
+      cardType: row.cardType || row.rarityName || null,
+      targetPriceConsole: Number(row.livePrice) || null
+    });
   }
 
-  const nextCursor = eligible.length
-    ? (startCursor + Math.max(1, cards.length)) % eligible.length
-    : 0;
-
-  return { cards, eligibleCount: eligible.length, nextCursor };
+  const nextCursor = eligible.length ? startCursor + 1 : 0;
+  return {
+    cards,
+    eligibleCount: eligible.length,
+    nextCursor,
+    priceMin: eligible.length ? Number(eligible[0].livePrice) : null,
+    priceMax: eligible.length ? Number(eligible[eligible.length - 1].livePrice) : null,
+    ratingCoverage: [...new Set(cards.map(card => card.overall).filter(Number.isFinite))].sort((a, b) => a - b)
+  };
 }
 
 function acquireLock() {
@@ -241,8 +253,15 @@ function releaseLock() {
 }
 
 async function loadCollectorTargets() {
-  for (let offset = 0; offset < 18; offset += 1) {
-    const rating = 82 + ((targetRating - 82 + offset) % 18);
+  const allRows = [];
+  const ratingCounts = {};
+  const ratings = Array.from({ length: 18 }, (_, offset) => 82 + ((targetRating - 82 + offset) % 18));
+
+  // The filtered JSON endpoint is lightweight. Scan every FC27 rating once per
+  // 30-minute cycle, then spend the expensive browser work only on MAX_CARDS
+  // price-stratified targets. This keeps budget coverage broad without adding
+  // extra player-detail/sales page traffic.
+  for (const rating of ratings) {
     const url = `https://www.futbin.org/futbin/api/27/getFilteredPlayers?platform=PS&rating=${rating}-${rating}&sort=rating&order=desc&page=1`;
     let payload;
     try {
@@ -259,7 +278,6 @@ async function loadCollectorTargets() {
         const eaId = String(row?.resource_id || row?.Player_Resource || row?.playerid || "");
         const futbinId = Number(row?.ID || row?.id || 0);
         const overall = Number(row?.rating || 0);
-        const mappedId = Number(FUTBIN_FC27_EA_TO_ID[eaId] || 0);
         const livePrice = Number(row?.ps_LCPrice || 0);
         return {
           eaId,
@@ -278,13 +296,21 @@ async function loadCollectorTargets() {
       .filter(row => row.livePrice > 0);
 
     if (rows.length) {
-      targetRating = rating;
-      log("futbin-only-filtered-targets", { rating, count: rows.length });
-      return rows;
+      ratingCounts[String(rating)] = rows.length;
+      allRows.push(...rows);
     }
   }
 
-  throw new Error("FUTBIN_FILTERED_TARGETS_UNAVAILABLE");
+  if (!allRows.length) throw new Error("FUTBIN_FILTERED_TARGETS_UNAVAILABLE");
+  log("futbin-mixed-rating-targets", {
+    ratingsScanned: ratings.length,
+    ratingsWithRows: Object.keys(ratingCounts).length,
+    total: allRows.length,
+    priceMin: Math.min(...allRows.map(row => row.livePrice)),
+    priceMax: Math.max(...allRows.map(row => row.livePrice)),
+    ratingCounts
+  });
+  return allRows;
 }
 function snapshotRowsFromResults(cards, results) {
   const rows = [];
@@ -413,6 +439,10 @@ export async function runCollectorCycle() {
       eligibleCount: selection.eligibleCount,
       targetRating: usedTargetRating,
       nextTargetRating,
+      targetMode: "MIXED_82_99_PRICE_STRATIFIED",
+      ratingsCovered: selection.ratingCoverage,
+      targetPriceMin: selection.priceMin,
+      targetPriceMax: selection.priceMax,
       selected: selection.cards.length,
       observedRows: rows.length,
       inserted: Number(pushed?.inserted || 0),
