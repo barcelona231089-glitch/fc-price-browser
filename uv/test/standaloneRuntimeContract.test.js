@@ -69,11 +69,13 @@ test('standalone FUTBIN merge accepts newer real evidence when it is actually av
   assert.equal(merged.futbinSoldPriceMedian, 1100);
 });
 
-test('standalone runtime bypasses legacy UV loader patches', () => {
+test('standalone runtime bypasses legacy UV loader patches including query-string imports', () => {
   const loader = readFileSync(new URL('../../v1066Loader.mjs', import.meta.url), 'utf8');
-  const bypass = loader.indexOf("dedicatedUvRuntime && (normalizedUrl.endsWith('/uv/uvApp.js') || normalizedUrl.includes('/uv/src/'))");
+  const queryStrip = loader.indexOf("normalizedPath = normalizedUrl.split(/[?#]/, 1)[0]");
+  const bypass = loader.indexOf("dedicatedUvRuntime && (normalizedPath.endsWith('/uv/uvApp.js') || normalizedPath.includes('/uv/src/'))");
   const legacyDbPatch = loader.indexOf("if (url.endsWith('/uv/src/db.js'))");
-  assert.ok(bypass >= 0, 'native standalone bypass marker missing');
+  assert.ok(queryStrip >= 0, 'query/hash stripping for module URL missing');
+  assert.ok(bypass > queryStrip, 'native standalone bypass marker missing');
   assert.ok(legacyDbPatch > bypass, 'legacy UV patch executes before standalone bypass');
 });
 
