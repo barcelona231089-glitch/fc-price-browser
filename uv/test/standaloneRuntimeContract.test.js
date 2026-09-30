@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { mergeObservedFutbinEvidence } from '../src/futbin.js';
+import { buildCandidatePool } from '../src/uvEngine.js';
 
 test('standalone FUTBIN merge preserves collector Games, Listings and Sold evidence', () => {
   const card = {
@@ -81,4 +82,18 @@ test('standalone frontend has no legacy generate fetch interceptor', () => {
   assert.doesNotMatch(html, /generate-async-v2105\.js/);
   assert.doesNotMatch(html, /unsaved-live-v2108\.js/);
   assert.match(html, /app\.js\?v=2\.15\.18/);
+});
+
+
+test('100k thin FUTBIN pool keeps real affordable cards instead of filtering everything below an 8k slot cap', () => {
+  const cards = [
+    { eaId: 1, name: 'Litmanen', price: 68000, overall: 88 },
+    { eaId: 2, name: 'Zamorano', price: 88500, overall: 88 },
+    { eaId: 3, name: 'Nesta', price: 270000, overall: 89 }
+  ];
+  const built = buildCandidatePool(cards, 100000, 100);
+  assert.equal(built.thinPoolRescue, true);
+  assert.deepEqual(built.pool.map(card => card.eaId), [1, 2]);
+  assert.equal(built.minPrice, 68000);
+  assert.equal(built.maxPrice, 88500);
 });
