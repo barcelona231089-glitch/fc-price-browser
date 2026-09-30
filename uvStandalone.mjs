@@ -25,8 +25,11 @@ app.get('/healthz', (req, res) => {
     gameYear: status?.gameYear || null,
     runtimeMode: status?.runtimeMode || null,
     generationMode: 'DIRECT',
-    sourceMode: 'NATIVE_UV',
-    legacyUvLoaderPatches: false,
+    sourceMode: status?.nativeGraphVerified ? 'NATIVE_UV_VERIFIED' : 'UV_GRAPH_UNVERIFIED',
+    productionLoaderPresent: Boolean(status?.productionLoaderPresent),
+    standaloneGraphTagged: Boolean(status?.standaloneGraphTagged),
+    nativeGraphVerified: Boolean(status?.nativeGraphVerified),
+    legacyUvLoaderPatches: status?.nativeGraphVerified ? false : null,
     ingestTokenConfigured: Boolean(process.env.FUTBIN_SNAPSHOT_INGEST_TOKEN)
   });
 });
