@@ -1327,6 +1327,23 @@ function patchMarketHistory365V10694(source) {
   return { source: out, changed: out !== source };
 }
 
+export async function resolve(specifier, context, nextResolve) {
+  const resolved = await nextResolve(specifier, context);
+  const parentUrl = String(context?.parentURL || '').replace(/\\/g, '/');
+  const parentPath = parentUrl.split(/[?#]/, 1)[0];
+  const parentTagged = (() => {
+    try { return new URL(parentUrl).searchParams.has('uv-standalone'); } catch { return false; }
+  })();
+  const fromStandaloneEntry = parentPath.endsWith('/uvStandalone.mjs');
+
+  if ((fromStandaloneEntry || parentTagged) && String(resolved?.url || '').startsWith('file:')) {
+    const tagged = new URL(resolved.url);
+    tagged.searchParams.set('uv-standalone', '1');
+    return { ...resolved, url: tagged.href };
+  }
+  return resolved;
+}
+
 export async function load(url, context, defaultLoad) {
   const result = await defaultLoad(url, context, defaultLoad);
   if (result.format !== 'module') return result;
@@ -1341,7 +1358,10 @@ export async function load(url, context, defaultLoad) {
   // production-only drift between committed code and executed code.
   const normalizedUrl = String(url || '').replace(/\\/g, '/');
   const normalizedPath = normalizedUrl.split(/[?#]/, 1)[0];
-  const dedicatedUvRuntime = process.argv.some(arg => String(arg || '').replace(/\\/g, '/').split(/[?#]/, 1)[0].endsWith('/uvStandalone.mjs'));
+  const standaloneTagged = (() => {
+    try { return new URL(String(url || '')).searchParams.has('uv-standalone'); } catch { return false; }
+  })();
+  const dedicatedUvRuntime = standaloneTagged || process.argv.some(arg => String(arg || '').replace(/\\/g, '/').split(/[?#]/, 1)[0].endsWith('/uvStandalone.mjs'));
   if (dedicatedUvRuntime && (normalizedPath.endsWith('/uv/uvApp.js') || normalizedPath.includes('/uv/src/'))) {
     console.log('[ÜV] dedicated runtime: native UV source, all legacy UV loader patches bypassed:', normalizedPath.split('/').slice(-3).join('/'));
     return result;
