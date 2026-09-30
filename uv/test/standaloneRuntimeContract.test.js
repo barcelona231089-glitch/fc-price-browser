@@ -81,7 +81,7 @@ test('standalone frontend has no legacy generate fetch interceptor', () => {
   const html = readFileSync(new URL('../public/index.html', import.meta.url), 'utf8');
   assert.doesNotMatch(html, /generate-async-v2105\.js/);
   assert.doesNotMatch(html, /unsaved-live-v2108\.js/);
-  assert.match(html, /app\.js\?v=2\.15\.18/);
+  assert.match(html, /app\\.js\\?v=2\\.15\\.19/);
 });
 
 
