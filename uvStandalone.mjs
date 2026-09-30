@@ -24,6 +24,9 @@ app.get('/healthz', (req, res) => {
     version: status?.version || null,
     gameYear: status?.gameYear || null,
     runtimeMode: status?.runtimeMode || null,
+    generationMode: 'DIRECT',
+    sourceMode: 'NATIVE_UV',
+    legacyUvLoaderPatches: false,
     ingestTokenConfigured: Boolean(process.env.FUTBIN_SNAPSHOT_INGEST_TOKEN)
   });
 });
@@ -93,6 +96,36 @@ app.get('/api/futbin-fc27-latest', async (req, res) => {
     });
   } catch (error) {
     return res.status(500).json({ ok: false, error: String(error?.message || error) });
+  }
+});
+
+app.get('/api/uv/preflight', async (req, res) => {
+  try {
+    const platform = String(req.query?.platform || 'console').toLowerCase() === 'pc' ? 'pc' : 'console';
+    const rows = await latestFutbinSnapshots(dbPool, { limit: 100, evidenceOnly: true });
+    const usable = rows.filter(row => {
+      const price = Number(platform === 'pc' ? row?.pricePc : row?.priceConsole);
+      const games = Number(platform === 'pc' ? row?.gamesPlayedPc : row?.gamesPlayedConsole);
+      const sales = row?.salesEvidence || {};
+      const listings = Number(sales?.listedSampleCount || 0);
+      const sold = Number(sales?.soldSampleCount || 0);
+      const soldPriceObserved = [sales?.soldPriceP25, sales?.soldPriceMedian, sales?.soldPriceMode, sales?.soldPriceP75]
+        .some(value => Number(value) > 0);
+      return price > 0 && games > 0 && listings > 0 && sold >= 2 && soldPriceObserved;
+    });
+    return res.json({
+      ok: true,
+      ready: usable.length > 0,
+      gameYear: 27,
+      platform,
+      generationMode: 'DIRECT',
+      sourceMode: 'NATIVE_UV',
+      legacyUvLoaderPatches: false,
+      totalEvidenceRows: rows.length,
+      usableThreeSignalRows: usable.length
+    });
+  } catch (error) {
+    return res.status(500).json({ ok: false, ready: false, error: String(error?.message || error) });
   }
 });
 
