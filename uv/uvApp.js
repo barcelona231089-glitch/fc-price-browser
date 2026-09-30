@@ -21,6 +21,11 @@ import { enrichRowsWithSnapshotFutbinBrain } from '../futbinSnapshotReaderV1.js'
 
 export const uvRouter = express.Router();
 const UV_VERSION = '2.15.21';
+const UV_PRODUCTION_LOADER_PRESENT = process.execArgv.some(arg => String(arg || '').includes('v1066Loader.mjs'));
+const UV_STANDALONE_GRAPH_TAGGED = (() => {
+  try { return new URL(import.meta.url).searchParams.has('uv-standalone'); } catch { return false; }
+})();
+const UV_NATIVE_GRAPH_VERIFIED = !UV_PRODUCTION_LOADER_PRESENT || UV_STANDALONE_GRAPH_TAGGED;
 
 async function getUvMarketContext(platform, liveCards = []) {
   const futbinContext = await getFutbinMarketTrends(platform);
@@ -1799,6 +1804,9 @@ export function getUvRuntimeStatus() {
     runtimeMode: uvActive ? 'ACTIVE' : 'HA_STANDBY_READ_ONLY',
     version: UV_VERSION,
     gameYear: GAME_YEAR,
+    productionLoaderPresent: UV_PRODUCTION_LOADER_PRESENT,
+    standaloneGraphTagged: UV_STANDALONE_GRAPH_TAGGED,
+    nativeGraphVerified: UV_NATIVE_GRAPH_VERIFIED,
     database: isDbEnabled() ? 'PostgreSQL/shared-pool' : 'memory/no-db',
     sharedConsoleMarket: typeof sharedMarketProvider === 'function',
     sharedRuntimeGate: typeof sharedRuntimeProvider === 'function',
