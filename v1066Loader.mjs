@@ -1340,9 +1340,10 @@ export async function load(url, context, defaultLoad) {
   // only to the combined Trader-Brain server and were the root cause of
   // production-only drift between committed code and executed code.
   const normalizedUrl = String(url || '').replace(/\\/g, '/');
-  const dedicatedUvRuntime = process.argv.some(arg => String(arg || '').replace(/\\/g, '/').endsWith('/uvStandalone.mjs'));
-  if (dedicatedUvRuntime && (normalizedUrl.endsWith('/uv/uvApp.js') || normalizedUrl.includes('/uv/src/'))) {
-    console.log('[ÜV] dedicated runtime: native UV source, all legacy UV loader patches bypassed:', normalizedUrl.split('/').slice(-3).join('/'));
+  const normalizedPath = normalizedUrl.split(/[?#]/, 1)[0];
+  const dedicatedUvRuntime = process.argv.some(arg => String(arg || '').replace(/\\/g, '/').split(/[?#]/, 1)[0].endsWith('/uvStandalone.mjs'));
+  if (dedicatedUvRuntime && (normalizedPath.endsWith('/uv/uvApp.js') || normalizedPath.includes('/uv/src/'))) {
+    console.log('[ÜV] dedicated runtime: native UV source, all legacy UV loader patches bypassed:', normalizedPath.split('/').slice(-3).join('/'));
     return result;
   }
 
