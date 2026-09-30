@@ -1,0 +1,40 @@
+name: UV Standalone CI
+
+on:
+  push:
+    branches: [uv-deploy-fresh]
+  pull_request:
+    branches: [uv-deploy-fresh]
+
+jobs:
+  uv-standalone:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install runtime dependencies
+        run: npm install --ignore-scripts --no-audit --no-fund
+
+      - name: Syntax-check active UV runtime
+        run: |
+          node --check uvStandalone.mjs
+          node --check v1066Loader.mjs
+          node --check uv/uvApp.js
+          node --check uv/src/futbin.js
+          node --check uv/src/futbinMarket.js
+          node --check uv/src/futbinEvidence.js
+          node --check uv/src/uvEngine.js
+          node --check uv/src/candidatePipeline.js
+          node --check futbinSnapshotReaderV1.js
+          node --check futbinSnapshotIngestV1.js
+
+      - name: Verify native module graph loads
+        run: node -e "import('./uv/uvApp.js').then(m=>{if(typeof m.getUvRuntimeStatus!=='function')process.exit(2)})"
+
+      - name: Run FUTBIN and standalone regression tests
+        run: node --test uv/test/futbinEvidence.test.js uv/test/standaloneRuntimeContract.test.js
