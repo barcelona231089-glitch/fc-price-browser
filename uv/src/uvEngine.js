@@ -35,8 +35,8 @@ function targetProfitRange(buy) {
 
 /**
  * Conservative "buy now" ceiling. It never invents a snipe price miles below
- * the observed market. FUT.GG remains the primary anchor; a matching FUTBIN
- * price and our own recent history can only make the ceiling a little safer.
+ * the observed FUTBIN market. The current FUTBIN price is the primary anchor;
+ * our own recent history can only make the ceiling a little safer.
  */
 export function buildBuyPlan(card, history = null) {
   const live = Number(card?.price);
@@ -822,7 +822,7 @@ export function buildBudgetTierProfile(budget, count = 100) {
     softMaxPositionPct,
     specialTargetRatio,
     referenceMode: name.startsWith('FUTSTARZ_') ? 'observed-shape-soft-prior' : 'internal-budget-shape',
-    livePriceSource: 'FUT.GG'
+    livePriceSource: 'FUTBIN'
   };
 }
 
@@ -890,7 +890,7 @@ export function buildBudgetTierScore(card = {}, { budget = null, count = 100, ga
     tags.push('POSITION_SIZE_PENALTY');
   }
   if (ratio >= 0.75 && ratio <= 1.65) tags.push('CORE_PRICE_TIER');
-  if (usage > 0) tags.push('FUTGG_USAGE');
+  if (usage > 0) tags.push('OBSERVED_USAGE');
   if (card?.momentumHit === true) tags.push('MOMENTUM');
 
   score -= risk * 0.34;
@@ -2112,19 +2112,53 @@ export function portfolioCountForBudget(budget) {
 }
 
 export function buildCandidatePool(cards, budget, count = 100) {
-  const ideal = budget / count;
-  const tierProfile = buildBudgetTierProfile(budget, count);
+  const totalBudget = Math.max(0, Number(budget) || 0);
+  const targetCount = Math.max(1, Math.floor(Number(count) || 1));
+  const ideal = totalBudget / targetCount;
+  const tierProfile = buildBudgetTierProfile(totalBudget, targetCount);
+  const rows = Array.isArray(cards) ? cards : [];
+
   let minPrice = Math.max(150, ideal * tierProfile.candidateMinRatio);
-  let maxPrice = Math.min(budget * 0.075, ideal * tierProfile.candidateMaxRatio);
-  let pool = cards.filter(c => Number.isFinite(c.price) && c.price >= minPrice && c.price <= maxPrice);
-  if (pool.length < count * 3) {
-    // Safety/quality pool first, allocation second. Widen only the candidate
-    // universe when needed; do not lower the normal-card safety floors here.
+  let maxPrice = Math.min(totalBudget * 0.075, ideal * tierProfile.candidateMaxRatio);
+  let pool = rows.filter(c => Number.isFinite(Number(c?.price)) && Number(c.price) >= minPrice && Number(c.price) <= maxPrice);
+
+  if (pool.length < targetCount * 3) {
+    // First widen around the desired per-slot price, while keeping the
+    // portfolio-shape preference intact when enough market supply exists.
     minPrice = Math.max(150, ideal * 0.05);
-    maxPrice = Math.min(budget * 0.12, ideal * 8.0);
-    pool = cards.filter(c => Number.isFinite(c.price) && c.price >= minPrice && c.price <= maxPrice);
+    maxPrice = Math.min(totalBudget * 0.12, ideal * 8.0);
+    pool = rows.filter(c => Number.isFinite(Number(c?.price)) && Number(c.price) >= minPrice && Number(c.price) <= maxPrice);
   }
-  return { pool, ideal, minPrice, maxPrice, tierProfile };
+
+  // Thin-pool rescue for the dedicated FUTBIN runtime:
+  // Never return an empty pool merely because the requested slot count implies
+  // an unrealistically low per-slot price for the evidence currently available.
+  // Every rescued row is still a real FUTBIN card and must remain individually
+  // affordable. All later evidence, safety, sold-price and profit gates remain
+  // unchanged and may still reject it.
+  if (pool.length < Math.min(targetCount, 3)) {
+    const affordable = rows
+      .filter(c => {
+        const price = Number(c?.price);
+        return Number.isFinite(price) && price > 0 && price <= totalBudget;
+      })
+      .sort((a, b) => Number(a.price) - Number(b.price));
+
+    if (affordable.length > pool.length) {
+      pool = affordable;
+      minPrice = affordable.length ? Number(affordable[0].price) : minPrice;
+      maxPrice = affordable.length ? Number(affordable[affordable.length - 1].price) : maxPrice;
+    }
+  }
+
+  return {
+    pool,
+    ideal,
+    minPrice,
+    maxPrice,
+    tierProfile,
+    thinPoolRescue: pool.some(card => Number(card?.price) > Math.min(totalBudget * 0.12, ideal * 8.0))
+  };
 }
 
 export function filterConservativeCandidates(cards, count = 100) {
