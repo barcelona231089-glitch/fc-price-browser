@@ -1337,9 +1337,12 @@ export async function resolve(specifier, context, nextResolve) {
   const fromStandaloneEntry = parentPath.endsWith('/uvStandalone.mjs');
 
   if ((fromStandaloneEntry || parentTagged) && String(resolved?.url || '').startsWith('file:')) {
-    const tagged = new URL(resolved.url);
-    tagged.searchParams.set('uv-standalone', '1');
-    return { ...resolved, url: tagged.href };
+    const targetPath = String(resolved.url).replace(/\\/g, '/').split(/[?#]/, 1)[0];
+    if (!targetPath.includes('/node_modules/')) {
+      const tagged = new URL(resolved.url);
+      tagged.searchParams.set('uv-standalone', '1');
+      return { ...resolved, url: tagged.href };
+    }
   }
   return resolved;
 }
