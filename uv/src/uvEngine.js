@@ -49,6 +49,19 @@ export function buildBuyPlan(card, history = null) {
     if (diff <= 18) anchor = Math.min(anchor, futbin);
   }
 
+  // If real FUTBIN sold-price evidence exists, derive the maximum buy directly
+  // from the observed median and the minimum net-profit target after exact 5% EA tax.
+  // This does not invent a sale price: it only lowers the buy ceiling when the
+  // observed sold market cannot support the requested margin at the live BIN.
+  const soldMedian = Number(card?.futbinSoldPriceMedian || 0);
+  if (Number.isFinite(soldMedian) && soldMedian > 0) {
+    const minTargetProfit = targetProfitRange(live).min;
+    const soldBackedBuyCeiling = soldMedian - Math.floor(soldMedian * 0.05) - minTargetProfit;
+    if (Number.isFinite(soldBackedBuyCeiling) && soldBackedBuyCeiling > 0) {
+      anchor = Math.min(anchor, soldBackedBuyCeiling);
+    }
+  }
+
   const recent = Number(history?.avg1h || history?.avg6h || 0);
   if (Number.isFinite(recent) && recent > 0) {
     // History is only allowed to pull the max buy slightly down, never to
@@ -197,7 +210,8 @@ export function buildTraderAwarePricing(card) {
       ].map(Number).filter(sell => {
         if (!Number.isSafeInteger(sell) || sell <= buy) return false;
         const profit = sell - Math.floor(sell * 0.05) - buy;
-        return profit >= 0 && profit <= 3000;
+        const minimumProfit = targetProfitRange(buy).min;
+        return profit >= minimumProfit && profit <= 3000;
       }))]
     : [];
   // In the dedicated FUTBIN evidence runtime a profit may only be claimed
@@ -604,7 +618,10 @@ export function buildTradingEconomics(card) {
 
   const qualityGrade = tradeQualityScore >= 82 ? 'A+' : tradeQualityScore >= 74 ? 'A' : tradeQualityScore >= 64 ? 'B' : tradeQualityScore >= 54 ? 'C' : 'D';
   const weakReasons = [];
-  if (pricing.netProfit < 400) weakReasons.push('zu wenig Netto-Profit');
+  const minimumTargetProfit = targetProfitRange(Number(pricing.buyPrice || card.recommendedBuyPrice || card.price || 0)).min;
+  if (!Number.isFinite(Number(pricing.netProfit)) || Number(pricing.netProfit) < minimumTargetProfit) {
+    weakReasons.push(`Netto-Profit unter Zielband (mindestens ${minimumTargetProfit})`);
+  }
   if (turnover < 45) weakReasons.push('schwacher Turnover-Proxy');
   if (longTerm < 48) weakReasons.push('schwacher Langfrist-Score');
   if (confidence < 44) weakReasons.push('zu wenig Datensicherheit');
@@ -1220,7 +1237,7 @@ export function buildTraderConsensusScore(card = {}, { budget = null, count = 10
     promoComponent * 0.09;
 
   const tags = [];
-  if (usage > 0) tags.push('FUTGG_USAGE');
+  if (usage > 0) tags.push('OBSERVED_USAGE');
   if (card?.momentumHit === true) tags.push('DEMAND_SPIKE');
   if (stability >= 70 && activity >= 60) tags.push('STABLE_ACTIVE_MARKET');
   if (sale >= 70) tags.push('SELLABILITY');
