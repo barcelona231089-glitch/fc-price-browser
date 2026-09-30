@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { mergeObservedFutbinEvidence } from '../src/futbin.js';
 import { buildCandidatePool } from '../src/uvEngine.js';
+import { resolve as loaderResolve } from '../../v1066Loader.mjs';
 
 test('standalone FUTBIN merge preserves collector Games, Listings and Sold evidence', () => {
   const card = {
@@ -69,21 +70,33 @@ test('standalone FUTBIN merge accepts newer real evidence when it is actually av
   assert.equal(merged.futbinSoldPriceMedian, 1100);
 });
 
-test('standalone runtime bypasses legacy UV loader patches including query-string imports', () => {
+test('standalone runtime bypasses legacy UV loader patches through a propagated graph marker', async () => {
   const loader = readFileSync(new URL('../../v1066Loader.mjs', import.meta.url), 'utf8');
-  const queryStrip = loader.indexOf("normalizedPath = normalizedUrl.split(/[?#]/, 1)[0]");
-  const bypass = loader.indexOf("dedicatedUvRuntime && (normalizedPath.endsWith('/uv/uvApp.js') || normalizedPath.includes('/uv/src/'))");
-  const legacyDbPatch = loader.indexOf("if (url.endsWith('/uv/src/db.js'))");
-  assert.ok(queryStrip >= 0, 'query/hash stripping for module URL missing');
-  assert.ok(bypass > queryStrip, 'native standalone bypass marker missing');
-  assert.ok(legacyDbPatch > bypass, 'legacy UV patch executes before standalone bypass');
+  assert.match(loader, /export async function resolve\(specifier, context, nextResolve\)/);
+  assert.match(loader, /searchParams\.set\('uv-standalone', '1'\)/);
+  assert.match(loader, /standaloneTagged/);
+
+  const root = await loaderResolve('./uv/uvApp.js', {
+    parentURL: 'file:///app/uvStandalone.mjs'
+  }, async () => ({ url: 'file:///app/uv/uvApp.js', format: 'module' }));
+  assert.match(root.url, /uv-standalone=1/);
+
+  const child = await loaderResolve('./src/futbin.js', {
+    parentURL: root.url
+  }, async () => ({ url: 'file:///app/uv/src/futbin.js', format: 'module' }));
+  assert.match(child.url, /uv-standalone=1/);
+
+  const dependency = await loaderResolve('express', {
+    parentURL: 'file:///app/uvStandalone.mjs'
+  }, async () => ({ url: 'file:///app/node_modules/express/index.js', format: 'commonjs' }));
+  assert.doesNotMatch(dependency.url, /uv-standalone/);
 });
 
 test('standalone frontend has no legacy generate fetch interceptor', () => {
   const html = readFileSync(new URL('../public/index.html', import.meta.url), 'utf8');
   assert.doesNotMatch(html, /generate-async-v2105\.js/);
   assert.doesNotMatch(html, /unsaved-live-v2108\.js/);
-  assert.match(html, /app\\.js\\?v=2\\.15\\.19/);
+  assert.match(html, /app\\.js\\?v=2\\.15\\.21/);
 });
 
 
@@ -98,4 +111,18 @@ test('100k thin FUTBIN pool keeps real affordable cards instead of filtering eve
   assert.deepEqual(built.pool.map(card => card.eaId), [1, 2]);
   assert.equal(built.minPrice, 68000);
   assert.equal(built.maxPrice, 88500);
+});
+
+
+test('standalone entry uses a plain UV import and native UV sources contain no legacy FUTBIN DB helpers', () => {
+  const standalone = readFileSync(new URL('../../uvStandalone.mjs', import.meta.url), 'utf8');
+  const uvApp = readFileSync(new URL('../uvApp.js', import.meta.url), 'utf8');
+  const futbin = readFileSync(new URL('../src/futbin.js', import.meta.url), 'utf8');
+  const db = readFileSync(new URL('../src/db.js', import.meta.url), 'utf8');
+
+  assert.match(standalone, /from '\.\/uv\/uvApp\.js';/);
+  assert.doesNotMatch(standalone, /uvApp\.js\?uv-standalone/);
+  assert.doesNotMatch(uvApp, /recordFutbinPriceObservations|loadFutbinPriceFeatures/);
+  assert.doesNotMatch(futbin, /recordFutbinPriceObservations|loadFutbinPriceFeatures/);
+  assert.doesNotMatch(db, /recordFutbinPriceObservations|loadFutbinPriceFeatures/);
 });
