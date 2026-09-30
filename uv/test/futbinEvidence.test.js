@@ -7,7 +7,7 @@ import {
   scoreObservedSaleTarget,
   gamesDemandScore
 } from '../src/futbinEvidence.js';
-import { buildTraderAwarePricing } from '../src/uvEngine.js';
+import { buildTraderAwarePricing, buildBuyPlan } from '../src/uvEngine.js';
 
 test('v1.1 parses FUTBIN Games counters without losing thousands separators', () => {
   assert.equal(parseCompactNumber('20,052,388'), 20_052_388);
@@ -139,4 +139,40 @@ test('snapshot sold-price evidence supplies the actual sell target with exact EA
   assert.equal(pricing.eaTax, Math.floor(pricing.sellPrice * 0.05));
   assert.equal(pricing.netProfit, pricing.sellPrice - pricing.eaTax - 5000);
   assert.ok(pricing.netProfit <= 3000);
+});
+
+
+test('100k example derives a real sold-price-backed buy ceiling and keeps the net target above 1k', () => {
+  const observed = {
+    price: 68000,
+    futbinPrice: 68000,
+    futbinSoldSampleCount: 483,
+    futbinSoldPriceP25: 70500,
+    futbinSoldPriceMedian: 71000,
+    futbinSoldPriceMode: 71000,
+    futbinSoldPriceP75: 71500,
+    futbinEvidenceGate: 'PASS',
+    confidenceScore: 55,
+    riskPenalty: 0,
+    popularityScore: 50,
+    stability: 50
+  };
+
+  const buyPlan = buildBuyPlan(observed);
+  assert.equal(buyPlan.recommendedBuyPrice, 66000);
+
+  const pricing = buildTraderAwarePricing({
+    ...observed,
+    ...buyPlan,
+    saleLikelihoodIndex: 70,
+    traderPriorConfidence: 70,
+    turnoverIndex: 65,
+    capitalLockRisk: 0,
+    contentRiskScore: 0
+  });
+
+  assert.ok([71000, 71500].includes(pricing.sellPrice));
+  assert.ok(pricing.netProfit >= 1000);
+  assert.ok(pricing.netProfit <= 3000);
+  assert.equal(pricing.eaTax, Math.floor(pricing.sellPrice * 0.05));
 });
