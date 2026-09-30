@@ -15,7 +15,7 @@ app.use(express.json({ limit: '2mb' }));
 let uvRouter = null;
 let initUvBrain = null;
 let shutdownUvBrain = async () => {};
-let getUvRuntimeStatus = () => ({ ok: true, started: false, version: '2.15.21', gameYear: 27, runtimeMode: 'STARTING', nativeGraphVerified: true });
+let getUvRuntimeStatus = () => ({ ok: true, started: false, version: '2.15.22', gameYear: 27, runtimeMode: 'STARTING', nativeGraphVerified: true });
 let dbPool = null;
 let validIngestToken = () => false;
 let ingestFutbinSnapshot = async () => ({ inserted: 0, received: 0 });
@@ -32,7 +32,7 @@ app.get('/healthz', (req, res) => {
     ready: modulesReady && !modulesError,
     service: 'fc-uv-app',
     role: 'UV_ONLY',
-    version: status?.version || '2.15.21',
+    version: status?.version || '2.15.22',
     gameYear: status?.gameYear || 27,
     runtimeMode: modulesReady ? (status?.runtimeMode || 'ACTIVE') : 'STARTING',
     generationMode: 'DIRECT',
@@ -44,6 +44,12 @@ app.get('/healthz', (req, res) => {
     moduleLoadError: modulesError ? String(modulesError?.message || modulesError) : null,
     ingestTokenConfigured: Boolean(process.env.FUTBIN_SNAPSHOT_INGEST_TOKEN)
   });
+});
+
+app.get('/', (req, res, next) => {
+  if (modulesReady && !modulesError) return res.redirect('/uv');
+  if (modulesError) return res.status(503).type('text/plain').send('FC UV startup error');
+  return res.status(200).type('text/plain').send('FC UV starting');
 });
 
 app.get('/api/futbin-fc27-collector-targets', async (req, res) => {
@@ -192,9 +198,9 @@ try {
   futbinSnapshotHealth = snapshotModule.futbinSnapshotHealth;
 
   app.use(uvRouter);
-  app.get('/', (req, res) => res.redirect('/uv'));
 
   await initUvBrain({ active: true });
+  dbPool = dbModule.pool;
   modulesReady = true;
   const snapshotHealth = await futbinSnapshotHealth(dbPool);
   console.log('[UV-STANDALONE] FUTBIN snapshot health', snapshotHealth);
