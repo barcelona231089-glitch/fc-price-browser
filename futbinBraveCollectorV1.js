@@ -46,7 +46,7 @@ function log(message, extra = null) {
 
 function writeStatus(status) {
   writeFileSync(STATE_FILE, JSON.stringify({
-    version: "1.4.0",
+    version: "1.4.1",
     snapshotHost: SNAPSHOT_HOST,
     port: PORT,
     intervalMinutes: Math.round(INTERVAL_MS / 60_000),
@@ -365,6 +365,14 @@ async function pushSnapshot(rows) {
 export async function runCollectorCycle() {
   cycleCount += 1;
   const startedAt = nowIso();
+  writeStatus({
+    ok: true,
+    running: true,
+    cycleCount,
+    processId: process.pid,
+    startedAt,
+    targetMode: "MIXED_82_99_PRICE_STRATIFIED"
+  });
   try {
     const targetRows = await loadCollectorTargets();
     const selection = selectCollectorCards(targetRows, { maxCards: MAX_CARDS, cursor });
@@ -433,6 +441,7 @@ export async function runCollectorCycle() {
     const pushed = await pushSnapshot(rows);
     const status = {
       ok: true,
+      running: false,
       cycleCount,
       startedAt,
       finishedAt: nowIso(),
@@ -463,6 +472,7 @@ export async function runCollectorCycle() {
   } catch (error) {
     const status = {
       ok: false,
+      running: false,
       cycleCount,
       startedAt,
       finishedAt: nowIso(),
@@ -530,8 +540,15 @@ async function main() {
 const invoked = process.argv[1] ? pathToFileURL(process.argv[1]).href : null;
 if (invoked && import.meta.url === invoked) {
   main().catch(error => {
-    writeStatus({ ok: false, fatal: true, error: String(error?.message || error) });
-    log("collector-fatal", { error: String(error?.message || error) });
+    const message = String(error?.message || error);
+    const active = message.match(/^COLLECTOR_ALREADY_RUNNING_(\d+)$/);
+    if (active) {
+      log("collector-already-running", { pid: Number(active[1]) });
+      process.exitCode = 0;
+      return;
+    }
+    writeStatus({ ok: false, running: false, fatal: true, error: message });
+    log("collector-fatal", { error: message });
     releaseLock();
     process.exitCode = 1;
   });
