@@ -1335,15 +1335,18 @@ export async function load(url, context, defaultLoad) {
   // One canonical newline format for every exact source patch in this loader chain.
   const raw = rawSource.replace(/\r\n/g, '\n');
 
+  // The standalone ÜV service is now a native, self-contained runtime.
+  // Never rewrite files below /uv at load time. Legacy source patches belong
+  // only to the combined Trader-Brain server and were the root cause of
+  // production-only drift between committed code and executed code.
+  const normalizedUrl = String(url || '').replace(/\\/g, '/');
+  const dedicatedUvRuntime = process.argv.some(arg => String(arg || '').replace(/\\/g, '/').endsWith('/uvStandalone.mjs'));
+  if (dedicatedUvRuntime && (normalizedUrl.endsWith('/uv/uvApp.js') || normalizedUrl.includes('/uv/src/'))) {
+    console.log('[ÜV] dedicated runtime: native UV source, all legacy UV loader patches bypassed:', normalizedUrl.split('/').slice(-3).join('/'));
+    return result;
+  }
+
   if (url.endsWith('/uv/uvApp.js')) {
-    // Dedicated UV runtime owns its generation routes directly. Applying the
-    // legacy combined-server source patch here can shadow /api/uv/generate-job
-    // and make a newly returned job ID disappear on the first status poll.
-    const dedicatedUvRuntime = process.argv.some(arg => String(arg || '').replace(/\\/g, '/').endsWith('/uvStandalone.mjs'));
-    if (dedicatedUvRuntime) {
-      console.log('[ÜV] dedicated runtime: legacy uvApp source patch bypassed.');
-      return result;
-    }
     const patched = patchUvAppV2105(raw);
     console.log('[ÜV] v2.10.12 runtime patch active: hard-100 + unsaved live-recheck + FUTBIN Parse memory/status.');
     return { format: result.format, source: patched, shortCircuit: true };
