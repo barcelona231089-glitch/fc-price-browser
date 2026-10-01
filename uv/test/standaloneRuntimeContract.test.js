@@ -114,13 +114,13 @@ test('100k thin FUTBIN pool keeps real affordable cards instead of filtering eve
 });
 
 
-test('standalone entry uses a plain UV import and native UV sources contain no legacy FUTBIN DB helpers', () => {
+test('standalone entry uses a native UV dynamic import and native UV sources contain no legacy FUTBIN DB helpers', () => {
   const standalone = readFileSync(new URL('../../uvStandalone.mjs', import.meta.url), 'utf8');
   const uvApp = readFileSync(new URL('../uvApp.js', import.meta.url), 'utf8');
   const futbin = readFileSync(new URL('../src/futbin.js', import.meta.url), 'utf8');
   const db = readFileSync(new URL('../src/db.js', import.meta.url), 'utf8');
 
-  assert.match(standalone, /from '\.\/uv\/uvApp\.js';/);
+  assert.match(standalone, /import\('\.\/uv\/uvApp\.js'\)/);
   assert.doesNotMatch(standalone, /uvApp\.js\?uv-standalone/);
   assert.doesNotMatch(uvApp, /recordFutbinPriceObservations|loadFutbinPriceFeatures/);
   assert.doesNotMatch(futbin, /recordFutbinPriceObservations|loadFutbinPriceFeatures/);
