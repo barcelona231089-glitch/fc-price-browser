@@ -136,6 +136,19 @@ export function buildPricing(buyPrice, uvScore = 70, longTermScore = 65, options
 }
 
 
+export function hasValidFutbinTradingEconomics(card = {}) {
+  const buy = Number(card?.buyPrice);
+  const sell = Number(card?.sellPrice);
+  const tax = Number(card?.eaTax);
+  const profit = Number(card?.netProfit);
+  if (![buy, sell, tax, profit].every(Number.isFinite)) return false;
+  if (buy <= 0 || sell <= 0 || profit <= 0 || profit > 3000) return false;
+  if (String(card?.sellPriceEvidence || '').toUpperCase() !== 'FUTBIN_SOLD') return false;
+  const expectedTax = Math.floor(sell * 0.05);
+  const expectedProfit = sell - expectedTax - buy;
+  return tax === expectedTax && profit === expectedProfit;
+}
+
 export function assertUvPortfolioIntegrity(cards = [], { budget, count = 100, gameYear = 27 } = {}) {
   if (Number(gameYear) !== 27) throw new Error(`UV season guard: FC${gameYear} ist nicht FC27.`);
   if (!Array.isArray(cards) || cards.length !== Number(count)) throw new Error(`UV slot guard: ${cards?.length || 0}/${count} Karten.`);
