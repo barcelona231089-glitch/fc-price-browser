@@ -128,13 +128,13 @@ test('snapshot sold-price evidence supplies the actual sell target with exact EA
     price: 5000,
     recommendedBuyPrice: 5000,
     futbinSoldSampleCount: 8,
-    futbinSoldPriceP25: 5600,
-    futbinSoldPriceMedian: 5800,
-    futbinSoldPriceMode: 5800,
-    futbinSoldPriceP75: 6000,
+    futbinSoldPriceP25: 6300,
+    futbinSoldPriceMedian: 6500,
+    futbinSoldPriceMode: 6500,
+    futbinSoldPriceP75: 6700,
     turnoverIndex: 70
   });
-  assert.ok([5600, 5800, 6000].includes(pricing.sellPrice));
+  assert.ok([6300, 6500, 6700].includes(pricing.sellPrice));
   assert.equal(pricing.sellPriceEvidence, 'FUTBIN_SOLD');
   assert.equal(pricing.eaTax, Math.floor(pricing.sellPrice * 0.05));
   assert.equal(pricing.netProfit, pricing.sellPrice - pricing.eaTax - 5000);
