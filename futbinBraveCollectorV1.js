@@ -9,8 +9,18 @@ const ROOT = dirname(fileURLToPath(import.meta.url));
 const LOG_DIR = join(ROOT, "logs");
 const STATE_FILE = join(LOG_DIR, "futbin-brave-collector-status.json");
 const LOCK_FILE = join(LOG_DIR, "futbin-brave-collector.lock");
+const SNAPSHOT_HOST_FILE = process.env.FUTBIN_SNAPSHOT_HOST_FILE
+  || join(process.env.LOCALAPPDATA || ROOT, "FCTraderBrain", "futbin-snapshot-host.txt");
+const SAVED_SNAPSHOT_HOST = (() => {
+  try {
+    return existsSync(SNAPSHOT_HOST_FILE) ? readFileSync(SNAPSHOT_HOST_FILE, "utf8").trim() : "";
+  } catch {
+    return "";
+  }
+})();
 const SNAPSHOT_HOST = String(
   process.env.FUTBIN_SNAPSHOT_HOST ||
+  SAVED_SNAPSHOT_HOST ||
   "https://onset-stormy-wolf.abasthan.app"
 ).replace(/\/$/, "");
 const PORT = Math.max(1024, Math.min(65535, Number(process.env.FUTBIN_BRAVE_COLLECTOR_PORT || 9230)));
@@ -46,7 +56,7 @@ function log(message, extra = null) {
 
 function writeStatus(status) {
   writeFileSync(STATE_FILE, JSON.stringify({
-    version: "1.4.1",
+    version: "1.4.2",
     snapshotHost: SNAPSHOT_HOST,
     port: PORT,
     intervalMinutes: Math.round(INTERVAL_MS / 60_000),
