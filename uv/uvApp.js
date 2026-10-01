@@ -20,7 +20,7 @@ import { attachLocalFutbinFc27 } from './src/futbinLocalFc27.js';
 import { enrichRowsWithSnapshotFutbinBrain } from '../futbinSnapshotReaderV1.js';
 
 export const uvRouter = express.Router();
-const UV_VERSION = '2.15.24';
+const UV_VERSION = '2.15.25';
 const UV_PRODUCTION_LOADER_PRESENT = process.execArgv.some(arg => String(arg || '').includes('v1066Loader.mjs'));
 const UV_STANDALONE_GRAPH_TAGGED = (() => {
   try { return new URL(import.meta.url).searchParams.has('uv-standalone'); } catch { return false; }
@@ -1679,6 +1679,24 @@ app.post('/api/uv/generate', async (req, res) => {
     const avgBudgetTierScore = selected.reduce((sum, c) => sum + Number(c.budgetTierScore || 50), 0) / selected.length;
     const specialVersionCount = selected.filter(c => c.cardVersionClass === 'SPECIAL').length;
     const normalVersionCount = selected.filter(c => c.cardVersionClass === 'NORMAL').length;
+
+    // Compatibility diagnostics for the dedicated FUTBIN-only runtime.
+    // The old marketTradeability object was removed with the legacy market-source
+    // layer, but the response contract still exposes these fields.
+    const marketTradeability = {
+      cards: pipelineResult.cards,
+      diagnostics: {
+        mode: 'FUTBIN_ONLY_EVIDENCE_ECONOMICS',
+        verificationSourceDown: false,
+        totalCandidates: economicsInputCount,
+        verifiedCandidates: pipelineResult.cards.length,
+        selectedCandidates: selected.length,
+        requiresGames: true,
+        requiresListings: true,
+        requiresObservedSoldPrices: true,
+        eaTaxPct: 5
+      }
+    };
 
     const result = {
       ok: true, version: UV_VERSION, gameYear: GAME_YEAR, platform, budget,
