@@ -40,4 +40,4 @@ jobs:
         run: node -e "import('./v1066Loader.mjs').then(async m=>{const r=await m.resolve('./uv/uvApp.js',{parentURL:'file:///app/uvStandalone.mjs'},async()=>({url:'file:///app/uv/uvApp.js',format:'module'})); if(!r.url.includes('uv-standalone=1')) process.exit(2)})"
 
       - name: Run FUTBIN and standalone regression tests
-        run: node --test uv/test/futbinEvidence.test.js uv/test/standaloneRuntimeContract.test.js
+        run: node --test uv/test/futbinEvidence.test.js uv/test/standaloneRuntimeContract.test.js test/uvFinalIntegrityV214.test.mjs
