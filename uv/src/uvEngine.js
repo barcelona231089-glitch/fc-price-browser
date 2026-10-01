@@ -2166,7 +2166,7 @@ export function buildCandidatePool(cards, budget, count = 100) {
   // Every rescued row is still a real FUTBIN card and must remain individually
   // affordable. All later evidence, safety, sold-price and profit gates remain
   // unchanged and may still reject it.
-  if (pool.length < Math.min(targetCount, 3)) {
+  if (pool.length < targetCount) {
     const affordable = rows
       .filter(c => {
         const price = Number(c?.price);
