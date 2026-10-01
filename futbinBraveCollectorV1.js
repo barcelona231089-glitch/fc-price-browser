@@ -56,7 +56,7 @@ function log(message, extra = null) {
 
 function writeStatus(status) {
   writeFileSync(STATE_FILE, JSON.stringify({
-    version: "1.4.2",
+    version: "1.4.3",
     snapshotHost: SNAPSHOT_HOST,
     port: PORT,
     intervalMinutes: Math.round(INTERVAL_MS / 60_000),
@@ -193,6 +193,10 @@ function collectorScore(row) {
 export function selectCollectorCards(rows = [], options = {}) {
   const maxCards = Math.max(1, Math.min(12, Number(options.maxCards || MAX_CARDS)));
   const startCursor = Math.max(0, Number(options.cursor || 0));
+  const priorityFutbinIds = Array.isArray(options.priorityFutbinIds)
+    ? options.priorityFutbinIds.map(Number).filter(id => Number.isFinite(id) && id > 0)
+    : [];
+  const prioritySlots = Math.max(0, Math.min(maxCards, Number(options.prioritySlots ?? 4)));
   const eligible = (Array.isArray(rows) ? rows : [])
     .filter(row => row?.futbinOnlyTarget === true || Number(row?.overall || row?.rating || 0) >= 82)
     .filter(row => Number(row?.futbinId || FUTBIN_FC27_EA_TO_ID[String(row?.eaId)]) > 0)
@@ -203,25 +207,61 @@ export function selectCollectorCards(rows = [], options = {}) {
       Number(a?.futbinId || FUTBIN_FC27_EA_TO_ID[String(a?.eaId)] || 0) - Number(b?.futbinId || FUTBIN_FC27_EA_TO_ID[String(b?.eaId)] || 0)
     );
 
-  // One card from each live-price slice keeps every collector cycle useful for
-  // small, medium and large budgets instead of collecting twelve cards from one
-  // rating/price neighborhood. Cursor rotates the pick inside each slice.
   const cards = [];
+  const used = new Set();
   const take = Math.min(maxCards, eligible.length);
-  for (let i = 0; i < take; i += 1) {
-    const start = Math.floor((i * eligible.length) / take);
-    const endExclusive = Math.max(start + 1, Math.floor(((i + 1) * eligible.length) / take));
-    const span = Math.max(1, endExclusive - start);
-    const idx = start + ((startCursor + i) % span);
-    const row = eligible[Math.min(eligible.length - 1, idx)];
+  const byFutbinId = new Map(
+    eligible.map(row => [
+      Number(row?.futbinId || FUTBIN_FC27_EA_TO_ID[String(row?.eaId)]),
+      row
+    ])
+  );
+
+  // Keep a few slots for cards that previously showed a real sold-price-backed
+  // profit window. Without this, the rotating price slices can let the only
+  // actionable card expire from the 90-minute UV freshness window.
+  for (const futbinId of priorityFutbinIds.slice(0, prioritySlots)) {
+    const row = byFutbinId.get(Number(futbinId));
+    if (!row || cards.length >= take) continue;
+    const key = Number(row?.futbinId || FUTBIN_FC27_EA_TO_ID[String(row?.eaId)]);
+    if (used.has(key)) continue;
     cards.push({
       eaId: String(row.eaId),
-      futbinId: Number(row.futbinId || FUTBIN_FC27_EA_TO_ID[String(row.eaId)]),
+      futbinId: key,
+      name: row.name || null,
+      overall: Number(row.overall || row.rating || 0) || null,
+      cardType: row.cardType || row.rarityName || null,
+      targetPriceConsole: Number(row.livePrice) || null,
+      priorityRefresh: true
+    });
+    used.add(key);
+  }
+
+  // Fill the remaining capacity with the original price-stratified rotation so
+  // small, medium and large budgets all continue to receive coverage.
+  const remaining = eligible.filter(row => {
+    const key = Number(row?.futbinId || FUTBIN_FC27_EA_TO_ID[String(row?.eaId)]);
+    return !used.has(key);
+  });
+  const remainingTake = Math.max(0, take - cards.length);
+  for (let i = 0; i < remainingTake; i += 1) {
+    const start = Math.floor((i * remaining.length) / remainingTake);
+    const endExclusive = Math.max(start + 1, Math.floor(((i + 1) * remaining.length) / remainingTake));
+    const span = Math.max(1, endExclusive - start);
+    const idx = start + ((startCursor + i) % span);
+    const row = remaining[Math.min(remaining.length - 1, idx)];
+    if (!row) continue;
+    const key = Number(row?.futbinId || FUTBIN_FC27_EA_TO_ID[String(row?.eaId)]);
+    if (used.has(key)) continue;
+    cards.push({
+      eaId: String(row.eaId),
+      futbinId: key,
       name: row.name || null,
       overall: Number(row.overall || row.rating || 0) || null,
       cardType: row.cardType || row.rarityName || null,
       targetPriceConsole: Number(row.livePrice) || null
     });
+    used.add(key);
   }
 
   const nextCursor = eligible.length ? startCursor + 1 : 0;
@@ -229,6 +269,7 @@ export function selectCollectorCards(rows = [], options = {}) {
     cards,
     eligibleCount: eligible.length,
     nextCursor,
+    priorityRefreshSelected: cards.filter(card => card.priorityRefresh).length,
     priceMin: eligible.length ? Number(eligible[0].livePrice) : null,
     priceMax: eligible.length ? Number(eligible[eligible.length - 1].livePrice) : null,
     ratingCoverage: [...new Set(cards.map(card => card.overall).filter(Number.isFinite))].sort((a, b) => a - b)
@@ -372,6 +413,55 @@ async function pushSnapshot(rows) {
     body: JSON.stringify({ rows })
   }, 20_000);
 }
+function minimumCollectorNetProfit(buy) {
+  if (buy < 1500) return 250;
+  if (buy < 5000) return 700;
+  if (buy < 15000) return 900;
+  return 1000;
+}
+
+export function selectPriorityRefreshFutbinIds(snapshotRows = [], limit = 4) {
+  const now = Date.now();
+  return (Array.isArray(snapshotRows) ? snapshotRows : [])
+    .map(row => {
+      const buy = Number(row?.priceConsole || 0);
+      const e = row?.salesEvidence || {};
+      const sells = [e.soldPriceP25, e.soldPriceMedian, e.soldPriceMode, e.soldPriceP75]
+        .map(Number)
+        .filter(value => Number.isFinite(value) && value > 0);
+      const viable = sells
+        .map(sell => ({ sell, net: sell - Math.floor(sell * 0.05) - buy }))
+        .filter(x => x.net >= minimumCollectorNetProfit(buy) && x.net <= 3000);
+      const observedMs = Date.parse(row?.observedAt || "");
+      const ageMs = Number.isFinite(observedMs) ? Math.max(0, now - observedMs) : 0;
+      const bestNet = viable.length ? Math.max(...viable.map(x => x.net)) : 0;
+      return {
+        futbinId: Number(row?.futbinId || 0),
+        viable: viable.length > 0,
+        bestNet,
+        ageMs
+      };
+    })
+    .filter(row => row.viable && Number.isFinite(row.futbinId) && row.futbinId > 0)
+    .sort((a, b) => b.ageMs - a.ageMs || b.bestNet - a.bestNet)
+    .slice(0, Math.max(0, Number(limit) || 0))
+    .map(row => row.futbinId);
+}
+
+async function loadPriorityRefreshFutbinIds(limit = 4) {
+  try {
+    const latest = await fetchJson(
+      `${SNAPSHOT_HOST}/api/futbin-fc27-latest?limit=100&evidenceOnly=true`,
+      { headers: { accept: "application/json" } },
+      10_000
+    );
+    return selectPriorityRefreshFutbinIds(latest?.rows || [], limit);
+  } catch (error) {
+    log("priority-refresh-soft-fail", { error: String(error?.message || error) });
+    return [];
+  }
+}
+
 export async function runCollectorCycle() {
   cycleCount += 1;
   const startedAt = nowIso();
@@ -385,7 +475,13 @@ export async function runCollectorCycle() {
   });
   try {
     const targetRows = await loadCollectorTargets();
-    const selection = selectCollectorCards(targetRows, { maxCards: MAX_CARDS, cursor });
+    const priorityFutbinIds = await loadPriorityRefreshFutbinIds(4);
+    const selection = selectCollectorCards(targetRows, {
+      maxCards: MAX_CARDS,
+      cursor,
+      priorityFutbinIds,
+      prioritySlots: 4
+    });
     cursor = selection.nextCursor;
     const usedTargetRating = targetRating;
     const nextTargetRating = usedTargetRating >= 99 ? 82 : usedTargetRating + 1;
@@ -463,6 +559,8 @@ export async function runCollectorCycle() {
       targetPriceMin: selection.priceMin,
       targetPriceMax: selection.priceMax,
       selected: selection.cards.length,
+      priorityRefreshSelected: Number(selection.priorityRefreshSelected || 0),
+      priorityRefreshIds: priorityFutbinIds,
       observedRows: rows.length,
       inserted: Number(pushed?.inserted || 0),
       received: Number(pushed?.received || 0),
