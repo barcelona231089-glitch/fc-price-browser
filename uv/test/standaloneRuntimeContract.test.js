@@ -141,3 +141,11 @@ test('100k thin-pool rescue expands beyond the 8k slot window when fewer than re
   assert.ok(built.pool.some(card => card.eaId === 999));
   assert.equal(built.maxPrice, 41750);
 });
+
+
+test('generation response defines FUTBIN-only marketTradeability diagnostics before returning it', () => {
+  const uvApp = readFileSync(new URL('../uvApp.js', import.meta.url), 'utf8');
+  assert.match(uvApp, /const marketTradeability = \{/);
+  assert.match(uvApp, /mode: 'FUTBIN_ONLY_EVIDENCE_ECONOMICS'/);
+  assert.match(uvApp, /marketTradeability: marketTradeability\.diagnostics/);
+});
