@@ -15,7 +15,7 @@ app.use(express.json({ limit: '2mb' }));
 let uvRouter = null;
 let initUvBrain = null;
 let shutdownUvBrain = async () => {};
-let getUvRuntimeStatus = () => ({ ok: true, started: false, version: '2.15.23', gameYear: 27, runtimeMode: 'STARTING', nativeGraphVerified: true });
+let getUvRuntimeStatus = () => ({ ok: true, started: false, version: '2.15.24', gameYear: 27, runtimeMode: 'STARTING', nativeGraphVerified: true });
 let dbPool = null;
 let validIngestToken = () => false;
 let ingestFutbinSnapshot = async () => ({ inserted: 0, received: 0 });
@@ -32,7 +32,7 @@ app.get('/healthz', (req, res) => {
     ready: modulesReady && !modulesError,
     service: 'fc-uv-app',
     role: 'UV_ONLY',
-    version: status?.version || '2.15.23',
+    version: status?.version || '2.15.24',
     gameYear: status?.gameYear || 27,
     runtimeMode: modulesReady ? (status?.runtimeMode || 'ACTIVE') : 'STARTING',
     generationMode: 'DIRECT',
