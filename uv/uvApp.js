@@ -8,7 +8,7 @@ import { getLiveFutbinCards as fetchLiveFutbinCards } from './src/futbinMarket.j
 import { crosscheckFutbin, getFutbinMarketTrends, attachMarketMoverSignals, getFutbinExtendedDataStatus } from './src/futbin.js';
 
 import { pool as dbPool, initDb, configureDbPool, closeDb, isDbEnabled, saveUvGenerationJob, loadUvGenerationJob, deleteUvGenerationJob, recordSnapshot, upsertCards, loadHistoryFeatures, loadPerformanceFeatures, loadTraderRulePerformance, loadTargetSupportPerformance, recordTradeFeedback, recordTradeJournalEvent, getTradeFeedbackStatus, saveGeneratedList, saveListRecheck, recordMarketSnapshot, recordDemandSnapshot, loadWatchPlatforms, loadWatchedEaIds, recordSmartSnapshot, evaluateGeneratedLists, getLearningStatus, loadGeneratedList, listGeneratedLists, loadRealMarketRegimeRows } from './src/db.js';
-import { buildCandidatePool, scoreCard, buildBuyPlan, buildTradingEconomics, assertUvPortfolioIntegrity, buildSelectionScore, buildSellabilityScore, buildBudgetTop100Score, buildPublicTraderEndgameScore, buildTraderConsensusScore, buildBudgetTierScore, buildDemandMarketFitScore, optimizeList, maxAffordablePortfolioCount, filterConservativeCandidates, buildPortfolioSummary, capitalBandForPrice, targetProfitCandidates, specialTargetRatioForBudget, portfolioCountForBudget } from './src/uvEngine.js';
+import { buildCandidatePool, scoreCard, buildBuyPlan, buildTradingEconomics, hasValidFutbinTradingEconomics, assertUvPortfolioIntegrity, buildSelectionScore, buildSellabilityScore, buildBudgetTop100Score, buildPublicTraderEndgameScore, buildTraderConsensusScore, buildBudgetTierScore, buildDemandMarketFitScore, optimizeList, maxAffordablePortfolioCount, filterConservativeCandidates, buildPortfolioSummary, capitalBandForPrice, targetProfitCandidates, specialTargetRatioForBudget, portfolioCountForBudget } from './src/uvEngine.js';
 import { buildRebalanceSeed, rebalancePortfolio } from './src/rebalance.js';
 import { buildRealMarketRegime } from './src/marketRegime.js';
 import { buildTraderKnowledge, TRADER_KNOWLEDGE_SOURCES } from './src/traderKnowledge.js';
@@ -20,7 +20,7 @@ import { attachLocalFutbinFc27 } from './src/futbinLocalFc27.js';
 import { enrichRowsWithSnapshotFutbinBrain } from '../futbinSnapshotReaderV1.js';
 
 export const uvRouter = express.Router();
-const UV_VERSION = '2.15.22';
+const UV_VERSION = '2.15.23';
 const UV_PRODUCTION_LOADER_PRESENT = process.execArgv.some(arg => String(arg || '').includes('v1066Loader.mjs'));
 const UV_STANDALONE_GRAPH_TAGGED = (() => {
   try { return new URL(import.meta.url).searchParams.has('uv-standalone'); } catch { return false; }
@@ -1179,7 +1179,7 @@ app.post('/api/uv/rebalance/:listId', async (req, res) => {
 
     // Rebalance uses the same CPU/memory-safe chunking as fresh generation. On the 512 MB Hostless runtime, scoring the full candidate pool synchronously can exhaust the process and surface as a 502/browser OOM.
     await waitForGenerationCpuWindow();
-    const enriched = await generationCpuSafeMap(pool, card => {
+    let enriched = await generationCpuSafeMap(pool, card => {
       const history = historyMap.get(String(card.eaId)) || null;
       const learning = performanceMap.get(String(card.eaId)) || null;
       const base = { ...card, learning };
@@ -1201,6 +1201,11 @@ app.post('/api/uv/rebalance/:listId', async (req, res) => {
       const baseSelectionScore = buildSelectionScore(traderProfiled);
       return { ...traderProfiled, budgetTop100Score, selectionScore: baseSelectionScore };
     });
+
+    enriched = enriched.filter(hasValidFutbinTradingEconomics);
+    if (!enriched.length) {
+      throw new Error('Rebalance gestoppt: aktuell keine Karte mit echtem FUTBIN-Verkaufspreis und valider 5%-Steuer-Economics.');
+    }
 
     const adaptiveMarketPolicy = deriveAdaptiveMarketPolicy(enriched, { budget, count, gameYear: GAME_YEAR });
     const currentById = new Map(enriched.map(card => [String(card.eaId), card]));
@@ -1524,6 +1529,17 @@ app.post('/api/uv/generate', async (req, res) => {
       const baseSelectionScore = buildSelectionScore(traderProfiled);
       return { ...traderProfiled, budgetTop100Score, selectionScore: baseSelectionScore };
     });
+
+    // Dedicated FUTBIN-only economics gate. Cards without a real observed sold
+    // price that supports internally consistent 5% EA-tax economics must never
+    // reach the optimizer or any budget-fill fallback.
+    const economicsInputCount = scored.length;
+    scored = scored.filter(hasValidFutbinTradingEconomics);
+    if (!scored.length) {
+      throw new Error('Aktuell hat keine FUTBIN-Karte einen echten Verkaufspreis, der die sichere ÜV-Profitspanne nach 5% EA-Steuer trägt.');
+    }
+    if (scored.length < count) count = scored.length;
+    console.log('[UV-GEN] FUTBIN economics gate', { before: economicsInputCount, usable: scored.length, count });
 
     const adaptiveMarketPolicy = deriveAdaptiveMarketPolicy(scored, { budget, count, gameYear: GAME_YEAR });
     const pipelineResult = runCandidatePipeline(scored, count, { budget, portfolioCount: count, gameYear: GAME_YEAR, adaptivePolicy: adaptiveMarketPolicy });
