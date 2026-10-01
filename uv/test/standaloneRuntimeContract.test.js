@@ -126,3 +126,18 @@ test('standalone entry uses a native UV dynamic import and native UV sources con
   assert.doesNotMatch(futbin, /recordFutbinPriceObservations|loadFutbinPriceFeatures/);
   assert.doesNotMatch(db, /recordFutbinPriceObservations|loadFutbinPriceFeatures/);
 });
+
+
+test('100k thin-pool rescue expands beyond the 8k slot window when fewer than requested slots exist', () => {
+  const cheap = Array.from({ length: 8 }, (_, i) => ({
+    eaId: i + 1,
+    name: `Cheap ${i + 1}`,
+    price: 650 + i * 450
+  }));
+  const kanuLike = { eaId: 999, name: 'Kanu-like', price: 41750 };
+  const built = buildCandidatePool([...cheap, kanuLike], 100000, 100);
+  assert.equal(built.thinPoolRescue, true);
+  assert.equal(built.pool.length, 9);
+  assert.ok(built.pool.some(card => card.eaId === 999));
+  assert.equal(built.maxPrice, 41750);
+});
