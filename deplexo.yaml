@@ -1,0 +1,4 @@
+framework: node
+install: npm ci --omit=dev
+start: node ./uvStandalone.mjs
+port: 3000
