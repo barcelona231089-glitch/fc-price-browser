@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { assertUvPortfolioIntegrity } from '../uv/src/uvEngine.js';
+import { assertUvPortfolioIntegrity, hasValidFutbinTradingEconomics } from '../uv/src/uvEngine.js';
 
 function c(id, buy=10000, sell=12000) {
   const tax=Math.floor(sell*0.05);
@@ -23,4 +23,20 @@ test('v2.14 integrity guard rejects wrong season, wrong tax, synthetic and >3k p
   assert.throws(()=>assertUvPortfolioIntegrity(synthetic,{budget:1_000_000,count:100,gameYear:27}),/no-synthetic/);
   const stretch=cards.map(x=>({...x})); stretch[0]=c(1,10000,14000);
   assert.throws(()=>assertUvPortfolioIntegrity(stretch,{budget:1_000_000,count:100,gameYear:27}),/Profit-Cap/);
+});
+
+
+test('v2.15.23 FUTBIN economics gate only accepts observed sold-price economics', () => {
+  const valid = {
+    eaId: 1,
+    buyPrice: 42_000,
+    sellPrice: 45_500,
+    eaTax: Math.floor(45_500 * 0.05),
+    netProfit: 45_500 - Math.floor(45_500 * 0.05) - 42_000,
+    sellPriceEvidence: 'FUTBIN_SOLD'
+  };
+  assert.equal(hasValidFutbinTradingEconomics(valid), true);
+  assert.equal(hasValidFutbinTradingEconomics({ ...valid, sellPrice: null, eaTax: null, netProfit: null, sellPriceEvidence: 'MISSING_FUTBIN_SALES' }), false);
+  assert.equal(hasValidFutbinTradingEconomics({ ...valid, sellPriceEvidence: 'MODELED' }), false);
+  assert.equal(hasValidFutbinTradingEconomics({ ...valid, eaTax: valid.eaTax + 1 }), false);
 });
