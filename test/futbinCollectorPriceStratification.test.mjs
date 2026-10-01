@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { selectCollectorCards } from '../futbinBraveCollectorV1.js';
+import { selectCollectorCards, selectPriorityRefreshFutbinIds } from '../futbinBraveCollectorV1.js';
 
 test('collector v1.4 selects across the full live-price range instead of one rating neighborhood', () => {
   const rows = Array.from({ length: 24 }, (_, i) => ({
@@ -42,4 +42,73 @@ test('collector v1.4 rotates within price slices without losing low/high budget 
   assert.ok(Math.min(...b.cards.map(x => x.targetPriceConsole)) <= 7500);
   assert.ok(Math.max(...a.cards.map(x => x.targetPriceConsole)) >= 85000);
   assert.ok(Math.max(...b.cards.map(x => x.targetPriceConsole)) >= 85000);
+});
+
+
+test('collector reserves refresh slots for previously profitable FUTBIN sold-price opportunities', () => {
+  const rows = Array.from({ length: 24 }, (_, i) => ({
+    eaId: String(300000 + i),
+    futbinId: 7000 + i,
+    name: 'Card ' + i,
+    overall: 82 + (i % 8),
+    futbinOnlyTarget: true,
+    livePrice: (i + 1) * 2000
+  }));
+
+  const result = selectCollectorCards(rows, {
+    maxCards: 12,
+    cursor: 0,
+    priorityFutbinIds: [7011, 7017],
+    prioritySlots: 4
+  });
+
+  assert.equal(result.cards.length, 12);
+  assert.equal(result.priorityRefreshSelected, 2);
+  assert.deepEqual(result.cards.slice(0, 2).map(card => card.futbinId), [7011, 7017]);
+  assert.ok(result.cards.slice(0, 2).every(card => card.priorityRefresh === true));
+});
+
+test('priority refresh picks only sold-price-backed profit windows and prefers older evidence', () => {
+  const oldEnough = '2026-10-01T20:00:00.000Z';
+  const newer = '2026-10-01T21:00:00.000Z';
+  const ids = selectPriorityRefreshFutbinIds([
+    {
+      futbinId: 21673,
+      observedAt: oldEnough,
+      priceConsole: 41750,
+      salesEvidence: {
+        soldPriceP25: 43250,
+        soldPriceMedian: 44500,
+        soldPriceMode: 46000,
+        soldPriceP75: 45500
+      }
+    },
+    {
+      futbinId: 22,
+      observedAt: newer,
+      priceConsole: 24250,
+      salesEvidence: {
+        soldPriceP25: 24750,
+        soldPriceMedian: 25000,
+        soldPriceMode: 25000,
+        soldPriceP75: 25750
+      }
+    },
+    {
+      futbinId: 999,
+      observedAt: newer,
+      priceConsole: 40000,
+      salesEvidence: {
+        soldPriceP25: 42000,
+        soldPriceMedian: 43000,
+        soldPriceMode: 43000,
+        soldPriceP75: 44000
+      }
+    }
+  ], 4);
+
+  assert.ok(ids.includes(21673));
+  assert.ok(ids.includes(999));
+  assert.equal(ids.includes(22), false);
+  assert.equal(ids[0], 21673);
 });
