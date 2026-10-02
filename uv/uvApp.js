@@ -1553,7 +1553,21 @@ app.post('/api/uv/generate', async (req, res) => {
     });
     pool = filterConservativeCandidates(pipelineResult.pool, pipelineCount);
     if (!pool.length) {
-      throw new Error('Robuste Kandidaten-Pipeline hat aktuell keine ausreichend sichere Karte freigegeben.');
+      const reasonCounts = new Map();
+      for (const card of pipelineResult.cards || []) {
+        for (const reason of card?.candidateGateReasons || []) {
+          reasonCounts.set(reason, (reasonCounts.get(reason) || 0) + 1);
+        }
+      }
+      const topReasons = [...reasonCounts.entries()]
+        .sort((a, b) => b[1] - a[1])
+        .slice(0, 3)
+        .map(([reason, n]) => `${n}x ${reason}`)
+        .join(' | ');
+      throw new Error(
+        `Robuste Kandidaten-Pipeline hat 0/${pipelineResult.cards?.length || 0} Karten freigegeben.`
+        + (topReasons ? ` Gründe: ${topReasons}` : '')
+      );
     }
 
     let affordability = maxAffordablePortfolioCount(pool, strategyBudget, count);
