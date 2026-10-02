@@ -60,7 +60,7 @@ function log(message, extra = null) {
 
 function writeStatus(status) {
   writeFileSync(STATE_FILE, JSON.stringify({
-    version: "1.4.4",
+    version: "1.4.5",
     snapshotHost: SNAPSHOT_HOST,
     port: PORT,
     intervalMinutes: Math.round(INTERVAL_MS / 60_000),
@@ -412,6 +412,23 @@ function snapshotRowsFromResults(cards, results) {
   return rows;
 }
 
+function summarizeBraveResults(cards, results) {
+  return (Array.isArray(cards) ? cards : []).map(card => {
+    const result = results?.get?.(String(card.eaId));
+    return {
+      futbinId: Number(card?.futbinId || 0) || null,
+      name: card?.name || null,
+      priorityRefresh: card?.priorityRefresh === true,
+      ok: result?.ok === true,
+      reason: result?.reason || result?.salesEvidenceReason || null,
+      resultId: Number(result?.id || 0) || null,
+      priceConsole: Number(result?.priceConsole || 0) || null,
+      gamesPlayedConsole: Number(result?.gamesPlayedConsole || 0) || null,
+      salesRows: Number(result?.evidence?.futbinSalesRowCount || 0)
+    };
+  });
+}
+
 async function pushSnapshot(rows) {
   if (!TOKEN) throw new Error("FUTBIN_SNAPSHOT_INGEST_TOKEN_MISSING");
   if (!rows.length) return { ok: true, inserted: 0, received: 0 };
@@ -526,23 +543,60 @@ export async function runCollectorCycle() {
     await closeCollectorBrave();
     await ensureBrave();
 
-    const collect = () => getFutbinBraveCards(selection.cards, "console", {
+    const collect = (cards = selection.cards, retry = false) => getFutbinBraveCards(cards, "console", {
       force: true,
+      forceFresh: retry,
       gameYear: 27,
       port: PORT,
-      maxCards: MAX_CARDS,
-      pageWaitMs: PAGE_WAIT_MS,
-      spacingMs: SPACING_MS,
+      maxCards: Math.max(1, Math.min(MAX_CARDS, cards.length)),
+      pageWaitMs: retry ? Math.max(PAGE_WAIT_MS, 8000) : PAGE_WAIT_MS,
+      spacingMs: retry ? Math.max(SPACING_MS, 3500) : SPACING_MS,
       includeSalesHistory: true
     });
     let brave = await collect();
     const retryableBrowserError = /terminated|BRAVE_DEBUG|ECONNREFUSED|fetch failed|WEBSOCKET/i.test(String(brave?.reason || ""));
     const blocked = /BLOCK|HTTP_40[13]|HTTP_429|CAPTCHA/i.test(String(brave?.reason || ""));
     if (!brave?.ok && retryableBrowserError && !blocked) {
+      await closeCollectorBrave();
       await ensureBrave();
-      brave = await collect();
+      brave = await collect(selection.cards, true);
     }
-    if (!brave?.ok && !brave?.results?.size) throw new Error(brave?.reason || "BRAVE_COLLECTOR_FAILED");
+
+    // A browser pass that returns a Map but zero usable observations is not a
+    // successful cycle. Re-open Brave and retry priority cards first, then the
+    // rest with a longer render wait. This avoids the old false-positive
+    // "ok:true, observedRows:0" state.
+    let preliminaryRows = snapshotRowsFromResults(selection.cards, brave?.results);
+    let zeroRowRetry = false;
+    if (!preliminaryRows.length && !blocked) {
+      zeroRowRetry = true;
+      log("zero-row-retry", { diagnostics: summarizeBraveResults(selection.cards, brave?.results) });
+      await closeCollectorBrave();
+      await ensureBrave();
+
+      const priorityFirst = [
+        ...selection.cards.filter(card => card.priorityRefresh === true),
+        ...selection.cards.filter(card => card.priorityRefresh !== true)
+      ];
+      const retryResults = new Map();
+      for (const group of [
+        priorityFirst.slice(0, Math.min(4, priorityFirst.length)),
+        priorityFirst.slice(Math.min(4, priorityFirst.length))
+      ]) {
+        if (!group.length) continue;
+        const attempt = await collect(group, true);
+        for (const [key, value] of (attempt?.results || new Map()).entries()) retryResults.set(key, value);
+        if (!attempt?.ok && /BLOCK|HTTP_40[13]|HTTP_429|CAPTCHA/i.test(String(attempt?.reason || ""))) break;
+      }
+      brave = { ok: retryResults.size > 0, year: 27, results: retryResults, reason: retryResults.size ? null : "ZERO_USABLE_OBSERVATIONS_AFTER_RETRY" };
+      preliminaryRows = snapshotRowsFromResults(selection.cards, brave.results);
+    }
+
+    if (!preliminaryRows.length) {
+      const diagnostics = summarizeBraveResults(selection.cards, brave?.results);
+      log("collector-zero-rows", { reason: brave?.reason || null, diagnostics });
+      throw new Error(`ZERO_USABLE_FUTBIN_OBSERVATIONS:${brave?.reason || "NO_VISIBLE_PRICE_OR_PAGE_DATA"}`);
+    }
 
     let salesEvidenceCards = 0;
     let salesEvidenceRows = 0;
@@ -573,7 +627,7 @@ export async function runCollectorCycle() {
       }
     }
 
-    const rows = snapshotRowsFromResults(selection.cards, brave.results);
+    const rows = preliminaryRows;
     const pushed = await pushSnapshot(rows);
     const status = {
       ok: true,
@@ -591,6 +645,7 @@ export async function runCollectorCycle() {
       selected: selection.cards.length,
       priorityRefreshSelected: Number(selection.priorityRefreshSelected || 0),
       priorityRefreshIds: priorityFutbinIds,
+      zeroRowRetry,
       observedRows: rows.length,
       inserted: Number(pushed?.inserted || 0),
       received: Number(pushed?.received || 0),
