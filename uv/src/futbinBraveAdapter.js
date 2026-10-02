@@ -80,14 +80,49 @@ async function openSession(port) {
   };
 
   await new Promise((resolve, reject) => {
-    ws.onopen = resolve;
-    ws.onerror = () => reject(new Error("BRAVE_DEBUG_WEBSOCKET_FAILED"));
+    let settled = false;
+    const timer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      reject(new Error("BRAVE_DEBUG_WEBSOCKET_OPEN_TIMEOUT"));
+    }, 10_000);
+    ws.onopen = () => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve();
+    };
+    ws.onerror = () => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      reject(new Error("BRAVE_DEBUG_WEBSOCKET_FAILED"));
+    };
   });
 
-  const call = (method, params = {}) => new Promise((resolve, reject) => {
+  const call = (method, params = {}, timeoutMs = 20_000) => new Promise((resolve, reject) => {
     const id = ++seq;
-    pending.set(id, { resolve, reject });
-    ws.send(JSON.stringify({ id, method, params }));
+    const timer = setTimeout(() => {
+      pending.delete(id);
+      reject(new Error(`BRAVE_CDP_TIMEOUT_${method}`));
+    }, timeoutMs);
+    pending.set(id, {
+      resolve: value => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      reject: error => {
+        clearTimeout(timer);
+        reject(error);
+      }
+    });
+    try {
+      ws.send(JSON.stringify({ id, method, params }));
+    } catch (error) {
+      clearTimeout(timer);
+      pending.delete(id);
+      reject(error);
+    }
   });
 
   await call("Page.enable");
