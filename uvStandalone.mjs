@@ -124,7 +124,13 @@ app.get('/api/uv/preflight', async (req, res) => {
   try {
     const platform = String(req.query?.platform || 'console').toLowerCase() === 'pc' ? 'pc' : 'console';
     const rows = await latestFutbinSnapshots(dbPool, { limit: 100, evidenceOnly: true });
-    const usable = rows.filter(row => {
+    const maxAgeSeconds = Math.max(300, Number(process.env.UV_FUTBIN_MAX_AGE_SECONDS || 5400));
+    const cutoff = Date.now() - maxAgeSeconds * 1000;
+    const freshRows = rows.filter(row => {
+      const observedMs = Date.parse(row?.observedAt || '');
+      return Number.isFinite(observedMs) && observedMs >= cutoff;
+    });
+    const usable = freshRows.filter(row => {
       const price = Number(platform === 'pc' ? row?.pricePc : row?.priceConsole);
       const games = Number(platform === 'pc' ? row?.gamesPlayedPc : row?.gamesPlayedConsole);
       const sales = row?.salesEvidence || {};
@@ -132,10 +138,7 @@ app.get('/api/uv/preflight', async (req, res) => {
       const sold = Number(sales?.soldSampleCount || 0);
       const soldPriceObserved = [sales?.soldPriceP25, sales?.soldPriceMedian, sales?.soldPriceMode, sales?.soldPriceP75]
         .some(value => Number(value) > 0);
-      const evidenceObservedAt = sales?.evidenceObservedAt || row?.observedAt || null;
-      const evidenceMs = Date.parse(evidenceObservedAt || '');
-      const evidenceFresh = Number.isFinite(evidenceMs) && evidenceMs >= Date.now() - 18 * 60 * 60_000;
-      return price > 0 && games > 0 && listings > 0 && sold >= 2 && soldPriceObserved && evidenceFresh;
+      return price > 0 && games > 0 && listings > 0 && sold >= 2 && soldPriceObserved;
     });
     return res.json({
       ok: true,
@@ -145,7 +148,9 @@ app.get('/api/uv/preflight', async (req, res) => {
       generationMode: 'DIRECT',
       sourceMode: 'NATIVE_UV',
       legacyUvLoaderPatches: false,
+      maxAgeSeconds,
       totalEvidenceRows: rows.length,
+      freshEvidenceRows: freshRows.length,
       usableThreeSignalRows: usable.length
     });
   } catch (error) {
