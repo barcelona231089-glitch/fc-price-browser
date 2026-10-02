@@ -29,6 +29,7 @@ function applySalesEvidence(card, raw) {
   card.futbinSalesEvidenceScore = n('salesEvidenceScore');
   card.futbinObservedSalesPerDay = n('observedSalesPerDay');
   card.futbinLatestSoldAt = e.latestSoldAt || null;
+  card.futbinSalesEvidenceObservedAt = e.evidenceObservedAt || null;
   card.futbinSalesHistoryAvailable = card.futbinSoldSampleCount > 0 || card.futbinUnsoldSampleCount > 0;
 }
 
@@ -38,6 +39,10 @@ export async function getLiveFutbinCards(pool, platform = 'console', options = {
     300,
     Number(options.maxAgeSeconds || process.env.UV_FUTBIN_MAX_AGE_SECONDS || 5400)
   );
+  const maxEvidenceAgeSeconds = Math.max(
+    3600,
+    Math.min(24 * 3600, Number(options.maxEvidenceAgeSeconds || process.env.UV_FUTBIN_EVIDENCE_MAX_AGE_SECONDS || 18 * 3600))
+  );
   const latest = await latestFutbinSnapshots(pool, { limit: 500, evidenceOnly: false });
   const cutoff = Date.now() - maxAgeSeconds * 1000;
   const cards = [];
@@ -46,6 +51,10 @@ export async function getLiveFutbinCards(pool, platform = 'console', options = {
     const observedAt = hit?.observedAt || null;
     const observedMs = Date.parse(observedAt || '');
     if (!Number.isFinite(observedMs) || observedMs < cutoff) continue;
+
+    const evidenceObservedAt = hit?.salesEvidence?.evidenceObservedAt || observedAt;
+    const evidenceMs = Date.parse(evidenceObservedAt || '');
+    if (hit?.salesEvidence && (!Number.isFinite(evidenceMs) || evidenceMs < Date.now() - maxEvidenceAgeSeconds * 1000)) continue;
 
     const eaId = reverseMap.get(String(hit?.futbinId));
     const price = positive(normalized === 'pc' ? hit?.pricePc : hit?.priceConsole);
@@ -70,6 +79,7 @@ export async function getLiveFutbinCards(pool, platform = 'console', options = {
       priceSource: 'FUTBIN',
       futbinCheckedAt: observedAt,
       futbinSnapshotFresh: true,
+      futbinSalesEvidenceFresh: !hit?.salesEvidence || (Number.isFinite(evidenceMs) && evidenceMs >= Date.now() - maxEvidenceAgeSeconds * 1000),
       futbinPopularRank: positive(hit?.popularRank),
       futbinGamesCount: games,
       futbinGamesPlayed: games,
