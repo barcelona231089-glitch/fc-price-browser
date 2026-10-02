@@ -1552,6 +1552,21 @@ app.post('/api/uv/generate', async (req, res) => {
       adaptivePolicy: adaptiveMarketPolicy
     });
     pool = filterConservativeCandidates(pipelineResult.pool, pipelineCount);
+
+    // If ranking removes every card, try the existing hard-safety reserve
+    // before failing. The reserve sees only cards that already passed the
+    // mandatory FUTBIN current-price + Games + Listings + real sold-price
+    // evidence and exact 5% tax/profit economics gates above.
+    let rankingSafetyReserveFallback = null;
+    if (!pool.length) {
+      rankingSafetyReserveFallback = buildBudgetSafetyReserveFallback(pipelineResult.cards, {
+        budget: strategyBudget,
+        count
+      });
+      pool = Array.isArray(rankingSafetyReserveFallback?.pool)
+        ? rankingSafetyReserveFallback.pool
+        : [];
+    }
     if (!pool.length) {
       const reasonCounts = new Map();
       for (const card of pipelineResult.cards || []) {
@@ -1565,7 +1580,7 @@ app.post('/api/uv/generate', async (req, res) => {
         .map(([reason, n]) => `${n}x ${reason}`)
         .join(' | ');
       throw new Error(
-        `Robuste Kandidaten-Pipeline hat 0/${pipelineResult.cards?.length || 0} Karten freigegeben.`
+        `Harte Sicherheitsreserve hat 0/${pipelineResult.cards?.length || 0} FUTBIN-Karten freigegeben.`
         + (topReasons ? ` Gründe: ${topReasons}` : '')
       );
     }
@@ -1573,7 +1588,7 @@ app.post('/api/uv/generate', async (req, res) => {
     let affordability = maxAffordablePortfolioCount(pool, strategyBudget, count);
     let hard100SellabilityFallback = null;
     let budgetAdaptiveFallback = null;
-    let budgetSafetyReserveFallback = null;
+    let budgetSafetyReserveFallback = rankingSafetyReserveFallback;
     if (Number(affordability.count || 0) < count) {
       // v2.3.3: first expand from the already-scored full universe using the
       // sellability ladder. It may ignore the dynamic rating proxy, but it never
