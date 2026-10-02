@@ -2200,46 +2200,35 @@ export function buildCandidatePool(cards, budget, count = 100) {
   const tierProfile = buildBudgetTierProfile(totalBudget, targetCount);
   const rows = Array.isArray(cards) ? cards : [];
 
-  let minPrice = Math.max(150, ideal * tierProfile.candidateMinRatio);
-  let maxPrice = Math.min(totalBudget * 0.075, ideal * tierProfile.candidateMaxRatio);
-  let pool = rows.filter(c => Number.isFinite(Number(c?.price)) && Number(c.price) >= minPrice && Number(c.price) <= maxPrice);
+  // v2.15.38: FUTBIN Games-first discovery.
+  // Candidate discovery must not pre-filter by an artificial per-slot price band.
+  // FUTBIN determines each player's current price; the final portfolio allocator
+  // decides whether the verified 100-card combination fits under the total budget.
+  // Only cards that are individually impossible to buy under the whole budget are
+  // removed here. Games is the primary discovery order.
+  const pool = rows
+    .filter(c => {
+      const price = Number(c?.futbinPrice ?? c?.price);
+      return Number.isFinite(price) && price > 0 && price <= totalBudget;
+    })
+    .sort((a, b) =>
+      Number(b?.futbinGamesPlayed || b?.futbinGamesCount || 0) - Number(a?.futbinGamesPlayed || a?.futbinGamesCount || 0)
+      || Number(a?.futbinPrice ?? a?.price ?? Infinity) - Number(b?.futbinPrice ?? b?.price ?? Infinity)
+    );
 
-  if (pool.length < targetCount * 3) {
-    // First widen around the desired per-slot price, while keeping the
-    // portfolio-shape preference intact when enough market supply exists.
-    minPrice = Math.max(150, ideal * 0.05);
-    maxPrice = Math.min(totalBudget * 0.12, ideal * 8.0);
-    pool = rows.filter(c => Number.isFinite(Number(c?.price)) && Number(c.price) >= minPrice && Number(c.price) <= maxPrice);
-  }
-
-  // Thin-pool rescue for the dedicated FUTBIN runtime:
-  // Never return an empty pool merely because the requested slot count implies
-  // an unrealistically low per-slot price for the evidence currently available.
-  // Every rescued row is still a real FUTBIN card and must remain individually
-  // affordable. All later evidence, safety, sold-price and profit gates remain
-  // unchanged and may still reject it.
-  if (pool.length < targetCount) {
-    const affordable = rows
-      .filter(c => {
-        const price = Number(c?.price);
-        return Number.isFinite(price) && price > 0 && price <= totalBudget;
-      })
-      .sort((a, b) => Number(a.price) - Number(b.price));
-
-    if (affordable.length > pool.length) {
-      pool = affordable;
-      minPrice = affordable.length ? Number(affordable[0].price) : minPrice;
-      maxPrice = affordable.length ? Number(affordable[affordable.length - 1].price) : maxPrice;
-    }
-  }
+  const prices = pool
+    .map(c => Number(c?.futbinPrice ?? c?.price))
+    .filter(Number.isFinite);
 
   return {
     pool,
     ideal,
-    minPrice,
-    maxPrice,
+    minPrice: prices.length ? Math.min(...prices) : 0,
+    maxPrice: prices.length ? Math.max(...prices) : 0,
     tierProfile,
-    thinPoolRescue: pool.some(card => Number(card?.price) > Math.min(totalBudget * 0.12, ideal * 8.0))
+    thinPoolRescue: false,
+    gamesFirstDiscovery: true,
+    priceBandPrefilterDisabled: true
   };
 }
 
