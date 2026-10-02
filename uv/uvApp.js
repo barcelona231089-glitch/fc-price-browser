@@ -20,7 +20,7 @@ import { attachLocalFutbinFc27 } from './src/futbinLocalFc27.js';
 import { enrichRowsWithSnapshotFutbinBrain } from '../futbinSnapshotReaderV1.js';
 
 export const uvRouter = express.Router();
-const UV_VERSION = '2.15.27';
+const UV_VERSION = '2.15.28';
 const UV_PRODUCTION_LOADER_PRESENT = process.execArgv.some(arg => String(arg || '').includes('v1066Loader.mjs'));
 const UV_STANDALONE_GRAPH_TAGGED = (() => {
   try { return new URL(import.meta.url).searchParams.has('uv-standalone'); } catch { return false; }
@@ -1544,8 +1544,14 @@ app.post('/api/uv/generate', async (req, res) => {
     console.log('[UV-GEN] FUTBIN economics gate', { before: economicsInputCount, usableUnique: scored.length, requestedSlots: count });
 
     const adaptiveMarketPolicy = deriveAdaptiveMarketPolicy(scored, { budget: strategyBudget, count, gameYear: GAME_YEAR });
-    const pipelineResult = runCandidatePipeline(scored, count, { budget: strategyBudget, portfolioCount: count, gameYear: GAME_YEAR, adaptivePolicy: adaptiveMarketPolicy });
-    pool = filterConservativeCandidates(pipelineResult.pool, count);
+    const pipelineCount = Math.max(1, Math.min(count, scored.length));
+    const pipelineResult = runCandidatePipeline(scored, pipelineCount, {
+      budget: strategyBudget,
+      portfolioCount: count,
+      gameYear: GAME_YEAR,
+      adaptivePolicy: adaptiveMarketPolicy
+    });
+    pool = filterConservativeCandidates(pipelineResult.pool, pipelineCount);
     if (!pool.length) {
       throw new Error('Robuste Kandidaten-Pipeline hat aktuell keine ausreichend sichere Karte freigegeben.');
     }
