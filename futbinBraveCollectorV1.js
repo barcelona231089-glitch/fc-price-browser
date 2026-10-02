@@ -28,7 +28,7 @@ const SNAPSHOT_HOST = String(
   "https://onset-stormy-wolf.abasthan.app"
 ).replace(/\/$/, "");
 const PORT = Math.max(1024, Math.min(65535, Number(process.env.FUTBIN_BRAVE_COLLECTOR_PORT || 9230)));
-const MAX_CARDS = Math.max(1, Math.min(12, Number(process.env.FUTBIN_BRAVE_COLLECTOR_MAX_CARDS || 6)));
+const MAX_CARDS = Math.max(1, Math.min(20, Number(process.env.FUTBIN_BRAVE_COLLECTOR_MAX_CARDS || 8)));
 const SALES_CARDS_PER_CYCLE = Math.max(0, Math.min(2, Number(process.env.FUTBIN_BRAVE_SALES_CARDS_PER_CYCLE || 1)));
 const INTERVAL_MS = Math.max(15 * 60_000, Number(process.env.FUTBIN_BRAVE_COLLECTOR_INTERVAL_MS || 30 * 60_000));
 const PAGE_WAIT_MS = Math.max(1500, Math.min(20_000, Number(process.env.FUTBIN_BRAVE_PAGE_WAIT_MS || 4500)));
@@ -60,7 +60,7 @@ function log(message, extra = null) {
 
 function writeStatus(status) {
   writeFileSync(STATE_FILE, JSON.stringify({
-    version: "1.4.7",
+    version: "1.4.8",
     snapshotHost: SNAPSHOT_HOST,
     port: PORT,
     intervalMinutes: Math.round(INTERVAL_MS / 60_000),
@@ -195,7 +195,7 @@ function collectorScore(row) {
 }
 
 export function selectCollectorCards(rows = [], options = {}) {
-  const maxCards = Math.max(1, Math.min(12, Number(options.maxCards || MAX_CARDS)));
+  const maxCards = Math.max(1, Math.min(20, Number(options.maxCards || MAX_CARDS)));
   const startCursor = Math.max(0, Number(options.cursor || 0));
   const priorityCards = Array.isArray(options.priorityCards) ? options.priorityCards : [];
   const priorityFutbinIds = Array.isArray(options.priorityFutbinIds)
@@ -243,38 +243,56 @@ export function selectCollectorCards(rows = [], options = {}) {
       overall: Number(row.overall || row.rating || 0) || null,
       cardType: row.cardType || row.rarityName || null,
       targetPriceConsole: Number(row.livePrice || row.priceConsole) || null,
+      targetObservedAt: row.targetObservedAt || null,
+      fallbackGamesPlayedConsole: Number(row.gamesPlayedConsole || 0) || null,
       priorityRefresh: true
     });
     used.add(key);
   }
 
-  // Fill the remaining capacity with the original price-stratified rotation so
-  // small, medium and large budgets all continue to receive coverage.
+  // The user's 100k/100-slot mode needs a deep cheap-card evidence pool.
+  // Reserve most non-priority slots for <=2.5k cards, while keeping a few broad
+  // price-stratified slots so larger budgets continue to receive coverage.
   const remaining = eligible.filter(row => {
     const key = Number(row?.futbinId || FUTBIN_FC27_EA_TO_ID[String(row?.eaId)]);
     return !used.has(key);
   });
   const remainingTake = Math.max(0, take - cards.length);
-  for (let i = 0; i < remainingTake; i += 1) {
-    const start = Math.floor((i * remaining.length) / remainingTake);
-    const endExclusive = Math.max(start + 1, Math.floor(((i + 1) * remaining.length) / remainingTake));
-    const span = Math.max(1, endExclusive - start);
-    const idx = start + ((startCursor + i) % span);
-    const row = remaining[Math.min(remaining.length - 1, idx)];
-    if (!row) continue;
-    const key = Number(row?.futbinId || FUTBIN_FC27_EA_TO_ID[String(row?.eaId)]);
-    if (used.has(key)) continue;
-    cards.push({
-      eaId: String(row.eaId),
-      futbinId: key,
-      name: row.name || null,
-      overall: Number(row.overall || row.rating || 0) || null,
-      cardType: row.cardType || row.rarityName || null,
-      targetPriceConsole: Number(row.livePrice) || null,
-      targetObservedAt: row.targetObservedAt || null
+  const broadSlots = Math.min(4, remainingTake);
+  const lowBudgetSlots = Math.max(0, remainingTake - broadSlots);
+
+  const addStratified = (source, slots, cursorOffset = 0) => {
+    const pool = source.filter(row => {
+      const key = Number(row?.futbinId || FUTBIN_FC27_EA_TO_ID[String(row?.eaId)]);
+      return !used.has(key);
     });
-    used.add(key);
-  }
+    if (!pool.length || slots <= 0) return;
+    const actualSlots = Math.min(slots, pool.length);
+    for (let i = 0; i < actualSlots; i += 1) {
+      const start = Math.floor((i * pool.length) / actualSlots);
+      const endExclusive = Math.max(start + 1, Math.floor(((i + 1) * pool.length) / actualSlots));
+      const span = Math.max(1, endExclusive - start);
+      const idx = start + ((startCursor + cursorOffset + i) % span);
+      const row = pool[Math.min(pool.length - 1, idx)];
+      if (!row) continue;
+      const key = Number(row?.futbinId || FUTBIN_FC27_EA_TO_ID[String(row?.eaId)]);
+      if (used.has(key)) continue;
+      cards.push({
+        eaId: String(row.eaId),
+        futbinId: key,
+        name: row.name || null,
+        overall: Number(row.overall || row.rating || 0) || null,
+        cardType: row.cardType || row.rarityName || null,
+        targetPriceConsole: Number(row.livePrice) || null,
+        targetObservedAt: row.targetObservedAt || null
+      });
+      used.add(key);
+    }
+  };
+
+  const lowBudgetRows = remaining.filter(row => Number(row.livePrice) <= 2500);
+  addStratified(lowBudgetRows, lowBudgetSlots, 0);
+  addStratified(remaining, Math.max(0, take - cards.length), lowBudgetSlots);
 
   const nextCursor = eligible.length ? startCursor + 1 : 0;
   return {
