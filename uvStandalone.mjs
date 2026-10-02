@@ -15,7 +15,7 @@ app.use(express.json({ limit: '2mb' }));
 let uvRouter = null;
 let initUvBrain = null;
 let shutdownUvBrain = async () => {};
-let getUvRuntimeStatus = () => ({ ok: true, started: false, version: '2.15.26', gameYear: 27, runtimeMode: 'STARTING', nativeGraphVerified: true });
+let getUvRuntimeStatus = () => ({ ok: true, started: false, version: '2.15.27', gameYear: 27, runtimeMode: 'STARTING', nativeGraphVerified: true });
 let dbPool = null;
 let validIngestToken = () => false;
 let ingestFutbinSnapshot = async () => ({ inserted: 0, received: 0 });
