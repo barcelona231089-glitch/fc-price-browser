@@ -20,7 +20,7 @@ import { attachLocalFutbinFc27 } from './src/futbinLocalFc27.js';
 import { enrichRowsWithSnapshotFutbinBrain } from '../futbinSnapshotReaderV1.js';
 
 export const uvRouter = express.Router();
-const UV_VERSION = '2.15.33';
+const UV_VERSION = '2.15.34';
 const UV_PRODUCTION_LOADER_PRESENT = process.execArgv.some(arg => String(arg || '').includes('v1066Loader.mjs'));
 const UV_STANDALONE_GRAPH_TAGGED = (() => {
   try { return new URL(import.meta.url).searchParams.has('uv-standalone'); } catch { return false; }
@@ -1044,7 +1044,13 @@ async function performLiveRecheck(listId, job = null) {
       MISSING: 'kein aktueller FUTBIN-Preis fuer diese Karten-ID vorhanden'
     },
     marketContext: { direction: marketContext?.direction || 'unknown', changePct: marketContext?.changePct ?? null, stabilityScore: marketContext?.stabilityScore ?? 55 },
-    demandContext: demandAttached.context,
+    demandContext: {
+      mode: demandMode,
+      source: 'FUTBIN_ONLY',
+      cardsWithGames: futbinGamesCoverage,
+      cardsWithSoldEvidence: futbinSalesCoverage,
+      cardsWithConfirmedMatch: futbinConfirmed
+    },
     cards: rows
   };
 }
