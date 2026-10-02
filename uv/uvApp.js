@@ -20,7 +20,7 @@ import { attachLocalFutbinFc27 } from './src/futbinLocalFc27.js';
 import { enrichRowsWithSnapshotFutbinBrain } from '../futbinSnapshotReaderV1.js';
 
 export const uvRouter = express.Router();
-const UV_VERSION = '2.15.34';
+const UV_VERSION = '2.15.35';
 const UV_PRODUCTION_LOADER_PRESENT = process.execArgv.some(arg => String(arg || '').includes('v1066Loader.mjs'));
 const UV_STANDALONE_GRAPH_TAGGED = (() => {
   try { return new URL(import.meta.url).searchParams.has('uv-standalone'); } catch { return false; }
@@ -1313,7 +1313,11 @@ app.post('/api/uv/rebalance/:listId', async (req, res) => {
       rebalanceFromListId: stored.id,
       salesProbability: null
     }));
-    selected.sort((a, b) => b.selectionScore - a.selectionScore || b.longTermScore - a.longTermScore);
+    selected.sort((a, b) =>
+      Number(a.futbinGamesPriorityRank || Number.MAX_SAFE_INTEGER) - Number(b.futbinGamesPriorityRank || Number.MAX_SAFE_INTEGER)
+      || Number(b.selectionScore || 0) - Number(a.selectionScore || 0)
+      || Number(b.longTermScore || 0) - Number(a.longTermScore || 0)
+    );
     const integrity = assertUvPortfolioIntegrity(selected, { budget, count, gameYear: GAME_YEAR });
 
     const metrics = summarizeSelectedCards(selected, budget, balanced.specialTargetRatio);
@@ -1587,6 +1591,20 @@ app.post('/api/uv/generate', async (req, res) => {
     // a 100-slot list. Actual feasibility is decided below by
     // maxAffordablePortfolioCount, not by the number of unique rows alone.
     console.log('[UV-GEN] FUTBIN economics gate', { before: economicsInputCount, usableUnique: scored.length, requestedSlots: count });
+
+    // v2.15.35: Games-first candidate priority. All cards here have already
+    // passed the mandatory FUTBIN price + Games + Listings + sold-history gate
+    // and valid 5% tax/profit economics. Games decides which fully verified
+    // candidates are evaluated first; it never bypasses the other evidence.
+    scored.sort((a, b) =>
+      Number(b.futbinGamesPlayed || b.futbinGamesCount || 0) - Number(a.futbinGamesPlayed || a.futbinGamesCount || 0)
+      || Number(b.futbinSoldSampleCount || 0) - Number(a.futbinSoldSampleCount || 0)
+      || Number(b.selectionScore || 0) - Number(a.selectionScore || 0)
+    );
+    scored = scored.map((card, index) => ({
+      ...card,
+      futbinGamesPriorityRank: index + 1
+    }));
 
     const adaptiveMarketPolicy = deriveAdaptiveMarketPolicy(scored, { budget: strategyBudget, count, gameYear: GAME_YEAR });
     const pipelineCount = Math.max(1, Math.min(count, scored.length));
