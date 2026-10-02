@@ -5,6 +5,10 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { FUTBIN_FC27_EA_TO_ID } from "./futbinIdMapFc27.js";
 import { getFutbinBraveCards } from "./uv/src/futbinBraveAdapter.js";
 
+const FUTBIN_FC27_ID_TO_EA = new Map(
+  Object.entries(FUTBIN_FC27_EA_TO_ID).map(([eaId, futbinId]) => [Number(futbinId), String(eaId)])
+);
+
 const ROOT = dirname(fileURLToPath(import.meta.url));
 const LOG_DIR = join(ROOT, "logs");
 const STATE_FILE = join(LOG_DIR, "futbin-brave-collector-status.json");
@@ -193,9 +197,10 @@ function collectorScore(row) {
 export function selectCollectorCards(rows = [], options = {}) {
   const maxCards = Math.max(1, Math.min(12, Number(options.maxCards || MAX_CARDS)));
   const startCursor = Math.max(0, Number(options.cursor || 0));
+  const priorityCards = Array.isArray(options.priorityCards) ? options.priorityCards : [];
   const priorityFutbinIds = Array.isArray(options.priorityFutbinIds)
     ? options.priorityFutbinIds.map(Number).filter(id => Number.isFinite(id) && id > 0)
-    : [];
+    : priorityCards.map(card => Number(card?.futbinId)).filter(id => Number.isFinite(id) && id > 0);
   const prioritySlots = Math.max(0, Math.min(maxCards, Number(options.prioritySlots ?? 4)));
   const eligible = (Array.isArray(rows) ? rows : [])
     .filter(row => row?.futbinOnlyTarget === true || Number(row?.overall || row?.rating || 0) >= 82)
@@ -220,18 +225,24 @@ export function selectCollectorCards(rows = [], options = {}) {
   // Keep a few slots for cards that previously showed a real sold-price-backed
   // profit window. Without this, the rotating price slices can let the only
   // actionable card expire from the 90-minute UV freshness window.
+  const priorityCardById = new Map(
+    priorityCards
+      .map(card => [Number(card?.futbinId || 0), card])
+      .filter(([id]) => Number.isFinite(id) && id > 0)
+  );
   for (const futbinId of priorityFutbinIds.slice(0, prioritySlots)) {
-    const row = byFutbinId.get(Number(futbinId));
+    const row = byFutbinId.get(Number(futbinId)) || priorityCardById.get(Number(futbinId));
     if (!row || cards.length >= take) continue;
     const key = Number(row?.futbinId || FUTBIN_FC27_EA_TO_ID[String(row?.eaId)]);
-    if (used.has(key)) continue;
+    const eaId = String(row?.eaId || FUTBIN_FC27_ID_TO_EA.get(key) || "");
+    if (!eaId || used.has(key)) continue;
     cards.push({
-      eaId: String(row.eaId),
+      eaId,
       futbinId: key,
       name: row.name || null,
       overall: Number(row.overall || row.rating || 0) || null,
       cardType: row.cardType || row.rarityName || null,
-      targetPriceConsole: Number(row.livePrice) || null,
+      targetPriceConsole: Number(row.livePrice || row.priceConsole) || null,
       priorityRefresh: true
     });
     used.add(key);
@@ -448,14 +459,31 @@ export function selectPriorityRefreshFutbinIds(snapshotRows = [], limit = 4) {
     .map(row => row.futbinId);
 }
 
-async function loadPriorityRefreshFutbinIds(limit = 4) {
+async function loadPriorityRefreshTargets(limit = 4) {
   try {
     const latest = await fetchJson(
       `${SNAPSHOT_HOST}/api/futbin-fc27-latest?limit=100&evidenceOnly=true`,
       { headers: { accept: "application/json" } },
       10_000
     );
-    return selectPriorityRefreshFutbinIds(latest?.rows || [], limit);
+    const rows = Array.isArray(latest?.rows) ? latest.rows : [];
+    const ids = selectPriorityRefreshFutbinIds(rows, limit);
+    const byId = new Map(rows.map(row => [Number(row?.futbinId || 0), row]));
+    return ids.map(futbinId => {
+      const row = byId.get(Number(futbinId)) || {};
+      const eaId = FUTBIN_FC27_ID_TO_EA.get(Number(futbinId)) || "";
+      return {
+        eaId,
+        futbinId: Number(futbinId),
+        name: row?.name || null,
+        overall: Number(row?.rating || 0) || null,
+        rating: Number(row?.rating || 0) || null,
+        cardType: null,
+        futbinOnlyTarget: true,
+        livePrice: Number(row?.priceConsole || 0) || null,
+        priceConsole: Number(row?.priceConsole || 0) || null
+      };
+    }).filter(card => card.eaId && card.futbinId > 0 && Number(card.livePrice) > 0);
   } catch (error) {
     log("priority-refresh-soft-fail", { error: String(error?.message || error) });
     return [];
@@ -475,10 +503,12 @@ export async function runCollectorCycle() {
   });
   try {
     const targetRows = await loadCollectorTargets();
-    const priorityFutbinIds = await loadPriorityRefreshFutbinIds(4);
+    const priorityCards = await loadPriorityRefreshTargets(4);
+    const priorityFutbinIds = priorityCards.map(card => card.futbinId);
     const selection = selectCollectorCards(targetRows, {
       maxCards: MAX_CARDS,
       cursor,
+      priorityCards,
       priorityFutbinIds,
       prioritySlots: 4
     });
