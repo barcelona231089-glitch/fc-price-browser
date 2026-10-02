@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { selectCollectorCards, selectPriorityRefreshFutbinIds } from '../futbinBraveCollectorV1.js';
+import { selectCollectorCards, selectPriorityRefreshFutbinIds, buildCarriedEvidenceRows } from '../futbinBraveCollectorV1.js';
 
 test('collector v1.4 selects across the full live-price range instead of one rating neighborhood', () => {
   const rows = Array.from({ length: 24 }, (_, i) => ({
@@ -202,4 +202,55 @@ test('collector v1.4.8 uses 20 slots and concentrates evidence on low-cost cards
   assert.equal(result.cards.length, 20);
   assert.ok(result.cards.filter(card => Number(card.targetPriceConsole) <= 2500).length >= 12);
   assert.ok(result.cards.some(card => Number(card.targetPriceConsole) > 2500));
+});
+
+
+test('collector v1.4.9 carries recent real sales evidence onto a fresh filtered FUTBIN price', () => {
+  const now = Date.parse('2026-10-02T18:00:00.000Z');
+  const targets = [{
+    eaId: '123',
+    futbinId: 9001,
+    name: 'Cheap Target',
+    overall: 83,
+    livePrice: 700,
+    targetObservedAt: '2026-10-02T17:59:00.000Z'
+  }];
+  const snapshots = [{
+    futbinId: 9001,
+    observedAt: '2026-10-02T08:00:00.000Z',
+    name: 'Cheap Target',
+    rating: 83,
+    priceConsole: 750,
+    gamesPlayedConsole: 12000,
+    salesEvidence: {
+      listedSampleCount: 500,
+      soldSampleCount: 450,
+      soldPriceMedian: 800,
+      soldPriceP25: 750,
+      soldPriceP75: 800,
+      soldPriceMode: 800
+    }
+  }];
+
+  const rows = buildCarriedEvidenceRows(targets, snapshots, { nowMs: now, maxEvidenceAgeMs: 18 * 60 * 60_000 });
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].priceConsole, 700);
+  assert.equal(rows[0].gamesPlayedConsole, 12000);
+  assert.equal(rows[0].salesEvidence.soldPriceMedian, 800);
+  assert.equal(rows[0].salesEvidence.evidenceObservedAt, '2026-10-02T08:00:00.000Z');
+});
+
+test('collector v1.4.9 refuses to carry sales evidence older than the bounded evidence window', () => {
+  const rows = buildCarriedEvidenceRows([{
+    eaId: '123', futbinId: 9001, name: 'Old Target', overall: 83,
+    livePrice: 700, targetObservedAt: '2026-10-02T17:59:00.000Z'
+  }], [{
+    futbinId: 9001, observedAt: '2026-10-01T20:00:00.000Z',
+    gamesPlayedConsole: 12000,
+    salesEvidence: { listedSampleCount: 500, soldSampleCount: 450, soldPriceMedian: 800 }
+  }], {
+    nowMs: Date.parse('2026-10-02T18:00:00.000Z'),
+    maxEvidenceAgeMs: 18 * 60 * 60_000
+  });
+  assert.equal(rows.length, 0);
 });
