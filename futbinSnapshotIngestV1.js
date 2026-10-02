@@ -136,7 +136,8 @@ function normalizeSalesEvidence(value, nowMs) {
     soldPriceMode: nullablePositiveInt(value.soldPriceMode),
     salesEvidenceScore: finiteNumber(value.salesEvidenceScore),
     soldPremiumPctVsLive: finiteNumber(value.soldPremiumPctVsLive),
-    latestSoldAt
+    latestSoldAt,
+    evidenceObservedAt: cleanObservedAt(value.evidenceObservedAt, nowMs)
   };
   return Object.values(out).some(v => v != null) ? out : null;
 }
