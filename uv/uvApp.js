@@ -20,7 +20,7 @@ import { attachLocalFutbinFc27 } from './src/futbinLocalFc27.js';
 import { enrichRowsWithSnapshotFutbinBrain } from '../futbinSnapshotReaderV1.js';
 
 export const uvRouter = express.Router();
-const UV_VERSION = '2.15.32';
+const UV_VERSION = '2.15.33';
 const UV_PRODUCTION_LOADER_PRESENT = process.execArgv.some(arg => String(arg || '').includes('v1066Loader.mjs'));
 const UV_STANDALONE_GRAPH_TAGGED = (() => {
   try { return new URL(import.meta.url).searchParams.has('uv-standalone'); } catch { return false; }
@@ -79,6 +79,42 @@ let lastHistoryMonitorConsideredCards = 0;
 // v2.7.2: live rechecks run as short-lived server-side jobs. This avoids keeping
 // one HTTP request open while 100 cards are rescored, which some hosting proxies
 // terminate with a browser-level "Failed to fetch" even though Node is still working.
+const transientRecheckLists = new Map();
+const TRANSIENT_RECHECK_LIST_TTL_MS = 30 * 60 * 1000;
+
+function createTransientRecheckList(payload) {
+  const id = `tmp-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+  const cards = Array.isArray(payload?.cards) ? payload.cards : [];
+  const stored = {
+    id,
+    platform: payload?.platform === 'pc' ? 'pc' : 'console',
+    budget: Number(payload?.budget || 0),
+    cardCount: cards.length,
+    createdAt: new Date().toISOString(),
+    items: cards.map((card, index) => ({
+      slot: index + 1,
+      eaId: card.eaId,
+      buyPrice: card.buyPrice,
+      startPrice: card.startPrice,
+      sellPrice: card.sellPrice,
+      netProfit: card.netProfit,
+      payload: card
+    }))
+  };
+  transientRecheckLists.set(id, stored);
+  const timer = setTimeout(() => transientRecheckLists.delete(id), TRANSIENT_RECHECK_LIST_TTL_MS);
+  timer.unref?.();
+  return id;
+}
+
+async function loadRecheckList(listId) {
+  const key = String(listId);
+  const transient = transientRecheckLists.get(key);
+  if (transient) return { ...transient, transientRecheckOnly: true };
+  if (!isDbEnabled()) throw new Error('Temporäre Live-Recheck-Liste ist abgelaufen. Bitte Liste neu generieren.');
+  return loadGeneratedList(listId);
+}
+
 const liveRecheckJobs = new Map();
 const liveRecheckJobByList = new Map();
 const LIVE_RECHECK_QUEUE = [];
@@ -801,12 +837,11 @@ function prioritizeMarketVerificationCandidates(cards = [], ideal = 3000) {
 }
 
 async function performLiveRecheck(listId, job = null) {
-  if (!isDbEnabled()) throw new Error('PostgreSQL ist fuer gespeicherte Listen-Rechecks erforderlich.');
   if (!uvWriteAllowed()) throw new Error('HA-STANDBY: Live-Recheck darf nur auf dem aktiven Leader laufen.');
 
   const runStartedAt = Date.now();
   if (job) job.phase = 'LOAD_LIST';
-  const stored = await loadGeneratedList(listId);
+  const stored = await loadRecheckList(listId);
   const platform = stored.platform === 'pc' ? 'pc' : 'console';
   const items = Array.isArray(stored.items) ? stored.items : [];
   const previousPayloadById = new Map(items.map(item => [String(item.eaId), item.payload || {}]));
@@ -980,7 +1015,7 @@ async function performLiveRecheck(listId, job = null) {
 
   if (!uvWriteAllowed()) throw new Error('HA-Lease waehrend des Live-Rechecks verloren. Ergebnis wurde nicht als frisch gespeichert.');
   if (job) job.phase = 'PERSIST';
-  await saveListRecheck(stored.id, rows, recheckSummary, checkedAt);
+  if (!stored.transientRecheckOnly && isDbEnabled()) await saveListRecheck(stored.id, rows, recheckSummary, checkedAt);
   const durationMs = Math.max(0, Date.now() - runStartedAt);
   liveRecheckLastDurationMs = durationMs;
 
@@ -1089,7 +1124,6 @@ function startLiveRecheckJob(listId) {
 
 function handleLiveRecheckStart(req, res) {
   if (!requireUvActive(req, res)) return;
-  if (!isDbEnabled()) return res.status(503).json({ error: 'PostgreSQL ist fuer gespeicherte Listen-Rechecks erforderlich.' });
   try {
     const { job, reused } = startLiveRecheckJob(req.params.listId);
     res.status(202).json({
@@ -1809,8 +1843,8 @@ app.post('/api/uv/generate', async (req, res) => {
     };
 
     const listId = saveListRequested ? await saveGeneratedList(result).catch(() => null) : null;
-    const transientRecheckListId = !saveListRequested && isDbEnabled()
-      ? await saveGeneratedList({ ...result, transientRecheckOnly: true }).catch(() => null)
+    const transientRecheckListId = !saveListRequested
+      ? createTransientRecheckList(result)
       : null;
     result.listId = listId;
     result.recheckListId = transientRecheckListId;
