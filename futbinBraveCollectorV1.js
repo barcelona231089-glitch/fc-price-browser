@@ -60,7 +60,7 @@ function log(message, extra = null) {
 
 function writeStatus(status) {
   writeFileSync(STATE_FILE, JSON.stringify({
-    version: "1.4.6",
+    version: "1.4.7",
     snapshotHost: SNAPSHOT_HOST,
     port: PORT,
     intervalMinutes: Math.round(INTERVAL_MS / 60_000),
