@@ -205,7 +205,7 @@ export async function getFutbinBraveCards(cards = [], platform = "console", opti
     for (const card of cards.slice(0, cfg.maxCards)) {
       const key = `${cacheKey(card, platform)}|sales:${options.includeSalesHistory ? "1" : "0"}`;
       const cached = cache.get(key);
-      if (cached && Date.now() - cached.at < cfg.cacheMs) {
+      if (!options.forceFresh && cached && Date.now() - cached.at < cfg.cacheMs) {
         state.cacheHits += 1;
         results.set(String(card.eaId), cached.value);
         continue;
@@ -253,7 +253,11 @@ export async function getFutbinBraveCards(cards = [], platform = "console", opti
         }
       }
 
-      cache.set(key, { at: Date.now(), value });
+      if (value.ok || Number(value?.evidence?.futbinSalesRowCount || 0) > 0) {
+        cache.set(key, { at: Date.now(), value });
+      } else {
+        cache.delete(key);
+      }
       results.set(String(card.eaId), value);
       state.calls += 1;
       if (value.ok) state.lastSuccessAt = new Date().toISOString();
