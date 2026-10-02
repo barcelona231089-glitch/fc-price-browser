@@ -142,11 +142,16 @@ async function resolvePlayerUrl(session, card, cfg) {
 }
 
 function resultFromParsed(card, parsed, url, platform) {
-  const price = choosePrice(parsed, platform);
-  const urlId = String(url || "").match(/\/27\/player\/(\d+)/)?.[1] || null;
-  const priceConsole = Number(parsed?.pricePlayStation) > 0 ? Number(parsed.pricePlayStation) : null;
+  const parsedPrice = choosePrice(parsed, platform);
+  const filteredPriceConsole = Number(card?.targetPriceConsole) > 0 ? Number(card.targetPriceConsole) : null;
+  const priceConsole = Number(parsed?.pricePlayStation) > 0
+    ? Number(parsed.pricePlayStation)
+    : (platform !== "pc" ? filteredPriceConsole : null);
   const pricePc = Number(parsed?.pricePc ?? parsed?.pricePC) > 0 ? Number(parsed.pricePc ?? parsed.pricePC) : null;
-  const observedAtConsole = parsed?.priceUpdatedAtConsole ?? null;
+  const price = platform === "pc" ? pricePc : priceConsole;
+  const urlId = String(url || "").match(/\/27\/player\/(\d+)/)?.[1] || null;
+  const observedAtConsole = parsed?.priceUpdatedAtConsole
+    ?? (priceConsole === filteredPriceConsole ? card?.targetObservedAt ?? null : null);
   const observedAtPc = parsed?.priceUpdatedAtPc ?? null;
   return {
     ok: Boolean(price),
@@ -155,7 +160,9 @@ function resultFromParsed(card, parsed, url, platform) {
     pricePc,
     rating: Number(parsed?.rating) > 0 ? Number(parsed.rating) : (Number(card?.overall || card?.rating) || null),
     popularRank: Number.isFinite(Number(parsed?.popularityRank)) ? Number(parsed.popularityRank) : null,
-    gamesPlayedConsole: Number.isFinite(Number(parsed?.gamesPlayedConsole)) ? Number(parsed.gamesPlayedConsole) : null,
+    gamesPlayedConsole: Number.isFinite(Number(parsed?.gamesPlayedConsole)) && Number(parsed.gamesPlayedConsole) > 0
+      ? Number(parsed.gamesPlayedConsole)
+      : (Number(card?.fallbackGamesPlayedConsole) > 0 ? Number(card.fallbackGamesPlayedConsole) : null),
     gamesPlayedPc: Number.isFinite(Number(parsed?.gamesPlayedPc)) ? Number(parsed.gamesPlayedPc) : null,
     id: parsed?.futbinId ?? card?.futbinId ?? (urlId ? Number(urlId) : null),
     name: parsed?.name ?? card?.name ?? null,
