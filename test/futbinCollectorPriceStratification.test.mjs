@@ -144,3 +144,35 @@ test('collector can refresh a profitable priority card even when it is missing f
   assert.equal(result.cards[0].futbinId, 21673);
   assert.equal(result.cards[0].priorityRefresh, true);
 });
+
+
+test('priority refresh carries current filtered price timestamp and previous Games fallback', () => {
+  const result = selectCollectorCards([
+    {
+      eaId: '5679',
+      futbinId: 21673,
+      name: 'Nwankwo Kanu',
+      overall: 86,
+      futbinOnlyTarget: true,
+      livePrice: 40750,
+      targetObservedAt: '2026-10-02T04:00:00.000Z'
+    }
+  ], {
+    maxCards: 1,
+    cursor: 0,
+    priorityCards: [{
+      eaId: '5679',
+      futbinId: 21673,
+      name: 'Nwankwo Kanu',
+      overall: 86,
+      livePrice: 41750,
+      gamesPlayedConsole: 18613
+    }],
+    prioritySlots: 1
+  });
+
+  assert.equal(result.cards[0].futbinId, 21673);
+  assert.equal(result.cards[0].targetPriceConsole, 40750);
+  assert.equal(result.cards[0].targetObservedAt, '2026-10-02T04:00:00.000Z');
+  assert.equal(result.cards[0].fallbackGamesPlayedConsole, 18613);
+});
