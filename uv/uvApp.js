@@ -20,7 +20,7 @@ import { attachLocalFutbinFc27 } from './src/futbinLocalFc27.js';
 import { enrichRowsWithSnapshotFutbinBrain } from '../futbinSnapshotReaderV1.js';
 
 export const uvRouter = express.Router();
-const UV_VERSION = '2.15.30';
+const UV_VERSION = '2.15.31';
 const UV_PRODUCTION_LOADER_PRESENT = process.execArgv.some(arg => String(arg || '').includes('v1066Loader.mjs'));
 const UV_STANDALONE_GRAPH_TAGGED = (() => {
   try { return new URL(import.meta.url).searchParams.has('uv-standalone'); } catch { return false; }
@@ -1286,6 +1286,9 @@ app.post('/api/uv/rebalance/:listId', async (req, res) => {
       avgUvScore: metrics.avgUvScore
     };
     const newListId = saveListRequested ? await saveGeneratedList(savePayload) : null;
+    const transientRecheckListId = !saveListRequested && isDbEnabled()
+      ? await saveGeneratedList({ ...savePayload, transientRecheckOnly: true }).catch(() => null)
+      : null;
     const recheckCounts = recheckRows.reduce((acc, row) => { acc[row.status] = (acc[row.status] || 0) + 1; return acc; }, {});
 
     res.json({
@@ -1295,6 +1298,8 @@ app.post('/api/uv/rebalance/:listId', async (req, res) => {
       platform,
       budget,
       listId: newListId,
+      recheckListId: transientRecheckListId,
+      transientRecheckOnly: Boolean(transientRecheckListId),
       saved: Boolean(newListId),
       saveRequested: saveListRequested,
       rebalanceFromListId: stored.id,
@@ -1805,7 +1810,12 @@ app.post('/api/uv/generate', async (req, res) => {
     };
 
     const listId = saveListRequested ? await saveGeneratedList(result).catch(() => null) : null;
+    const transientRecheckListId = !saveListRequested && isDbEnabled()
+      ? await saveGeneratedList({ ...result, transientRecheckOnly: true }).catch(() => null)
+      : null;
     result.listId = listId;
+    result.recheckListId = transientRecheckListId;
+    result.transientRecheckOnly = Boolean(transientRecheckListId);
     result.saved = Boolean(listId);
     result.saveRequested = saveListRequested;
     lastGenerationAt = new Date().toISOString();
