@@ -151,7 +151,7 @@ test('generation response defines FUTBIN-only marketTradeability diagnostics bef
 });
 
 
-test('UV v2.15.32 keeps 100 requested slots while candidate gate uses real unique depth', () => {
+test('UV v2.15.33 keeps 100 requested slots while candidate gate uses real unique depth', () => {
   const source = readFileSync(new URL('../uvApp.js', import.meta.url), 'utf8');
   assert.ok(source.includes("const UV_VERSION = '2.15.32'"));
   assert.ok(source.includes('const pipelineCount = Math.max(1, Math.min(count, scored.length));'));
