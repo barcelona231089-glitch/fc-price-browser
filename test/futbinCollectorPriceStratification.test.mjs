@@ -176,3 +176,30 @@ test('priority refresh carries current filtered price timestamp and previous Gam
   assert.equal(result.cards[0].targetObservedAt, '2026-10-02T04:00:00.000Z');
   assert.equal(result.cards[0].fallbackGamesPlayedConsole, 18613);
 });
+
+
+test('collector v1.4.8 uses 20 slots and concentrates evidence on low-cost cards for 100k portfolios', () => {
+  const rows = [
+    ...Array.from({ length: 80 }, (_, i) => ({
+      eaId: String(500000 + i),
+      futbinId: 9000 + i,
+      name: 'Cheap ' + i,
+      overall: 82 + (i % 5),
+      futbinOnlyTarget: true,
+      livePrice: 650 + (i % 20) * 100
+    })),
+    ...Array.from({ length: 40 }, (_, i) => ({
+      eaId: String(600000 + i),
+      futbinId: 10000 + i,
+      name: 'Premium ' + i,
+      overall: 86 + (i % 5),
+      futbinOnlyTarget: true,
+      livePrice: 10000 + i * 25000
+    }))
+  ];
+
+  const result = selectCollectorCards(rows, { maxCards: 20, cursor: 0 });
+  assert.equal(result.cards.length, 20);
+  assert.ok(result.cards.filter(card => Number(card.targetPriceConsole) <= 2500).length >= 12);
+  assert.ok(result.cards.some(card => Number(card.targetPriceConsole) > 2500));
+});
