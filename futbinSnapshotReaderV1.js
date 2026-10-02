@@ -31,6 +31,7 @@ function applySalesEvidence(row, evidence) {
   row.futbinSalesEvidenceScore = n("salesEvidenceScore");
   row.futbinSoldPremiumPctVsLive = n("soldPremiumPctVsLive");
   row.futbinLatestSoldAt = evidence.latestSoldAt || null;
+  row.futbinSalesEvidenceObservedAt = evidence.evidenceObservedAt || null;
   row.futbinSalesHistoryAvailable = row.futbinSoldSampleCount > 0 || row.futbinUnsoldSampleCount > 0;
   return row.futbinSalesHistoryAvailable;
 }
