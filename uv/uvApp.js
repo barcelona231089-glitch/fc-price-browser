@@ -20,7 +20,7 @@ import { attachLocalFutbinFc27 } from './src/futbinLocalFc27.js';
 import { enrichRowsWithSnapshotFutbinBrain } from '../futbinSnapshotReaderV1.js';
 
 export const uvRouter = express.Router();
-const UV_VERSION = '2.15.26';
+const UV_VERSION = '2.15.27';
 const UV_PRODUCTION_LOADER_PRESENT = process.execArgv.some(arg => String(arg || '').includes('v1066Loader.mjs'));
 const UV_STANDALONE_GRAPH_TAGGED = (() => {
   try { return new URL(import.meta.url).searchParams.has('uv-standalone'); } catch { return false; }
@@ -1403,12 +1403,7 @@ app.post('/api/uv/generate', async (req, res) => {
     console.log('[UV-GEN] FUTBIN cards loaded', { count: live?.cards?.length || 0, source: live?.source || null });
     const marketContext = await getUvMarketContext(platform, live.cards);
 
-    let candidateBuild = buildCandidatePool(live.cards, strategyBudget, count);
-    if (candidateBuild.pool.length < count) {
-      const reduced = Math.max(1, Math.min(count, candidateBuild.pool.length || 1));
-      count = reduced;
-      candidateBuild = buildCandidatePool(live.cards, strategyBudget, count);
-    }
+    const candidateBuild = buildCandidatePool(live.cards, strategyBudget, count);
     const { pool: rawPool, ideal, minPrice, maxPrice, tierProfile } = candidateBuild;
     if (!rawPool.length) throw new Error('Aktuell keine sichere Karte im passenden Preisbereich gefunden.');
 
@@ -1468,8 +1463,8 @@ app.post('/api/uv/generate', async (req, res) => {
     // FUTBIN-only hard evidence gate: a candidate must have an observed positive FUTBIN price.
     // No alternate market-data fallback is permitted in this dedicated runtime.
     scored = scored.filter(card => Number(card.futbinPrice || card.price) > 0);
-    if (scored.length < count) {
-      throw new Error(`FUTBIN-only evidence gate: only ${scored.length}/${count} candidates have a current FUTBIN price.`);
+    if (!scored.length) {
+      throw new Error('FUTBIN-only evidence gate: no candidate currently has a FUTBIN price.');
     }
 
     // Snapshot evidence (price, platform-specific Games, sold prices and rank)
@@ -1503,8 +1498,8 @@ app.post('/api/uv/generate', async (req, res) => {
       };
     }).filter(card => Number(card.futbinPrice || card.price) > 0 && card.futbinEvidenceCount === 3);
 
-    if (scored.length < count) {
-      throw new Error(`FUTBIN evidence gate: only ${scored.length}/${count} candidates have current price plus all 3 required signals (Games, Listings, sold prices).`);
+    if (!scored.length) {
+      throw new Error('FUTBIN evidence gate: no candidate currently has price plus all 3 required signals (Games, Listings, sold prices).');
     }
     scored = await generationCpuSafeMap(scored, card => {
       const history = historyMap.get(String(card.eaId)) || null;
@@ -1542,8 +1537,11 @@ app.post('/api/uv/generate', async (req, res) => {
     if (!scored.length) {
       throw new Error('Aktuell hat keine FUTBIN-Karte einen echten Verkaufspreis, der die sichere ÜV-Profitspanne nach 5% EA-Steuer trägt.');
     }
-    if (scored.length < count) count = scored.length;
-    console.log('[UV-GEN] FUTBIN economics gate', { before: economicsInputCount, usable: scored.length, count });
+    // Keep the requested slot count here. The optimizer may use at most two
+    // copies of an exact card, so 50 distinct safe cards can legitimately fill
+    // a 100-slot list. Actual feasibility is decided below by
+    // maxAffordablePortfolioCount, not by the number of unique rows alone.
+    console.log('[UV-GEN] FUTBIN economics gate', { before: economicsInputCount, usableUnique: scored.length, requestedSlots: count });
 
     const adaptiveMarketPolicy = deriveAdaptiveMarketPolicy(scored, { budget: strategyBudget, count, gameYear: GAME_YEAR });
     const pipelineResult = runCandidatePipeline(scored, count, { budget: strategyBudget, portfolioCount: count, gameYear: GAME_YEAR, adaptivePolicy: adaptiveMarketPolicy });
