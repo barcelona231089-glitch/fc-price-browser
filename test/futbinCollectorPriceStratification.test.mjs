@@ -112,3 +112,35 @@ test('priority refresh picks only sold-price-backed profit windows and prefers o
   assert.equal(ids.includes(22), false);
   assert.equal(ids[0], 21673);
 });
+
+
+test('collector can refresh a profitable priority card even when it is missing from the ordinary rating page', () => {
+  const rows = Array.from({ length: 12 }, (_, i) => ({
+    eaId: String(400000 + i),
+    futbinId: 8000 + i,
+    name: 'Slice ' + i,
+    overall: 84,
+    futbinOnlyTarget: true,
+    livePrice: 1000 + i * 1000
+  }));
+  const priorityCard = {
+    eaId: '84106820',
+    futbinId: 21673,
+    name: 'Nwankwo Kanu',
+    overall: 86,
+    futbinOnlyTarget: true,
+    livePrice: 41750,
+    priceConsole: 41750
+  };
+
+  const result = selectCollectorCards(rows, {
+    maxCards: 12,
+    cursor: 0,
+    priorityCards: [priorityCard],
+    prioritySlots: 4
+  });
+
+  assert.equal(result.cards.length, 12);
+  assert.equal(result.cards[0].futbinId, 21673);
+  assert.equal(result.cards[0].priorityRefresh, true);
+});
