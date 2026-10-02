@@ -60,7 +60,7 @@ function log(message, extra = null) {
 
 function writeStatus(status) {
   writeFileSync(STATE_FILE, JSON.stringify({
-    version: "1.4.5",
+    version: "1.4.6",
     snapshotHost: SNAPSHOT_HOST,
     port: PORT,
     intervalMinutes: Math.round(INTERVAL_MS / 60_000),
@@ -270,7 +270,8 @@ export function selectCollectorCards(rows = [], options = {}) {
       name: row.name || null,
       overall: Number(row.overall || row.rating || 0) || null,
       cardType: row.cardType || row.rarityName || null,
-      targetPriceConsole: Number(row.livePrice) || null
+      targetPriceConsole: Number(row.livePrice) || null,
+      targetObservedAt: row.targetObservedAt || null
     });
     used.add(key);
   }
@@ -335,6 +336,7 @@ async function loadCollectorTargets() {
       continue;
     }
 
+    const targetObservedAt = nowIso();
     const rows = (Array.isArray(payload?.data) ? payload.data : [])
       .map(row => {
         const eaId = String(row?.resource_id || row?.Player_Resource || row?.playerid || "");
@@ -349,7 +351,8 @@ async function loadCollectorTargets() {
           rating: overall,
           cardType: row?.rareTypeName || null,
           futbinOnlyTarget: true,
-          livePrice
+          livePrice,
+          targetObservedAt
         };
       })
       .filter(row => row.eaId && row.futbinId > 0)
@@ -498,7 +501,8 @@ async function loadPriorityRefreshTargets(limit = 4) {
         cardType: null,
         futbinOnlyTarget: true,
         livePrice: Number(row?.priceConsole || 0) || null,
-        priceConsole: Number(row?.priceConsole || 0) || null
+        priceConsole: Number(row?.priceConsole || 0) || null,
+        gamesPlayedConsole: Number(row?.gamesPlayedConsole || 0) || null
       };
     }).filter(card => card.eaId && card.futbinId > 0 && Number(card.livePrice) > 0);
   } catch (error) {
