@@ -20,7 +20,7 @@ import { attachLocalFutbinFc27 } from './src/futbinLocalFc27.js';
 import { enrichRowsWithSnapshotFutbinBrain } from '../futbinSnapshotReaderV1.js';
 
 export const uvRouter = express.Router();
-const UV_VERSION = '2.15.36';
+const UV_VERSION = '2.15.37';
 const UV_PRODUCTION_LOADER_PRESENT = process.execArgv.some(arg => String(arg || '').includes('v1066Loader.mjs'));
 const UV_STANDALONE_GRAPH_TAGGED = (() => {
   try { return new URL(import.meta.url).searchParams.has('uv-standalone'); } catch { return false; }
@@ -1448,8 +1448,12 @@ app.post('/api/uv/generate', async (req, res) => {
     console.log('[UV-GEN] cpu window ready');
 
     console.log('[UV-GEN] loading FUTBIN cards');
-    const live = await getLiveFutbinCards(platform, { allowRecentSafeSnapshot: true });
-    console.log('[UV-GEN] FUTBIN cards loaded', { count: live?.cards?.length || 0, source: live?.source || null });
+    // v2.15.37: generation must use a genuinely current FUTBIN market snapshot.
+    // Do not widen freshness just to make an old snapshot usable. If the collector
+    // has not produced a current price, fail generation instead of recommending
+    // stale buy/sell numbers.
+    const live = await getLiveFutbinCards(platform, { maxAgeSeconds: 900 });
+    console.log('[UV-GEN] FUTBIN cards loaded', { count: live?.cards?.length || 0, source: live?.source || null, maxPriceAgeSeconds: 900 });
     const marketContext = await getUvMarketContext(platform, live.cards);
 
     const candidateBuild = buildCandidatePool(live.cards, strategyBudget, count);
