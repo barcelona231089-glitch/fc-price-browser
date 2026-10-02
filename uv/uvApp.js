@@ -20,7 +20,7 @@ import { attachLocalFutbinFc27 } from './src/futbinLocalFc27.js';
 import { enrichRowsWithSnapshotFutbinBrain } from '../futbinSnapshotReaderV1.js';
 
 export const uvRouter = express.Router();
-const UV_VERSION = '2.15.25';
+const UV_VERSION = '2.15.26';
 const UV_PRODUCTION_LOADER_PRESENT = process.execArgv.some(arg => String(arg || '').includes('v1066Loader.mjs'));
 const UV_STANDALONE_GRAPH_TAGGED = (() => {
   try { return new URL(import.meta.url).searchParams.has('uv-standalone'); } catch { return false; }
@@ -1386,11 +1386,15 @@ app.post('/api/uv/generate', async (req, res) => {
     const requestedCount = portfolioCountForBudget(budget);
     let count = requestedCount;
     if (!Number.isFinite(budget) || budget < 20_000 || requestedCount < 1) return res.status(400).json({ error: 'Bitte mindestens 20.000 Coins eingeben.' });
+    // Keep a small cash reserve instead of spending the user's displayed budget
+    // down to the last coin. 100k therefore targets about 98k invested.
+    const budgetReserve = Math.max(500, Math.min(5000, Math.round((budget * 0.02) / 50) * 50));
+    const strategyBudget = Math.max(1, budget - budgetReserve);
 
     // CPU-SAFE v2.9.2: do not stack a manual 100-card build on top of the
     // Trader market loop, History monitor or Live-Recheck. Wait briefly for an
     // idle window instead of pushing constrained hosts over their CPU cap.
-    console.log('[UV-GEN] worker entered', { budget, platform, requestedCount });
+    console.log('[UV-GEN] worker entered', { budget, strategyBudget, budgetReserve, platform, requestedCount });
     await waitForGenerationCpuWindow();
     console.log('[UV-GEN] cpu window ready');
 
@@ -1399,11 +1403,11 @@ app.post('/api/uv/generate', async (req, res) => {
     console.log('[UV-GEN] FUTBIN cards loaded', { count: live?.cards?.length || 0, source: live?.source || null });
     const marketContext = await getUvMarketContext(platform, live.cards);
 
-    let candidateBuild = buildCandidatePool(live.cards, budget, count);
+    let candidateBuild = buildCandidatePool(live.cards, strategyBudget, count);
     if (candidateBuild.pool.length < count) {
       const reduced = Math.max(1, Math.min(count, candidateBuild.pool.length || 1));
       count = reduced;
-      candidateBuild = buildCandidatePool(live.cards, budget, count);
+      candidateBuild = buildCandidatePool(live.cards, strategyBudget, count);
     }
     const { pool: rawPool, ideal, minPrice, maxPrice, tierProfile } = candidateBuild;
     if (!rawPool.length) throw new Error('Aktuell keine sichere Karte im passenden Preisbereich gefunden.');
@@ -1524,7 +1528,7 @@ app.post('/api/uv/generate', async (req, res) => {
       const enriched = { ...withTargetLearning, ...economics };
       const sellabilityScore = buildSellabilityScore(enriched);
       const withSellability = { ...enriched, sellabilityScore };
-      const traderProfiled = attachPublicTraderProfile(withSellability, budget, count);
+      const traderProfiled = attachPublicTraderProfile(withSellability, strategyBudget, count);
       const budgetTop100Score = buildBudgetTop100Score(traderProfiled, ideal);
       const baseSelectionScore = buildSelectionScore(traderProfiled);
       return { ...traderProfiled, budgetTop100Score, selectionScore: baseSelectionScore };
@@ -1541,14 +1545,14 @@ app.post('/api/uv/generate', async (req, res) => {
     if (scored.length < count) count = scored.length;
     console.log('[UV-GEN] FUTBIN economics gate', { before: economicsInputCount, usable: scored.length, count });
 
-    const adaptiveMarketPolicy = deriveAdaptiveMarketPolicy(scored, { budget, count, gameYear: GAME_YEAR });
-    const pipelineResult = runCandidatePipeline(scored, count, { budget, portfolioCount: count, gameYear: GAME_YEAR, adaptivePolicy: adaptiveMarketPolicy });
+    const adaptiveMarketPolicy = deriveAdaptiveMarketPolicy(scored, { budget: strategyBudget, count, gameYear: GAME_YEAR });
+    const pipelineResult = runCandidatePipeline(scored, count, { budget: strategyBudget, portfolioCount: count, gameYear: GAME_YEAR, adaptivePolicy: adaptiveMarketPolicy });
     pool = filterConservativeCandidates(pipelineResult.pool, count);
     if (!pool.length) {
       throw new Error('Robuste Kandidaten-Pipeline hat aktuell keine ausreichend sichere Karte freigegeben.');
     }
 
-    let affordability = maxAffordablePortfolioCount(pool, budget, count);
+    let affordability = maxAffordablePortfolioCount(pool, strategyBudget, count);
     let hard100SellabilityFallback = null;
     let budgetAdaptiveFallback = null;
     let budgetSafetyReserveFallback = null;
@@ -1556,7 +1560,7 @@ app.post('/api/uv/generate', async (req, res) => {
       // v2.3.3: first expand from the already-scored full universe using the
       // sellability ladder. It may ignore the dynamic rating proxy, but it never
       // bypasses the real safety blocks.
-      hard100SellabilityFallback = buildHard100SellabilityFallback(pipelineResult.cards, { budget, count });
+      hard100SellabilityFallback = buildHard100SellabilityFallback(pipelineResult.cards, { budget: strategyBudget, count });
       const merged = new Map();
       for (const card of pool) merged.set(String(card.eaId), card);
       for (const card of hard100SellabilityFallback.pool) {
@@ -1565,14 +1569,14 @@ app.post('/api/uv/generate', async (req, res) => {
         if (!current || Number(card.selectionScore || 0) > Number(current.selectionScore || 0)) merged.set(key, card);
       }
       pool = [...merged.values()];
-      affordability = maxAffordablePortfolioCount(pool, budget, count);
+      affordability = maxAffordablePortfolioCount(pool, strategyBudget, count);
     }
     if (Number(affordability.count || 0) < count) {
       // v2.3.5: if the ordinary sellability ladder still prices the 100-card
       // universe far above the user's capital, switch to a budget-per-slot
       // sellability ladder. Cheap cards can bypass rating/selection proxies only
       // when several independent live-demand/liquidity signals agree.
-      budgetAdaptiveFallback = buildBudgetAdaptiveSellabilityFallback(pipelineResult.cards, { budget, count });
+      budgetAdaptiveFallback = buildBudgetAdaptiveSellabilityFallback(pipelineResult.cards, { budget: strategyBudget, count });
       const merged = new Map();
       for (const card of pool) merged.set(String(card.eaId), card);
       for (const card of budgetAdaptiveFallback.pool) {
@@ -1583,7 +1587,7 @@ app.post('/api/uv/generate', async (req, res) => {
         if (!current || nextAdaptive > currentAdaptive) merged.set(key, card);
       }
       pool = [...merged.values()];
-      affordability = maxAffordablePortfolioCount(pool, budget, count);
+      affordability = maxAffordablePortfolioCount(pool, strategyBudget, count);
     }
     if (Number(affordability.count || 0) < count) {
       // v2.4.2: final reserve separates hard safety from ranking. This is not
@@ -1591,7 +1595,7 @@ app.post('/api/uv/generate', async (req, res) => {
       // Non-Rare gates, crash/source-risk guards and rejected outcomes remain
       // hard. It only prevents average-but-safe 82+ Rares from being discarded
       // before the Top-100 budget ranker can compare them.
-      budgetSafetyReserveFallback = buildBudgetSafetyReserveFallback(pipelineResult.cards, { budget, count });
+      budgetSafetyReserveFallback = buildBudgetSafetyReserveFallback(pipelineResult.cards, { budget: strategyBudget, count });
       const merged = new Map();
       for (const card of pool) merged.set(String(card.eaId), card);
       for (const card of budgetSafetyReserveFallback.pool) {
@@ -1602,7 +1606,7 @@ app.post('/api/uv/generate', async (req, res) => {
         if (!current || nextScore > currentScore) merged.set(key, card);
       }
       pool = [...merged.values()];
-      affordability = maxAffordablePortfolioCount(pool, budget, count);
+      affordability = maxAffordablePortfolioCount(pool, strategyBudget, count);
     }
     let dynamicCountReduced = count < requestedCount;
     if (Number(affordability.count || 0) < count) {
@@ -1614,18 +1618,18 @@ app.post('/api/uv/generate', async (req, res) => {
       dynamicCountReduced = true;
     }
     const effectiveCount = count;
-    const optimized = optimizeList(pool, budget, effectiveCount);
+    const optimized = optimizeList(pool, strategyBudget, effectiveCount);
 
     let selected = optimized.selected.map(card => ({
       ...card,
       recommendationMode: 'conservative-demand+reported-outcome-learning+lifecycle+portfolio-rebalance+candidate-gate-v2.1+promo-live-market-adaptive+hard-100-slots+demand-sellability-budget-relax+hard100-sellability-ladder-v2.3.5+budget-adaptive-rating-floor+budget-top100-v2.10.3-demand-market-fit+resilient-market-tradeable-hard-guard+budget-tier-allocator+trader-consensus+budget-safe-reserve+adaptive-special-mix+budget-rating-guard+max-two-exact-copies+nonrare-demand-gate+futbin-structured-evidence',
-      capitalBand: capitalBandForPrice(card.buyPrice, budget, count),
+      capitalBand: capitalBandForPrice(card.buyPrice, strategyBudget, count),
       recommendationLifecycle: buildRecommendationLifecycle(card),
       salesProbability: null
     }));
 
     selected.sort((a, b) => b.selectionScore - a.selectionScore || b.longTermScore - a.longTermScore);
-    const integrity = assertUvPortfolioIntegrity(selected, { budget, count, gameYear: GAME_YEAR });
+    const integrity = assertUvPortfolioIntegrity(selected, { budget: strategyBudget, count, gameYear: GAME_YEAR });
     const totalBuy = selected.reduce((sum, c) => sum + c.buyPrice, 0);
     const totalExpectedProfit = selected.reduce((sum, c) => sum + c.netProfit, 0);
     const avgUvScore = selected.reduce((sum, c) => sum + c.uvScore, 0) / selected.length;
@@ -1646,7 +1650,7 @@ app.post('/api/uv/generate', async (req, res) => {
     const targetLearningMatches = selected.filter(c => Number(c.targetSupportSamples || 0) > 0).length;
     const reportedFeedbackMatches = selected.filter(c => Number(c.reportedFeedbackSamples || 0) > 0).length;
     const traderRuleLearningSamples = [...traderRulePerformance.values()].reduce((sum, r) => sum + Number(r.samples || 0), 0);
-    const portfolio = buildPortfolioSummary(selected, budget, count);
+    const portfolio = buildPortfolioSummary(selected, strategyBudget, count);
     const gradeACount = selected.filter(c => ['A+', 'A'].includes(c.qualityGrade)).length;
     const weakQualityCount = selected.filter(c => c.qualityGrade === 'D').length;
     const demandMatches = selected.filter(c => Number.isFinite(c.usagePct) || c.momentumHit).length;
@@ -1700,6 +1704,7 @@ app.post('/api/uv/generate', async (req, res) => {
 
     const result = {
       ok: true, version: UV_VERSION, gameYear: GAME_YEAR, platform, budget,
+      strategyBudget, budgetReserve,
       requestedCount,
       count: selected.length,
       generatedCount: selected.length,
@@ -1759,8 +1764,8 @@ app.post('/api/uv/generate', async (req, res) => {
         traderKnowledge: TRADER_KNOWLEDGE_SOURCES.map(s => s.name)
       },
       dataNotice: (dynamicCountReduced
-        ? `Budget-Modus: ${selected.length}/${requestedCount} sichere Slots innerhalb von ${budget.toLocaleString('de-DE')} Coins. Unsichere Fuellkarten bleiben gesperrt.`
-        : `Budget-Modus: ${selected.length} sichere Slots innerhalb von ${budget.toLocaleString('de-DE')} Coins.`)
+        ? `Budget-Modus: ${selected.length}/${requestedCount} sichere Slots. Maximal ${strategyBudget.toLocaleString('de-DE')} von ${budget.toLocaleString('de-DE')} Coins werden investiert; ${budgetReserve.toLocaleString('de-DE')} Coins bleiben als Reserve. Unsichere Fuellkarten bleiben gesperrt.`
+        : `Budget-Modus: ${selected.length} sichere Slots. Maximal ${strategyBudget.toLocaleString('de-DE')} von ${budget.toLocaleString('de-DE')} Coins werden investiert; ${budgetReserve.toLocaleString('de-DE')} Coins bleiben als Reserve.`)
         + (marketTradeability.diagnostics?.verificationSourceDown ? ' FUTBIN Evidenz war nicht erreichbar; unklare Specials wurden verworfen.' : '')
         + (live.requiresLiveRecheck === true ? ' Die Liste nutzt einen hoechstens 5 Minuten alten sicheren Trader-Snapshot. Vor dem Kaufen Live-Recheck nutzen.' : ' Vor dem Kaufen Live-Recheck nutzen.'),
       cards: selected
