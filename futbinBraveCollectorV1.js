@@ -34,6 +34,7 @@ const INTERVAL_MS = Math.max(15 * 60_000, Number(process.env.FUTBIN_BRAVE_COLLEC
 const PAGE_WAIT_MS = Math.max(1500, Math.min(20_000, Number(process.env.FUTBIN_BRAVE_PAGE_WAIT_MS || 4500)));
 const SPACING_MS = Math.max(1500, Math.min(60_000, Number(process.env.FUTBIN_BRAVE_SPACING_MS || 3000)));
 const CLOSE_AFTER_CYCLE = !["0", "false", "no", "off"].includes(String(process.env.FUTBIN_BRAVE_CLOSE_AFTER_CYCLE || "1").trim().toLowerCase());
+const EVIDENCE_CARRY_MAX_MS = Math.max(60 * 60_000, Math.min(24 * 60 * 60_000, Number(process.env.FUTBIN_EVIDENCE_CARRY_MAX_MS || 18 * 60 * 60_000)));
 const TOKEN_FILE = process.env.FUTBIN_SNAPSHOT_INGEST_TOKEN_FILE
   || join(process.env.LOCALAPPDATA || ROOT, "FCTraderBrain", "futbin-snapshot-ingest.token");
 const TOKEN = String(
@@ -60,7 +61,7 @@ function log(message, extra = null) {
 
 function writeStatus(status) {
   writeFileSync(STATE_FILE, JSON.stringify({
-    version: "1.4.8",
+    version: "1.4.9",
     snapshotHost: SNAPSHOT_HOST,
     port: PORT,
     intervalMinutes: Math.round(INTERVAL_MS / 60_000),
@@ -426,7 +427,8 @@ function snapshotRowsFromResults(cards, results) {
         soldPriceMode: result.evidence.futbinSoldPriceMode,
         salesEvidenceScore: result.evidence.futbinSalesEvidenceScore,
         soldPremiumPctVsLive: result.evidence.futbinSoldPremiumPctVsLive,
-        latestSoldAt: result.evidence.futbinLatestSoldAt
+        latestSoldAt: result.evidence.futbinLatestSoldAt,
+        evidenceObservedAt: observedAt
       } : null
     });
   }
@@ -497,14 +499,53 @@ export function selectPriorityRefreshFutbinIds(snapshotRows = [], limit = 4) {
     .map(row => row.futbinId);
 }
 
-async function loadPriorityRefreshTargets(limit = 4) {
+export function buildCarriedEvidenceRows(targetRows = [], snapshotRows = [], options = {}) {
+  const nowMs = Number.isFinite(Number(options.nowMs)) ? Number(options.nowMs) : Date.now();
+  const maxEvidenceAgeMs = Math.max(60 * 60_000, Math.min(24 * 60 * 60_000, Number(options.maxEvidenceAgeMs || EVIDENCE_CARRY_MAX_MS)));
+  const previousById = new Map((Array.isArray(snapshotRows) ? snapshotRows : []).map(row => [Number(row?.futbinId || 0), row]));
+  const rows = [];
+  for (const target of Array.isArray(targetRows) ? targetRows : []) {
+    const futbinId = Number(target?.futbinId || 0);
+    const previous = previousById.get(futbinId);
+    const evidence = previous?.salesEvidence || {};
+    const evidenceObservedAt = evidence?.evidenceObservedAt || previous?.observedAt || null;
+    const evidenceMs = Date.parse(evidenceObservedAt || "");
+    const ageMs = Number.isFinite(evidenceMs) ? Math.max(0, nowMs - evidenceMs) : Infinity;
+    const games = Number(previous?.gamesPlayedConsole || 0);
+    const listings = Number(evidence?.listedSampleCount || 0);
+    const sold = Number(evidence?.soldSampleCount || 0);
+    const soldPriceObserved = [evidence?.soldPriceP25, evidence?.soldPriceMedian, evidence?.soldPriceMode, evidence?.soldPriceP75].some(value => Number(value) > 0);
+    if (!(futbinId > 0) || !(Number(target?.livePrice) > 0) || !target?.targetObservedAt || !previous) continue;
+    if (!(games > 0) || !(listings > 0) || sold < 2 || !soldPriceObserved || ageMs > maxEvidenceAgeMs) continue;
+    rows.push({
+      futbinId,
+      observedAt: target.targetObservedAt,
+      name: target?.name || previous?.name || "",
+      rating: Number(target?.overall || target?.rating || previous?.rating || 0) || null,
+      priceConsole: Number(target.livePrice),
+      pricePc: null,
+      popularRank: Number.isFinite(Number(previous?.popularRank)) ? Number(previous.popularRank) : null,
+      gamesPlayedConsole: games,
+      gamesPlayedPc: Number.isFinite(Number(previous?.gamesPlayedPc)) ? Number(previous.gamesPlayedPc) : null,
+      salesEvidence: { ...evidence, evidenceObservedAt }
+    });
+  }
+  return rows;
+}
+
+async function loadSnapshotEvidenceRows(limit = 500) {
   try {
-    const latest = await fetchJson(
-      `${SNAPSHOT_HOST}/api/futbin-fc27-latest?limit=100&evidenceOnly=true`,
-      { headers: { accept: "application/json" } },
-      10_000
-    );
-    const rows = Array.isArray(latest?.rows) ? latest.rows : [];
+    const latest = await fetchJson(`${SNAPSHOT_HOST}/api/futbin-fc27-latest?limit=${Math.max(1, Math.min(500, Number(limit) || 500))}&evidenceOnly=true`, { headers: { accept: "application/json" } }, 10_000);
+    return Array.isArray(latest?.rows) ? latest.rows : [];
+  } catch (error) {
+    log("snapshot-evidence-soft-fail", { error: String(error?.message || error) });
+    return [];
+  }
+}
+
+async function loadPriorityRefreshTargets(limit = 4, snapshotRows = null) {
+  try {
+    const rows = Array.isArray(snapshotRows) ? snapshotRows : await loadSnapshotEvidenceRows(500);
     const ids = selectPriorityRefreshFutbinIds(rows, limit);
     const byId = new Map(rows.map(row => [Number(row?.futbinId || 0), row]));
     return ids.map(futbinId => {
@@ -542,7 +583,9 @@ export async function runCollectorCycle() {
   });
   try {
     const targetRows = await loadCollectorTargets();
-    const priorityCards = await loadPriorityRefreshTargets(4);
+    const priorEvidenceRows = await loadSnapshotEvidenceRows(500);
+    const carriedRows = buildCarriedEvidenceRows(targetRows, priorEvidenceRows);
+    const priorityCards = await loadPriorityRefreshTargets(4, priorEvidenceRows);
     const priorityFutbinIds = priorityCards.map(card => card.futbinId);
     const selection = selectCollectorCards(targetRows, {
       maxCards: MAX_CARDS,
@@ -614,11 +657,12 @@ export async function runCollectorCycle() {
       preliminaryRows = snapshotRowsFromResults(selection.cards, brave.results);
     }
 
-    if (!preliminaryRows.length) {
+    if (!preliminaryRows.length && !carriedRows.length) {
       const diagnostics = summarizeBraveResults(selection.cards, brave?.results);
       log("collector-zero-rows", { reason: brave?.reason || null, diagnostics });
       throw new Error(`ZERO_USABLE_FUTBIN_OBSERVATIONS:${brave?.reason || "NO_VISIBLE_PRICE_OR_PAGE_DATA"}`);
     }
+    if (!preliminaryRows.length && carriedRows.length) log("collector-browser-zero-using-carried-evidence", { carriedRows: carriedRows.length });
 
     let salesEvidenceCards = 0;
     let salesEvidenceRows = 0;
@@ -649,7 +693,10 @@ export async function runCollectorCycle() {
       }
     }
 
-    const rows = preliminaryRows;
+    const freshRows = snapshotRowsFromResults(selection.cards, brave?.results);
+    const mergedRows = new Map(carriedRows.map(row => [Number(row.futbinId), row]));
+    for (const row of freshRows) mergedRows.set(Number(row.futbinId), row);
+    const rows = [...mergedRows.values()];
     const pushed = await pushSnapshot(rows);
     const status = {
       ok: true,
@@ -668,7 +715,10 @@ export async function runCollectorCycle() {
       priorityRefreshSelected: Number(selection.priorityRefreshSelected || 0),
       priorityRefreshIds: priorityFutbinIds,
       zeroRowRetry,
-      observedRows: rows.length,
+      observedRows: freshRows.length,
+      carriedEvidenceRows: carriedRows.length,
+      snapshotRowsPushed: rows.length,
+      evidenceCarryMaxHours: Math.round(EVIDENCE_CARRY_MAX_MS / 3_600_000),
       inserted: Number(pushed?.inserted || 0),
       received: Number(pushed?.received || 0),
       salesEvidenceCards,
