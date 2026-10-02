@@ -20,7 +20,7 @@ import { attachLocalFutbinFc27 } from './src/futbinLocalFc27.js';
 import { enrichRowsWithSnapshotFutbinBrain } from '../futbinSnapshotReaderV1.js';
 
 export const uvRouter = express.Router();
-const UV_VERSION = '2.15.31';
+const UV_VERSION = '2.15.32';
 const UV_PRODUCTION_LOADER_PRESENT = process.execArgv.some(arg => String(arg || '').includes('v1066Loader.mjs'));
 const UV_STANDALONE_GRAPH_TAGGED = (() => {
   try { return new URL(import.meta.url).searchParams.has('uv-standalone'); } catch { return false; }
@@ -1646,16 +1646,15 @@ app.post('/api/uv/generate', async (req, res) => {
       pool = [...merged.values()];
       affordability = maxAffordablePortfolioCount(pool, strategyBudget, count);
     }
-    let dynamicCountReduced = count < requestedCount;
-    if (Number(affordability.count || 0) < count) {
-      const reduced = Math.max(0, Math.floor(Number(affordability.count || 0)));
-      if (reduced < 1) {
-        throw new Error('Aktuell ist innerhalb dieses Budgets keine sichere Position verfuegbar. Unsichere Fuellkarten bleiben gesperrt.');
-      }
-      count = reduced;
-      dynamicCountReduced = true;
+    // v2.15.32: the budget determines the requested slot count. At 100k the
+    // contract is exactly 100 slots. Unused coins are allowed; affordability
+    // must not silently shrink the requested portfolio.
+    const dynamicCountReduced = false;
+    if (Number(affordability.count || 0) < requestedCount) {
+      throw new Error(`FUTBIN-Pool kann aktuell nur ${Math.max(0, Math.floor(Number(affordability.count || 0)))}/${requestedCount} Slots innerhalb des Budgets belegen. Die angeforderte Slotzahl wird nicht automatisch reduziert.`);
     }
-    const effectiveCount = count;
+    count = requestedCount;
+    const effectiveCount = requestedCount;
     const optimized = optimizeList(pool, strategyBudget, effectiveCount);
 
     let selected = optimized.selected.map(card => ({
