@@ -39,3 +39,24 @@ test('snapshot ingest uses one batch insert for accepted rows', async () => {
   assert.deepEqual(out, { inserted: 2, received: 2, salesEvidenceReceived: 0, salesEvidencePersisted: 0 });
 });
 
+
+
+test('snapshot ingest preserves the original sales evidence observation time', () => {
+  const now = Date.parse('2026-10-02T18:00:00Z');
+  const rows = normalizeFutbinSnapshotRows([{
+    futbinId: 9001,
+    observedAt: '2026-10-02T17:59:00Z',
+    name: 'Cheap Target',
+    rating: 83,
+    priceConsole: 700,
+    gamesPlayedConsole: 12000,
+    salesEvidence: {
+      listedSampleCount: 500,
+      soldSampleCount: 450,
+      soldPriceMedian: 800,
+      evidenceObservedAt: '2026-10-02T08:00:00Z'
+    }
+  }], now);
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].salesEvidence.evidenceObservedAt, '2026-10-02T08:00:00.000Z');
+});
