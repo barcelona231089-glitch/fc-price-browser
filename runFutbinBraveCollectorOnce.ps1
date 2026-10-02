@@ -3,6 +3,13 @@ $repo = 'C:\Users\barce\FCTraderBrain'
 $node = 'C:\Program Files\nodejs\node.exe'
 $collector = Join-Path $repo 'futbinBraveCollectorV1.js'
 
+# Keep the scheduled collector self-updating. Fail-open: a transient GitHub
+# problem must not stop an otherwise healthy collection cycle.
+try {
+  Set-Location $repo
+  & git pull --ff-only origin main *> $null
+} catch {}
+
 $tokenFile = Join-Path $env:LOCALAPPDATA 'FCTraderBrain\futbin-snapshot-ingest.token'
 $token = $null
 if (Test-Path $tokenFile) { $token = (Get-Content $tokenFile -Raw).Trim() }
@@ -11,6 +18,7 @@ if (-not $token) { $token = [Environment]::GetEnvironmentVariable('FUTBIN_SNAPSH
 if (-not $token) { exit 2 }
 
 $env:FUTBIN_SNAPSHOT_INGEST_TOKEN = $token
+$env:FUTBIN_SNAPSHOT_HOST_FILE = Join-Path $env:LOCALAPPDATA 'FCTraderBrain\futbin-snapshot-host.txt'
 $env:FUTBIN_BRAVE_COLLECTOR_PORT = '9230'
 $env:FUTBIN_BRAVE_COLLECTOR_MAX_CARDS = '12'
 $env:FUTBIN_BRAVE_COLLECTOR_INTERVAL_MS = '1800000'
