@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
@@ -33,4 +34,14 @@ test("status documents safe local browser policy", () => {
   assert.equal(status.readsCookies, false);
   assert.equal(status.solvesChallenges, false);
   assert.equal(status.bypasses403or429, false);
+});
+
+
+test("adapter can use the freshly observed filtered FUTBIN console price when rendered price is missing", () => {
+  const source = readFileSync(new URL("../src/futbinBraveAdapter.js", import.meta.url), "utf8");
+  assert.ok(source.includes("filteredPriceConsole"));
+  assert.ok(source.includes("card?.targetObservedAt"));
+  assert.ok(source.includes("fallbackGamesPlayedConsole"));
+  assert.ok(source.includes("cache.delete(key)"));
+  assert.ok(source.includes("forceFresh"));
 });
