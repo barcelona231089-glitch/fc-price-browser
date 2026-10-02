@@ -1965,20 +1965,59 @@ export function optimizeList(candidates, budget, count = 100) {
     throw new Error(`Budget zu klein für ${count} geeignete Karten bei maximal 2 Exemplaren pro exakter Karte. Minimum aktuell: ${minimumCost} Coins.${uniqueText}`);
   }
 
-  const multipliers = targetMultipliers(count, budget / count);
   const specialTargetRatio = adaptiveSpecialTargetRatioForMarket(optimizationCandidates, budget, count);
   const selected = [];
   const ids = new Set();
   const selectionState = createOptimizerState();
-  const multiplierSuffix = new Array(multipliers.length + 1).fill(0);
-  for (let i = multipliers.length - 1; i >= 0; i--) multiplierSuffix[i] = multiplierSuffix[i + 1] + multipliers[i];
   let remaining = budget;
 
+  // v2.15.36: FUTBIN Games-first allocator.
+  // Budget is a portfolio ceiling, not a per-slot target. Every candidate reaching
+  // this optimizer has already passed the upstream FUTBIN evidence/economics gates.
+  // Prefer the most-used verified cards and only reject a choice when taking it
+  // would make the remaining slots unaffordable or violate hard portfolio limits.
+  const gamesFirst = [...optimizationCandidates].sort((a, b) =>
+    Number(b.futbinGamesPlayed || b.futbinGamesCount || 0) - Number(a.futbinGamesPlayed || a.futbinGamesCount || 0)
+    || Number(a.futbinGamesPriorityRank || Number.MAX_SAFE_INTEGER) - Number(b.futbinGamesPriorityRank || Number.MAX_SAFE_INTEGER)
+    || Number(b.selectionScore || 0) - Number(a.selectionScore || 0)
+    || budgetPrice(a) - budgetPrice(b)
+  );
+
   for (let i = 0; i < count; i++) {
-    const slotsLeft = count - i;
-    const remainingMultiplierSum = multiplierSuffix[i];
-    const target = remaining * (multipliers[i] / Math.max(0.0001, remainingMultiplierSum));
-    const choice = chooseClosestCpuSafe(optimizationCandidates, target, ids, selectionState, remaining, slotsLeft, cheapestSorted, specialTargetRatio, traderMixPolicy);
+    const slotsAfterChoice = count - i - 1;
+    let choice = null;
+
+    for (const card of gamesFirst) {
+      const id = optimizerKey(card);
+      if (ids.has(id)) continue;
+      if ((selectionState.playerCounts.get(optimizerPlayerKey(card)) || 0) >= 3) continue;
+      if (!passesEndgameTraderMixState(card, selectionState, traderMixPolicy)) continue;
+
+      const cost = budgetPrice(card);
+      if (!Number.isFinite(cost) || cost <= 0 || cost > remaining) continue;
+
+      const reserveState = cloneOptimizerState(selectionState);
+      optimizerStateAdd(reserveState, card);
+      let reserveCost = 0;
+      let reserveCount = 0;
+
+      for (const reserve of cheapestSorted) {
+        if (reserveCount >= slotsAfterChoice) break;
+        const reserveId = optimizerKey(reserve);
+        if (reserveId === id || ids.has(reserveId)) continue;
+        if ((reserveState.playerCounts.get(optimizerPlayerKey(reserve)) || 0) >= 3) continue;
+        if (!passesEndgameTraderMixState(reserve, reserveState, traderMixPolicy)) continue;
+        reserveCost += budgetPrice(reserve);
+        reserveCount += 1;
+        optimizerStateAdd(reserveState, reserve);
+      }
+
+      if (reserveCount < slotsAfterChoice) continue;
+      if (cost + reserveCost > remaining) continue;
+      choice = card;
+      break;
+    }
+
     if (!choice) break;
     selected.push(choice);
     ids.add(optimizerKey(choice));
