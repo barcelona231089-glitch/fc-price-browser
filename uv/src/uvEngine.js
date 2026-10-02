@@ -83,10 +83,23 @@ export function buildBuyPlan(card, history = null) {
   if (popularity >= 80 && stability >= 70 && riskPenalty === 0) discountPct -= 0.004;
   discountPct = clamp(discountPct, 0, 0.025);
 
-  // Keep the recommendation close enough to the observed BIN to still be a
-  // realistic manual buy-now target.
-  const raw = Math.max(live * 0.97, anchor * (1 - discountPct));
-  const realisticFloor = roundMarketPrice(live * 0.97, 'up');
+  // FUTBIN sold evidence can justify a materially lower *acquisition ceiling*
+  // than the current BIN, especially for cheap cards where a 250-700 coin net
+  // target is impossible inside a fixed 3% discount. This is not presented as
+  // a current market price: it is the maximum bid/snipe price the user should
+  // pay. Keep a tiered floor so the app never invents fantasy bargains.
+  const soldSamples = Number(card?.futbinSoldSampleCount || 0);
+  const listedSamples = Number(card?.futbinListedSampleCount || 0);
+  const strongSoldEvidence = soldSamples >= 20 && listedSamples >= 50;
+  const maxSoldBackedDiscount = strongSoldEvidence
+    ? live < 1500 ? 0.40
+      : live < 5000 ? 0.32
+        : live < 15000 ? 0.20
+          : live < 100000 ? 0.08
+            : 0.05
+    : 0.03;
+  const realisticFloor = roundMarketPrice(live * (1 - maxSoldBackedDiscount), 'up');
+  const raw = Math.max(realisticFloor, anchor * (1 - discountPct));
   const recommendedBuyPrice = Math.max(priceStep(live), realisticFloor, roundMarketPrice(raw, 'down'));
   const actualDiscountPct = Math.max(0, ((live - recommendedBuyPrice) / live) * 100);
 
