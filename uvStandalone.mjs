@@ -15,7 +15,7 @@ app.use(express.json({ limit: '2mb' }));
 let uvRouter = null;
 let initUvBrain = null;
 let shutdownUvBrain = async () => {};
-let getUvRuntimeStatus = () => ({ ok: true, started: false, version: '2.15.28', gameYear: 27, runtimeMode: 'STARTING', nativeGraphVerified: true });
+let getUvRuntimeStatus = () => ({ ok: true, started: false, version: '2.15.29', gameYear: 27, runtimeMode: 'STARTING', nativeGraphVerified: true });
 let dbPool = null;
 let validIngestToken = () => false;
 let ingestFutbinSnapshot = async () => ({ inserted: 0, received: 0 });
@@ -132,7 +132,10 @@ app.get('/api/uv/preflight', async (req, res) => {
       const sold = Number(sales?.soldSampleCount || 0);
       const soldPriceObserved = [sales?.soldPriceP25, sales?.soldPriceMedian, sales?.soldPriceMode, sales?.soldPriceP75]
         .some(value => Number(value) > 0);
-      return price > 0 && games > 0 && listings > 0 && sold >= 2 && soldPriceObserved;
+      const evidenceObservedAt = sales?.evidenceObservedAt || row?.observedAt || null;
+      const evidenceMs = Date.parse(evidenceObservedAt || '');
+      const evidenceFresh = Number.isFinite(evidenceMs) && evidenceMs >= Date.now() - 18 * 60 * 60_000;
+      return price > 0 && games > 0 && listings > 0 && sold >= 2 && soldPriceObserved && evidenceFresh;
     });
     return res.json({
       ok: true,
