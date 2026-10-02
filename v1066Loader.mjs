@@ -1070,10 +1070,18 @@ function markParseCall({ ok = false, price = null, marketTrend = false, error = 
   );
 
   out = out.replace(
-    `    const evidence = result?.evidence || {};
+    `    const evidence = resultEvidence && (
+      resultEvidence.gamesAvailable
+      || resultEvidence.salesHistoryAvailable
+      || Number.isFinite(resultEvidence.futbinPopularRank)
+    ) ? resultEvidence : marketEvidenceFallback;
 
     let popularityScore`,
-    `    const evidence = result?.evidence || {};
+    `    const evidence = resultEvidence && (
+      resultEvidence.gamesAvailable
+      || resultEvidence.salesHistoryAvailable
+      || Number.isFinite(resultEvidence.futbinPopularRank)
+    ) ? resultEvidence : marketEvidenceFallback;
     const futbinOwnHistory = futbinHistory.get(String(card.eaId)) || null;
 
     let popularityScore`
@@ -1328,6 +1336,14 @@ export async function load(url, context, defaultLoad) {
   const raw = rawSource.replace(/\r\n/g, '\n');
 
   if (url.endsWith('/uv/uvApp.js')) {
+    // Dedicated UV runtime owns its generation routes directly. Applying the
+    // legacy combined-server source patch here can shadow /api/uv/generate-job
+    // and make a newly returned job ID disappear on the first status poll.
+    const dedicatedUvRuntime = process.argv.some(arg => String(arg || '').replace(/\\/g, '/').endsWith('/uvStandalone.mjs'));
+    if (dedicatedUvRuntime) {
+      console.log('[ÜV] dedicated runtime: legacy uvApp source patch bypassed.');
+      return result;
+    }
     const patched = patchUvAppV2105(raw);
     console.log('[ÜV] v2.10.12 runtime patch active: hard-100 + unsaved live-recheck + FUTBIN Parse memory/status.');
     return { format: result.format, source: patched, shortCircuit: true };
