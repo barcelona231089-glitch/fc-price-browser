@@ -46,3 +46,12 @@ test("collector launcher uses one isolated reusable Brave page", () => {
   assert.ok(source.includes("includeSalesHistory: true"));
   assert.ok(source.includes("unsoldEvidenceRows"));
 });
+
+
+test("scheduled collector self-updates main and preserves saved snapshot host", () => {
+  const wrapper = readFileSync(new URL("../runFutbinBraveCollectorOnce.ps1", import.meta.url), "utf8");
+  assert.ok(wrapper.includes("git pull --ff-only origin main"));
+  assert.ok(wrapper.includes("FUTBIN_SNAPSHOT_HOST_FILE"));
+  assert.ok(wrapper.includes("futbin-snapshot-host.txt"));
+  assert.ok(wrapper.includes("FUTBIN_BRAVE_COLLECTOR_MAX_CARDS = '12'"));
+});
