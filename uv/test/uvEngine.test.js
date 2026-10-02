@@ -906,3 +906,21 @@ test('v2.10 selection score is demand-market-fit first when other quality is equ
   const weak = buildSelectionScore({ ...common, demandMarketFitScore: 48 });
   assert.ok(strong > weak, `strong=${strong} weak=${weak}`);
 });
+
+
+test('cheap FUTBIN sold evidence may set a realistic acquisition ceiling well below live BIN', () => {
+  const plan = buildBuyPlan({
+    price: 700,
+    futbinPrice: 700,
+    futbinSoldPriceMedian: 800,
+    futbinSoldSampleCount: 462,
+    futbinListedSampleCount: 500,
+    riskPenalty: 0,
+    confidenceScore: 70,
+    popularityScore: 65,
+    stability: 70
+  });
+  assert.equal(plan.recommendedBuyPrice, 500);
+  assert.ok(plan.buyDiscountPct > 20);
+  assert.ok(plan.recommendedBuyPrice < 700);
+});
