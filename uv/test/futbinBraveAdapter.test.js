@@ -45,3 +45,12 @@ test("adapter can use the freshly observed filtered FUTBIN console price when re
   assert.ok(source.includes("cache.delete(key)"));
   assert.ok(source.includes("forceFresh"));
 });
+
+
+test("Brave adapter bounds websocket open and CDP command waits", () => {
+  const source = readFileSync(new URL("../src/futbinBraveAdapter.js", import.meta.url), "utf8");
+  assert.ok(source.includes("BRAVE_DEBUG_WEBSOCKET_OPEN_TIMEOUT"));
+  assert.ok(source.includes("BRAVE_CDP_TIMEOUT_"));
+  assert.ok(source.includes("timeoutMs = 20_000"));
+  assert.ok(source.includes("pending.delete(id)"));
+});
