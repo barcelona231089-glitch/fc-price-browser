@@ -335,7 +335,34 @@ async function pushSnapshot(rows) {
     body: JSON.stringify({ rows })
   }, 20_000);
 }
+async function pollLiveRequest() {
+  if (!TOKEN) return null;
+  try {
+    const result = await fetchJson(SNAPSHOT_HOST + "/api/futbin-live-request", {
+      headers: { "x-futbin-ingest-token": TOKEN }
+    }, 10000);
+    return result?.pending ? result : null;
+  } catch (error) {
+    log("live-request-poll-soft-fail", { error: String(error?.message || error) });
+    return null;
+  }
+}
+
+async function completeLiveRequest(requestId) {
+  if (!TOKEN || !requestId) return;
+  try {
+    await fetchJson(SNAPSHOT_HOST + "/api/futbin-live-request/" + encodeURIComponent(requestId) + "/complete", {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-futbin-ingest-token": TOKEN },
+      body: JSON.stringify({ completedAt: nowIso() })
+    }, 10000);
+  } catch (error) {
+    log("live-request-complete-soft-fail", { requestId, error: String(error?.message || error) });
+  }
+}
+
 export async function runCollectorCycle() {
+  const liveRequest = await pollLiveRequest();
   cycleCount += 1;
   const startedAt = nowIso();
   try {
@@ -428,6 +455,7 @@ export async function runCollectorCycle() {
     };
     writeStatus(status);
     log("cycle-ok", { selected: status.selected, observedRows: status.observedRows, inserted: status.inserted });
+    if (liveRequest?.requestId) await completeLiveRequest(liveRequest.requestId);
     return status;
   } catch (error) {
     const status = {

@@ -20,12 +20,34 @@ import { attachLocalFutbinFc27 } from './src/futbinLocalFc27.js';
 import { enrichRowsWithSnapshotFutbinBrain } from '../futbinSnapshotReaderV1.js';
 
 export const uvRouter = express.Router();
-const UV_VERSION = '2.15.40';
+const UV_VERSION = '2.15.41';
 const UV_PRODUCTION_LOADER_PRESENT = process.execArgv.some(arg => String(arg || '').includes('v1066Loader.mjs'));
 const UV_STANDALONE_GRAPH_TAGGED = (() => {
   try { return new URL(import.meta.url).searchParams.has('uv-standalone'); } catch { return false; }
 })();
 const UV_NATIVE_GRAPH_VERIFIED = !UV_PRODUCTION_LOADER_PRESENT || UV_STANDALONE_GRAPH_TAGGED;
+
+const sleepMs = ms => new Promise(resolve => setTimeout(resolve, ms));
+
+async function requestFreshFutbinCollection(platform) {
+  const token = String(process.env.FUTBIN_SNAPSHOT_INGEST_TOKEN || '').trim();
+  if (!token) throw new Error('FUTBIN live bridge is not configured on this host.');
+  const requestId = randomUUID();
+  const origin = String(process.env.FUTBIN_SNAPSHOT_HOST || '').trim().replace(/\/$/, '');
+  if (!origin) throw new Error('FUTBIN snapshot host is not configured.');
+  const headers = { 'content-type': 'application/json', 'x-futbin-ingest-token': token };
+  const created = await fetch(origin + '/api/futbin-live-request', { method: 'POST', headers, body: JSON.stringify({ requestId, platform }) });
+  if (!created.ok) throw new Error('FUTBIN live request failed: HTTP_' + created.status);
+  const deadline = Date.now() + 90000;
+  while (Date.now() < deadline) {
+    await sleepMs(1500);
+    const state = await fetch(origin + '/api/futbin-live-request', { headers: { 'x-futbin-ingest-token': token }, cache: 'no-store' });
+    if (!state.ok) continue;
+    const json = await state.json().catch(() => null);
+    if (!json?.pending || json?.requestId !== requestId) return requestId;
+  }
+  throw new Error('FUTBIN Live-Abruf hat nach 90 Sekunden noch keine Daten geliefert.');
+}
 
 async function getUvMarketContext(platform, liveCards = []) {
   const futbinContext = await getFutbinMarketTrends(platform);
@@ -1446,6 +1468,10 @@ app.post('/api/uv/generate', async (req, res) => {
     console.log('[UV-GEN] worker entered', { budget, strategyBudget, budgetReserve, platform, requestedCount });
     await waitForGenerationCpuWindow();
     console.log('[UV-GEN] cpu window ready');
+
+    console.log('[UV-GEN] requesting fresh FUTBIN collection');
+    await requestFreshFutbinCollection(platform);
+    console.log('[UV-GEN] live FUTBIN collection completed');
 
     console.log('[UV-GEN] loading FUTBIN cards');
     // v2.15.37: generation must use a genuinely current FUTBIN market snapshot.

@@ -12008,6 +12008,27 @@ app.get("/api/readiness", (req, res) => {
   });
 });
 
+const FUTBIN_LIVE_REQUEST_TTL_MS = 2 * 60 * 1000;
+let futbinLiveRequest = null;
+app.post("/api/futbin-live-request", (req,res) => {
+  if (!validIngestToken(req)) return res.status(401).json({ok:false,error:"UNAUTHORIZED"});
+  const requestId = String(req.body?.requestId || "").trim();
+  if (!requestId) return res.status(400).json({ok:false,error:"REQUEST_ID_REQUIRED"});
+  futbinLiveRequest = { requestId, platform: req.body?.platform === "pc" ? "pc" : "console", requestedAt: new Date().toISOString(), claimedAt: null };
+  res.json({ok:true,...futbinLiveRequest});
+});
+app.get("/api/futbin-live-request", (req,res) => {
+  if (!validIngestToken(req)) return res.status(401).json({ok:false,error:"UNAUTHORIZED"});
+  if (!futbinLiveRequest || Date.now()-Date.parse(futbinLiveRequest.requestedAt)>FUTBIN_LIVE_REQUEST_TTL_MS) return res.json({ok:true,pending:false});
+  futbinLiveRequest.claimedAt = new Date().toISOString();
+  res.json({ok:true,pending:true,...futbinLiveRequest});
+});
+app.post("/api/futbin-live-request/:requestId/complete", (req,res) => {
+  if (!validIngestToken(req)) return res.status(401).json({ok:false,error:"UNAUTHORIZED"});
+  if (!futbinLiveRequest || futbinLiveRequest.requestId !== String(req.params.requestId)) return res.status(404).json({ok:false,error:"REQUEST_NOT_FOUND"});
+  futbinLiveRequest = null;
+  res.json({ok:true});
+});
 app.post("/api/futbin-fc27-snapshot", async (req, res) => {
   if (GAME_YEAR !== "27") return res.status(409).json({ ok:false, error:"FC27_ONLY" });
   if (!validIngestToken(req)) return res.status(401).json({ ok:false, error:"UNAUTHORIZED" });
