@@ -429,8 +429,10 @@ btn.addEventListener('click', async()=>{
   btn.disabled=true;loading.classList.remove('hidden');summary.classList.add('hidden');notice.classList.add('hidden');
   rows.innerHTML='<tr><td colspan="9" class="empty">Live-Marktdaten, Nachfrage, Outcome-Lernen und robuste Kandidaten-Gates werden geprüft; danach werden bis zu 100 hochwertige Karten innerhalb des Budgets optimiert...</td></tr>';
   try{
-    $('#tableSub').textContent='ÜV-Liste wird direkt aus dem aktuellen FUTBIN-Pool berechnet...';
-    const data=await generateDirect({budget,platform,saveList});
+    $('#tableSub').textContent='Live-FUTBIN-Abruf wird gestartet...';
+    const started=await startGenerateJob({budget,platform,saveList});
+    $('#tableSub').textContent='Live-FUTBIN-Abruf läuft... Die Seite wartet auf frische Daten.';
+    const data=await waitForGenerateJob(started.jobId);
     lastListId=data.listId||null;
     lastCards=(data.cards||[]).map((card,index)=>({...card,_savedSlot:lastListId?index+1:null}));
     lastCheckedListId=null; resetListUiState(); renderSummary(data); renderCurrentRows(); filter.disabled=false; recheckBtn.disabled=!lastListId; rebalanceBtn.disabled=true;
