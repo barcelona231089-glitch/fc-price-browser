@@ -25,18 +25,29 @@
     const response = await baseFetch(input, init);
     const { pathname, method } = requestMeta(input, init);
     const isGeneration = pathname === '/api/uv/generate' && method === 'POST';
+    const isGenerationJobStatus = pathname.startsWith('/api/uv/generate-job/') && method === 'GET';
     const isRebalance = pathname.startsWith('/api/uv/rebalance/') && method === 'POST';
-    if (!isGeneration && !isRebalance) return response;
+    if (!isGeneration && !isGenerationJobStatus && !isRebalance) return response;
 
     let data;
     try { data = JSON.parse(await response.clone().text()); } catch { return response; }
+
+    // Async generation returns the actual generated list nested in result.
+    // Record its temporary recheck id for UI wording, but do not pretend it is persisted.
+    if (isGenerationJobStatus) {
+      const result = data?.result;
+      if (response.ok && result?.transientRecheckOnly && result?.recheckListId && !result?.listId) {
+        transientIds.add(String(result.recheckListId));
+      }
+      return response;
+    }
+
     if (!response.ok || !data?.transientRecheckOnly || !data?.recheckListId || data?.listId) return response;
 
     const id = String(data.recheckListId);
     transientIds.add(id);
 
-    // Existing UI already knows how to live-check/rebalance any listId.
-    // Present the hidden temporary ID only inside this browser session.
+    // Legacy direct-generation/rebalance compatibility.
     return copyJsonResponse(response, {
       ...data,
       listId: data.recheckListId,

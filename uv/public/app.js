@@ -433,13 +433,14 @@ btn.addEventListener('click', async()=>{
     const started=await startGenerateJob({budget,platform,saveList});
     $('#tableSub').textContent='Live-FUTBIN-Abruf läuft... Die Seite wartet auf frische Daten.';
     const data=await waitForGenerateJob(started.jobId);
-    lastListId=data.listId||null;
-    lastCards=(data.cards||[]).map((card,index)=>({...card,_savedSlot:lastListId?index+1:null}));
+    const persistedListId=data.listId||null;
+    lastListId=persistedListId||data.recheckListId||null;
+    lastCards=(data.cards||[]).map((card,index)=>({...card,_savedSlot:persistedListId?index+1:null}));
     lastCheckedListId=null; resetListUiState(); renderSummary(data); renderCurrentRows(); filter.disabled=false; recheckBtn.disabled=!lastListId; rebalanceBtn.disabled=true;
-    $('#tableSub').textContent=`${data.count} Karten  |  Pool ${data.candidatePoolSize}  |  Budget übrig ${coins(data.unusedBudget)}${lastListId?'  |  Vor dem Kaufen: Liste live prüfen':'  |  Nicht gespeichert'}`;
-    notice.textContent=lastListId
-      ? `Liste #${lastListId} gespeichert. Vor dem Kaufen zuerst "Liste live prüfen" verwenden. ${data.dataNotice||''}`
-      : `Liste nur angezeigt und NICHT gespeichert. Wenn du eine Liste für später behalten, live prüfen oder neu ausbalancieren willst, aktiviere vor der nächsten Generierung "Liste speichern". ${data.dataNotice||''}`;
+    $('#tableSub').textContent=`${data.count} Karten  |  Pool ${data.candidatePoolSize}  |  Budget übrig ${coins(data.unusedBudget)}${persistedListId?'  |  Vor dem Kaufen: Liste live prüfen':'  |  Nicht gespeichert  |  Live-Prüfung verfügbar'}`;
+    notice.textContent=persistedListId
+      ? `Liste #${persistedListId} gespeichert. Vor dem Kaufen zuerst "Liste live prüfen" verwenden. ${data.dataNotice||''}`
+      : `Liste nur angezeigt und NICHT gespeichert. Live-Prüfung funktioniert trotzdem über den temporären Prüfzustand. Für späteres Öffnen bitte "Liste speichern" aktivieren. ${data.dataNotice||''}`;
     notice.classList.remove('hidden');
     await loadSavedLists(data.listId||null);
   }catch(e){rows.innerHTML=`<tr><td colspan="9" class="empty error">${e.message}</td></tr>`}
