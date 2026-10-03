@@ -623,21 +623,22 @@ rebalanceBtn.addEventListener('click', async()=>{
     let data;
     try{data=JSON.parse(text)}catch{throw new Error(`Server lieferte keine JSON-Antwort (HTTP ${r.status}).`)}
     if(!r.ok) throw new Error(data.error||'Rebalance fehlgeschlagen');
-    lastListId=data.listId||null;
-    lastCards=(data.cards||[]).map((card,index)=>({...card,_savedSlot:lastListId?index+1:null}));
+    const persistedListId=data.listId||null;
+    lastListId=persistedListId||data.recheckListId||null;
+    lastCards=(data.cards||[]).map((card,index)=>({...card,_savedSlot:persistedListId?index+1:null}));
     lastCheckedListId=null; activeStatusFilter='ALL'; expandedRows.clear();
     renderSummary(data); renderCurrentRows();
     const rb=data.rebalance||{};
-    $('#tableSub').textContent=lastListId
-      ? `Rebalance #${oldListId} -> #${lastListId}  |  behalten ${rb.retainedCount||0}  |  ersetzt ${rb.replacementCount||0}  |  Vor dem Kaufen wieder live prüfen`
-      : `Rebalance von #${oldListId} nur angezeigt  |  behalten ${rb.retainedCount||0}  |  ersetzt ${rb.replacementCount||0}  |  Nicht gespeichert`;
-    notice.textContent=lastListId
-      ? `Neue ${data.count||lastCards.length}er-Liste #${lastListId} gespeichert. Die neue Liste gilt wieder als ungeprüft. Vor dem Kaufen zuerst "Liste live prüfen" drücken.`
-      : `Neu ausbalancierte Liste wurde NICHT gespeichert. Aktiviere "Liste speichern", wenn du die nächste erzeugte oder ausbalancierte Liste behalten möchtest.`;
+    $('#tableSub').textContent=persistedListId
+      ? `Rebalance #${oldListId} -> #${persistedListId}  |  behalten ${rb.retainedCount||0}  |  ersetzt ${rb.replacementCount||0}  |  Vor dem Kaufen wieder live prüfen`
+      : `Rebalance temporär  |  behalten ${rb.retainedCount||0}  |  ersetzt ${rb.replacementCount||0}  |  Nicht gespeichert  |  Live-Prüfung verfügbar`;
+    notice.textContent=persistedListId
+      ? `Neue ${data.count||lastCards.length}er-Liste #${persistedListId} gespeichert. Die neue Liste gilt wieder als ungeprüft. Vor dem Kaufen zuerst "Liste live prüfen" drücken.`
+      : `Neu ausbalancierte Liste ist NICHT gespeichert, kann aber sofort wieder live geprüft werden. WAIT/DROP/MISSING wurden durch neue Kandidaten ersetzt, soweit sichere Ersatzkarten verfügbar waren.`;
     notice.classList.remove('hidden');
     recheckBtn.disabled=!lastListId;
     rebalanceBtn.disabled=true;
-    await loadSavedLists(lastListId||null);
+    await loadSavedLists(persistedListId||null);
   }catch(e){notice.textContent=e.message;notice.classList.remove('hidden');rebalanceBtn.disabled=false}
   finally{recheckBtn.disabled=!lastListId;rebalanceBtn.disabled=!lastListId;rebalanceBtn.textContent=oldText}
 });

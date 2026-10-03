@@ -20,7 +20,7 @@ import { attachLocalFutbinFc27 } from './src/futbinLocalFc27.js';
 import { enrichRowsWithSnapshotFutbinBrain } from '../futbinSnapshotReaderV1.js';
 
 export const uvRouter = express.Router();
-const UV_VERSION = '2.15.44';
+const UV_VERSION = '2.15.45';
 const UV_PRODUCTION_LOADER_PRESENT = process.execArgv.some(arg => String(arg || '').includes('v1066Loader.mjs'));
 const UV_STANDALONE_GRAPH_TAGGED = (() => {
   try { return new URL(import.meta.url).searchParams.has('uv-standalone'); } catch { return false; }
@@ -1252,8 +1252,7 @@ app.post('/api/uv/rebalance/:listId', async (req, res) => {
   if (generationBusy) return res.status(429).json({ error: 'Eine Generierung oder ein Rebalance läuft gerade. Bitte kurz warten.' });
   generationBusy = true;
   try {
-    if (!isDbEnabled()) return res.status(503).json({ error: 'PostgreSQL ist fuer gespeicherte Portfolio-Rebalances erforderlich.' });
-    const stored = await loadGeneratedList(req.params.listId);
+    const stored = await loadRecheckList(req.params.listId);
     const platform = stored.platform === 'pc' ? 'pc' : 'console';
     const budget = Number(stored.budget);
     const saveListRequested = req.body?.saveList === true;
@@ -1417,8 +1416,8 @@ app.post('/api/uv/rebalance/:listId', async (req, res) => {
       avgUvScore: metrics.avgUvScore
     };
     const newListId = saveListRequested ? await saveGeneratedList(savePayload) : null;
-    const transientRecheckListId = !saveListRequested && isDbEnabled()
-      ? await saveGeneratedList({ ...savePayload, transientRecheckOnly: true }).catch(() => null)
+    const transientRecheckListId = !saveListRequested
+      ? createTransientRecheckList(savePayload)
       : null;
     const recheckCounts = recheckRows.reduce((acc, row) => { acc[row.status] = (acc[row.status] || 0) + 1; return acc; }, {});
 
