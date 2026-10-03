@@ -99,6 +99,10 @@ export function buildRecommendationLifecycle(card = {}, now = new Date()) {
 
 export function recheckRecommendation(previous = {}, fresh = null, now = new Date()) {
   const oldBuy = finite(previous.buyPrice ?? previous.recommendedBuyPrice ?? previous.price, null);
+  // Compare live market with the market price observed when the recommendation was created.
+  // buyPrice is an acquisition ceiling (bid/snipe target), not the old market price.
+  // Comparing live BIN against buyPrice falsely marks healthy discounted buys as +30-40% WAIT.
+  const oldMarket = finite(previous.price ?? previous.futbinPrice ?? oldBuy, oldBuy);
   const oldSell = finite(previous.sellPrice, null);
   const oldQuality = finite(previous.tradeQualityScore, 50);
   const oldSelection = finite(previous.selectionScore, 50);
@@ -126,7 +130,7 @@ export function recheckRecommendation(previous = {}, fresh = null, now = new Dat
   const trend = finite(fresh.historyTrendPct, 0);
   const sourceDiff = finite(fresh.sourceDiffPct, null);
   const thresholds = lifecycle.invalidationThresholds || buildRecommendationLifecycle(previous, now).invalidationThresholds;
-  const priceDriftPct = oldBuy > 0 ? ((live - oldBuy) / oldBuy) * 100 : 0;
+  const priceDriftPct = oldMarket > 0 ? ((live - oldMarket) / oldMarket) * 100 : 0;
   const sellDriftPct = oldSell > 0 && newSell > 0 ? ((newSell - oldSell) / oldSell) * 100 : null;
   const qualityDelta = newQuality - oldQuality;
   const selectionDelta = newSelection - oldSelection;
