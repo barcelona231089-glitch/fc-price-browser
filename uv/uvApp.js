@@ -1,7 +1,7 @@
 import express from 'express';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import { randomUUID } from 'node:crypto';
+import { randomUUID, timingSafeEqual } from 'node:crypto';
 import { mkdirSync, readFileSync, writeFileSync, renameSync, unlinkSync } from 'node:fs';
 import { GAME_YEAR, HISTORY_SAMPLE_LIMIT, HISTORY_MONITOR_MS, HISTORY_MONITOR_MAX_CARDS, HISTORY_HEARTBEAT_MINUTES, LIVE_RECHECK_BATCH_SIZE, LIVE_RECHECK_BATCH_PAUSE_MS, LIVE_RECHECK_MAX_QUEUE, LIVE_RECHECK_JOB_TTL_MS, GENERATION_SCORE_BATCH_SIZE, GENERATION_BATCH_PAUSE_MS, GENERATION_CPU_WINDOW_WAIT_MS } from './src/config.js';
 import { getLiveFutbinCards as fetchLiveFutbinCards } from './src/futbinMarket.js';
@@ -20,7 +20,7 @@ import { attachLocalFutbinFc27 } from './src/futbinLocalFc27.js';
 import { enrichRowsWithSnapshotFutbinBrain } from '../futbinSnapshotReaderV1.js';
 
 export const uvRouter = express.Router();
-const UV_VERSION = '2.15.41';
+const UV_VERSION = '2.15.42';
 const UV_PRODUCTION_LOADER_PRESENT = process.execArgv.some(arg => String(arg || '').includes('v1066Loader.mjs'));
 const UV_STANDALONE_GRAPH_TAGGED = (() => {
   try { return new URL(import.meta.url).searchParams.has('uv-standalone'); } catch { return false; }
@@ -28,25 +28,57 @@ const UV_STANDALONE_GRAPH_TAGGED = (() => {
 const UV_NATIVE_GRAPH_VERIFIED = !UV_PRODUCTION_LOADER_PRESENT || UV_STANDALONE_GRAPH_TAGGED;
 
 const sleepMs = ms => new Promise(resolve => setTimeout(resolve, ms));
+const FUTBIN_LIVE_REQUEST_TTL_MS = 12 * 60 * 1000;
+let futbinLiveRequest = null;
+
+function liveBridgeTokenConfigured() {
+  return String(process.env.FUTBIN_SNAPSHOT_INGEST_TOKEN || '').trim().length > 0;
+}
+
+function validLiveBridgeToken(req) {
+  const expected = String(process.env.FUTBIN_SNAPSHOT_INGEST_TOKEN || '').trim();
+  const provided = String(req.get('x-futbin-ingest-token') || '').trim();
+  if (!expected || !provided) return false;
+  const a = Buffer.from(expected);
+  const b = Buffer.from(provided);
+  return a.length === b.length && timingSafeEqual(a, b);
+}
+
+function createFutbinLiveRequest(platform, requestId = randomUUID()) {
+  futbinLiveRequest = {
+    requestId,
+    platform: platform === 'pc' ? 'pc' : 'console',
+    requestedAt: new Date().toISOString(),
+    claimedAt: null,
+    completedAt: null,
+    status: 'pending'
+  };
+  return futbinLiveRequest;
+}
+
+function getActiveFutbinLiveRequest() {
+  if (!futbinLiveRequest) return null;
+  if (Date.now() - Date.parse(futbinLiveRequest.requestedAt) > FUTBIN_LIVE_REQUEST_TTL_MS) {
+    futbinLiveRequest = null;
+    return null;
+  }
+  return futbinLiveRequest;
+}
 
 async function requestFreshFutbinCollection(platform) {
-  const token = String(process.env.FUTBIN_SNAPSHOT_INGEST_TOKEN || '').trim();
-  if (!token) throw new Error('FUTBIN live bridge is not configured on this host.');
+  if (!liveBridgeTokenConfigured()) throw new Error('FUTBIN live bridge is not configured on this host.');
   const requestId = randomUUID();
-  const origin = String(process.env.FUTBIN_SNAPSHOT_HOST || '').trim().replace(/\/$/, '');
-  if (!origin) throw new Error('FUTBIN snapshot host is not configured.');
-  const headers = { 'content-type': 'application/json', 'x-futbin-ingest-token': token };
-  const created = await fetch(origin + '/api/futbin-live-request', { method: 'POST', headers, body: JSON.stringify({ requestId, platform }) });
-  if (!created.ok) throw new Error('FUTBIN live request failed: HTTP_' + created.status);
-  const deadline = Date.now() + 90000;
+  createFutbinLiveRequest(platform, requestId);
+  const deadline = Date.now() + 8 * 60 * 1000;
   while (Date.now() < deadline) {
-    await sleepMs(1500);
-    const state = await fetch(origin + '/api/futbin-live-request', { headers: { 'x-futbin-ingest-token': token }, cache: 'no-store' });
-    if (!state.ok) continue;
-    const json = await state.json().catch(() => null);
-    if (!json?.pending || json?.requestId !== requestId) return requestId;
+    await sleepMs(1000);
+    const state = getActiveFutbinLiveRequest();
+    if (state?.requestId === requestId && state.status === 'completed') {
+      futbinLiveRequest = null;
+      return requestId;
+    }
   }
-  throw new Error('FUTBIN Live-Abruf hat nach 90 Sekunden noch keine Daten geliefert.');
+  throw new Error('FUTBIN Live-Abruf hat nach 8 Minuten noch keine Daten geliefert.');
 }
 
 async function getUvMarketContext(platform, liveCards = []) {
@@ -70,6 +102,39 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const GENERATION_JOB_DIR = path.join(__dirname, 'data', 'generation-jobs');
 mkdirSync(GENERATION_JOB_DIR, { recursive: true });
 app.use(express.json({ limit: '1mb' }));
+
+app.post('/api/futbin-live-request', (req, res) => {
+  if (!validLiveBridgeToken(req)) return res.status(401).json({ ok: false, error: 'UNAUTHORIZED' });
+  const requestId = String(req.body?.requestId || '').trim();
+  if (!requestId) return res.status(400).json({ ok: false, error: 'REQUEST_ID_REQUIRED' });
+  const state = createFutbinLiveRequest(req.body?.platform, requestId);
+  return res.json({ ok: true, pending: true, ...state });
+});
+
+app.get('/api/futbin-live-request', (req, res) => {
+  if (!validLiveBridgeToken(req)) return res.status(401).json({ ok: false, error: 'UNAUTHORIZED' });
+  const state = getActiveFutbinLiveRequest();
+  if (!state) return res.json({ ok: true, pending: false, completed: false });
+  if (!state.claimedAt && state.status === 'pending') state.claimedAt = new Date().toISOString();
+  return res.json({
+    ok: true,
+    pending: state.status === 'pending',
+    completed: state.status === 'completed',
+    ...state
+  });
+});
+
+app.post('/api/futbin-live-request/:requestId/complete', (req, res) => {
+  if (!validLiveBridgeToken(req)) return res.status(401).json({ ok: false, error: 'UNAUTHORIZED' });
+  const state = getActiveFutbinLiveRequest();
+  if (!state || state.requestId !== String(req.params.requestId)) {
+    return res.status(404).json({ ok: false, error: 'REQUEST_NOT_FOUND' });
+  }
+  state.status = 'completed';
+  state.completedAt = new Date().toISOString();
+  return res.json({ ok: true, completed: true, requestId: state.requestId, completedAt: state.completedAt });
+});
+
 app.use('/uv', (req, res, next) => {
   // The UV frontend changes together with the runtime. Do not let a browser or
   // hosting proxy keep an older app.js after a deploy.
