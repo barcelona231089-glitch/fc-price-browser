@@ -432,7 +432,7 @@ btn.addEventListener('click', async()=>{
     $('#tableSub').textContent='Live-FUTBIN-Abruf wird gestartet...';
     const started=await startGenerateJob({budget,platform,saveList});
     $('#tableSub').textContent='Live-FUTBIN-Abruf läuft... Die Seite wartet auf frische Daten.';
-    const data=await waitForGenerateJob(started.jobId);
+    const data=await waitForGenerateJob(started.jobId,{budget,platform,saveList});
     const persistedListId=data.listId||null;
     lastListId=persistedListId||data.recheckListId||null;
     lastCards=(data.cards||[]).map((card,index)=>({...card,_savedSlot:persistedListId?index+1:null}));
@@ -478,9 +478,11 @@ async function startGenerateJob(payload) {
   return data;
 }
 
-async function waitForGenerateJob(jobId) {
+async function waitForGenerateJob(initialJobId,payload) {
   const startedPollingAt = Date.now();
+  let jobId = initialJobId;
   let transientFetchErrors = 0;
+  let recoveryCount = 0;
   while(true){
     await sleep(2000);
     try{
@@ -489,10 +491,17 @@ async function waitForGenerateJob(jobId) {
       let data;
       try{data=JSON.parse(text)}catch{throw new Error(`Generate-Status war keine JSON-Antwort (HTTP ${r.status}).`)}
       if(!r.ok) {
-        // A free host can restart/recycle the process while a generation job is
-        // running. A 404/MISSING is terminal, not a transient network failure.
         if(r.status===404 || data.status==='MISSING') {
-          throw Object.assign(new Error(data.error||'Generate-Job nicht gefunden oder bereits abgelaufen.'), { terminalGenerateStatus:true });
+          if(recoveryCount>=5) throw new Error(data.error||'Generate-Job konnte nach Server-Neustarts nicht wiederhergestellt werden.');
+          recoveryCount += 1;
+          $('#tableSub').textContent=`Server wurde während der Berechnung neu gestartet. Job wird automatisch fortgesetzt (${recoveryCount}/5)...`;
+          notice.textContent='Die frischen FUTBIN-Daten bleiben erhalten. Die Berechnung wird automatisch auf dem neuen Server-Prozess fortgesetzt.';
+          notice.classList.remove('hidden');
+          await sleep(1000);
+          const restarted=await startGenerateJob({...payload,resumeAfterRestart:true});
+          jobId=restarted.jobId;
+          transientFetchErrors=0;
+          continue;
         }
         throw new Error(data.error||'Generate-Status nicht abrufbar');
       }
@@ -502,11 +511,10 @@ async function waitForGenerateJob(jobId) {
       const seconds=Math.max(1,Math.round((Date.now()-new Date(data.startedAt||startedPollingAt).getTime())/1000));
       $('#tableSub').textContent=`ÜV-Liste wird serverseitig berechnet... ${seconds}s  |  Verbindung bleibt stabil`;
       if(seconds>=180){
-        notice.textContent='Die Berechnung dauert länger, läuft auf Raven aber weiter. Die Seite wartet auf das fertige Ergebnis.';
+        notice.textContent='Die Berechnung dauert länger. Der Server arbeitet weiter und die Seite wartet auf das fertige Ergebnis.';
         notice.classList.remove('hidden');
       }
     }catch(error){
-      if(error?.terminalGenerateStatus) throw error;
       transientFetchErrors += 1;
       if(transientFetchErrors >= 12) throw error;
       $('#tableSub').textContent=`ÜV-Berechnung läuft weiter... Status-Verbindung wird erneut geprüft (${transientFetchErrors}/12)`;

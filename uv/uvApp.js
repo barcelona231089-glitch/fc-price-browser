@@ -20,7 +20,7 @@ import { attachLocalFutbinFc27 } from './src/futbinLocalFc27.js';
 import { enrichRowsWithSnapshotFutbinBrain } from '../futbinSnapshotReaderV1.js';
 
 export const uvRouter = express.Router();
-const UV_VERSION = '2.15.45';
+const UV_VERSION = '2.15.46';
 const UV_PRODUCTION_LOADER_PRESENT = process.execArgv.some(arg => String(arg || '').includes('v1066Loader.mjs'));
 const UV_STANDALONE_GRAPH_TAGGED = (() => {
   try { return new URL(import.meta.url).searchParams.has('uv-standalone'); } catch { return false; }
@@ -329,7 +329,7 @@ async function invokeGenerateRouteInternal(payload) {
 
 async function startGenerationJob(payload) {
   console.log('[UV-GEN] start request', { budget: payload?.budget, platform: payload?.platform, saveList: payload?.saveList === true });
-  const requestKey = JSON.stringify(payload);
+  const requestKey = JSON.stringify({ budget: payload?.budget, platform: payload?.platform, saveList: payload?.saveList === true });
   const active = generationRuntime.activeJobId
     ? (generationJobs.get(generationRuntime.activeJobId) || (generationRuntime.activeJob?.jobId === generationRuntime.activeJobId ? generationRuntime.activeJob : null))
     : null;
@@ -1483,11 +1483,12 @@ app.post('/api/uv/generate-job', async (req, res) => {
   const budget = Math.floor(Number(req.body?.budget));
   const platform = req.body?.platform === 'pc' ? 'pc' : 'console';
   const saveList = req.body?.saveList === true;
+  const resumeAfterRestart = req.body?.resumeAfterRestart === true;
   if (!Number.isFinite(budget) || budget < 20_000) {
     return res.status(400).json({ error: 'Bitte mindestens 20.000 Coins eingeben.' });
   }
   try {
-    const { job, reused } = await startGenerationJob({ budget, platform, saveList });
+    const { job, reused } = await startGenerationJob({ budget, platform, saveList, resumeAfterRestart });
     return res.status(reused ? 200 : 202).json({
       ok: true,
       reused,
@@ -1518,6 +1519,7 @@ app.post('/api/uv/generate', async (req, res) => {
     const budget = Math.floor(Number(req.body?.budget));
     const platform = req.body?.platform === 'pc' ? 'pc' : 'console';
     const saveListRequested = req.body?.saveList === true;
+    const resumeAfterRestart = req.body?.resumeAfterRestart === true;
     const requestedCount = portfolioCountForBudget(budget);
     let count = requestedCount;
     if (!Number.isFinite(budget) || budget < 20_000 || requestedCount < 1) return res.status(400).json({ error: 'Bitte mindestens 20.000 Coins eingeben.' });
@@ -1533,16 +1535,25 @@ app.post('/api/uv/generate', async (req, res) => {
     await waitForGenerationCpuWindow();
     console.log('[UV-GEN] cpu window ready');
 
-    console.log('[UV-GEN] requesting fresh FUTBIN collection');
-    await requestFreshFutbinCollection(platform);
-    console.log('[UV-GEN] live FUTBIN collection completed');
+    let live = null;
+    if (resumeAfterRestart) {
+      const recent = await getLiveFutbinCards(platform, { maxAgeSeconds: 180 });
+      if ((recent?.cards?.length || 0) >= 50) {
+        live = recent;
+        console.log('[UV-GEN] resume after host restart using recent FUTBIN snapshot', { count: recent.cards.length });
+      }
+    }
+
+    if (!live) {
+      console.log('[UV-GEN] requesting fresh FUTBIN collection');
+      await requestFreshFutbinCollection(platform);
+      console.log('[UV-GEN] live FUTBIN collection completed');
+    }
 
     console.log('[UV-GEN] loading FUTBIN cards');
-    // v2.15.37: generation must use a genuinely current FUTBIN market snapshot.
-    // Do not widen freshness just to make an old snapshot usable. If the collector
-    // has not produced a current price, fail generation instead of recommending
-    // stale buy/sell numbers.
-    const live = await getLiveFutbinCards(platform, { maxAgeSeconds: 3600 });
+    // Normal generation requires a current snapshot. Recovery after a host recycle
+    // may reuse the just-collected <=180s snapshot so the collector is not invoked twice.
+    if (!live) live = await getLiveFutbinCards(platform, { maxAgeSeconds: 3600 });
     console.log('[UV-GEN] FUTBIN cards loaded', { count: live?.cards?.length || 0, source: live?.source || null, maxPriceAgeSeconds: 3600 });
     const marketContext = await getUvMarketContext(platform, live.cards);
 
