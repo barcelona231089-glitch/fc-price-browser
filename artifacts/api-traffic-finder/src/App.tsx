@@ -1,12 +1,13 @@
-import { useMemo, useState, type FormEvent, type ReactNode } from 'react';
+import { useMemo, useState, type ChangeEvent, type FormEvent, type ReactNode } from 'react';
+import { useEffect } from 'react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { useAnalyzeTraffic, useHealthCheck, getHealthCheckQueryKey } from '@workspace/api-client-react';
 import type { TrafficAnalysisResult, TrafficRequest } from '@workspace/api-client-react';
-import { AlertCircle, ArrowDownToLine, ArrowUpRight, Check, ChevronDown, Clock3, Database, Globe2, MousePointer2, Search, ShieldCheck, Sparkles, X } from 'lucide-react';
+import { AlertCircle, ArrowDownToLine, ArrowUpRight, Check, ChevronDown, Clock3, Database, FileUp, Globe2, MousePointer2, Search, ShieldCheck, Sparkles, X } from 'lucide-react';
 import { ErrorBoundary } from '@/components/error-boundary';
 import InteractiveCapture from '@/components/interactive-capture';
 import { EndpointGroups, SchemaFields, downloadTrafficJson } from '@/components/traffic-insights';
-import { matchesRequestFilter, requestSearchText } from '@workspace/traffic-core';
+import { candidateReasons, countsFor, inferJsonSchema, inferRequestType, isProtectionTraffic, matchesRequestFilter, requestSearchText, safeRequestUrl, sanitizeUrl } from '@workspace/traffic-core';
 import { Toaster } from '@/components/ui/toaster';
 import { TooltipProvider } from '@/components/ui/tooltip';
 import NotFound from '@/pages/not-found';
@@ -45,6 +46,140 @@ function safeError(error: unknown) {
   if (error && typeof error === 'object' && 'error' in error && typeof error.error === 'string') return error.error;
   if (error instanceof Error) return error.message;
   return 'Die Analyse konnte nicht abgeschlossen werden. Bitte versuche es erneut.';
+}
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : null;
+}
+
+async function resultFromHar(file: File): Promise<TrafficAnalysisResult> {
+  if (file.size > 50 * 1024 * 1024) throw new Error('Die HAR-Datei ist größer als 50 MB.');
+  const root = asRecord(JSON.parse(await file.text()));
+  const log = asRecord(root?.log);
+  const entries = Array.isArray(log?.entries) ? log.entries : null;
+  if (!entries) throw new Error('Keine gültige HAR-Datei erkannt.');
+
+  const requests: TrafficRequest[] = [];
+  let protectionTraffic = 0;
+  let earliest = Number.POSITIVE_INFINITY;
+  let latest = 0;
+
+  for (const [index, rawEntry] of entries.entries()) {
+    const entry = asRecord(rawEntry);
+    const request = asRecord(entry?.request);
+    const response = asRecord(entry?.response);
+    const content = asRecord(response?.content);
+    if (!entry || !request || typeof request.url !== 'string') continue;
+    const safeNetworkUrl = safeRequestUrl(request.url);
+    if (!safeNetworkUrl) continue;
+
+    let url: string;
+    let parsed: URL;
+    try {
+      url = sanitizeUrl(safeNetworkUrl);
+      parsed = new URL(url);
+    } catch { continue; }
+
+    const mime = typeof content?.mimeType === 'string' ? content.mimeType.split(';', 1)[0].trim().toLowerCase() : null;
+    const rawResource = typeof entry._resourceType === 'string' ? entry._resourceType.toLowerCase() : '';
+    let resourceType = rawResource === 'xmlhttprequest' ? 'xhr' : ['fetch', 'xhr', 'document', 'websocket'].includes(rawResource) ? rawResource : 'other';
+    let type = resourceType === 'websocket' ? 'websocket' as const : inferRequestType(parsed.pathname, mime);
+    if (type === 'graphql' && resourceType === 'other') resourceType = 'fetch';
+
+    let jsonSchema: TrafficRequest['jsonSchema'] = null;
+    const bodyText = typeof content?.text === 'string' && content.text.length <= 1_000_000 ? content.text : null;
+    if (bodyText && (mime === 'application/json' || mime?.endsWith('+json'))) {
+      try {
+        const decoded = content?.encoding === 'base64' ? atob(bodyText) : bodyText;
+        jsonSchema = inferJsonSchema(JSON.parse(decoded));
+      } catch { jsonSchema = null; }
+    }
+
+    const startedAt = typeof entry.startedDateTime === 'string' && !Number.isNaN(Date.parse(entry.startedDateTime)) ? new Date(entry.startedDateTime).toISOString() : new Date().toISOString();
+    const startedMs = Date.parse(startedAt);
+    const durationMs = typeof entry.time === 'number' && Number.isFinite(entry.time) && entry.time >= 0 ? entry.time : null;
+    earliest = Math.min(earliest, startedMs);
+    latest = Math.max(latest, startedMs + (durationMs ?? 0));
+    if (isProtectionTraffic(parsed.pathname)) protectionTraffic += 1;
+
+    const base = { type, resourceType, contentType: mime, path: parsed.pathname };
+    const reasons = candidateReasons(base);
+    requests.push({
+      id: `har-${index + 1}`,
+      url,
+      hostname: parsed.hostname,
+      path: parsed.pathname,
+      method: typeof request.method === 'string' && /^[A-Z]{1,16}$/.test(request.method.toUpperCase()) ? request.method.toUpperCase() : 'UNKNOWN',
+      statusCode: typeof response?.status === 'number' ? response.status : null,
+      contentType: mime,
+      startedAt,
+      durationMs,
+      type,
+      resourceType,
+      jsonSchema,
+      isApiCandidate: reasons.length > 0,
+      candidateReasons: reasons,
+    });
+  }
+
+  if (!requests.length) throw new Error('Die HAR-Datei enthält keine auswertbaren öffentlichen Requests.');
+  return {
+    url: requests[0].url,
+    capturedAt: new Date(Number.isFinite(earliest) ? earliest : Date.now()).toISOString(),
+    durationMs: Number.isFinite(earliest) ? Math.max(0, latest - earliest) : 0,
+    requestCount: requests.length,
+    blockedCount: 0,
+    counts: countsFor(requests),
+    requests,
+    warnings: [
+      'Lokaler Browser-Import: Die HAR-Datei wurde nur in deinem Browser ausgewertet und nicht zum Server hochgeladen.',
+      ...(protectionTraffic ? [`${protectionTraffic} Schutz-Request(s) erkannt; sie werden nicht als API-Kandidaten oder Endpunkte gezählt.`] : []),
+    ],
+  };
+}
+
+function resultFromLocal(items: unknown[]): TrafficAnalysisResult | null {
+  const requests: TrafficRequest[] = [];
+  for (const [index, raw] of items.entries()) {
+    const item = asRecord(raw);
+    if (!item || typeof item.url !== 'string') continue;
+    let parsed: URL;
+    try { parsed = new URL(item.url); } catch { continue; }
+    if (isProtectionTraffic(parsed.pathname)) continue;
+    const resourceType = typeof item.resourceType === 'string' ? item.resourceType : 'other';
+    const type = resourceType === 'websocket' ? 'websocket' as const : inferRequestType(parsed.pathname, null);
+    const base = { type, resourceType, contentType: null, path: parsed.pathname };
+    const reasons = candidateReasons(base);
+    requests.push({
+      id: typeof item.id === 'string' ? item.id : `local-${index + 1}`,
+      url: parsed.origin + parsed.pathname,
+      hostname: parsed.hostname,
+      path: parsed.pathname,
+      method: typeof item.method === 'string' ? item.method : 'GET',
+      statusCode: typeof item.statusCode === 'number' ? item.statusCode : null,
+      contentType: null,
+      startedAt: typeof item.startedAt === 'string' ? item.startedAt : new Date().toISOString(),
+      durationMs: null,
+      type,
+      resourceType,
+      jsonSchema: null,
+      isApiCandidate: reasons.length > 0,
+      candidateReasons: reasons,
+    });
+  }
+  if (!requests.length) return null;
+  const times = requests.map(r => Date.parse(r.startedAt)).filter(Number.isFinite);
+  const capturedAt = new Date(Math.min(...times)).toISOString();
+  return {
+    url: requests[0].url,
+    capturedAt,
+    durationMs: Math.max(0, Math.max(...times) - Math.min(...times)),
+    requestCount: requests.length,
+    blockedCount: 0,
+    counts: countsFor(requests),
+    requests,
+    warnings: ['Lokale Browser-Erfassung aktiv: Nur URL ohne Abfrageparameter, Methode, Status und Ressourcentyp wurden übernommen. Keine Header, Cookies, Tokens oder Bodies.'],
+  };
 }
 
 function HealthIndicator() {
@@ -180,8 +315,23 @@ function Home() {
   const [duration, setDuration] = useState('8');
   const [hasPermission, setHasPermission] = useState(false);
   const [interactiveUrl, setInteractiveUrl] = useState('');
+  const [importedResult, setImportedResult] = useState<TrafficAnalysisResult | null>(null);
+  const [harError, setHarError] = useState('');
+  const [companionSeen, setCompanionSeen] = useState(false);
   const analyze = useAnalyzeTraffic();
-  const result = analyze.data;
+
+  useEffect(() => {
+    const receive = (event: MessageEvent) => {
+      if (event.source !== window || event.origin !== window.location.origin || event.data?.source !== 'atf-companion' || event.data?.type !== 'ATF_TRAFFIC') return;
+      setCompanionSeen(true);
+      const local = resultFromLocal(Array.isArray(event.data.items) ? event.data.items : []);
+      if (local) setImportedResult(local);
+    };
+    window.addEventListener('message', receive);
+    window.postMessage({ source: 'atf-web', type: 'ATF_GET' }, window.location.origin);
+    return () => window.removeEventListener('message', receive);
+  }, []);
+  const result = importedResult ?? analyze.data;
   const interactiveOpen = Boolean(interactiveUrl);
   const submit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -192,6 +342,8 @@ function Home() {
       return;
     }
     if (!['http:', 'https:'].includes(normalized.protocol) || !hasPermission) return;
+    setImportedResult(null);
+    setHarError('');
     analyze.mutate({ data: { url: normalized.toString(), captureDurationSeconds: Number(duration), authorized: true } });
   };
 
@@ -208,6 +360,19 @@ function Home() {
       if (['http:', 'https:'].includes(normalized.protocol)) setInteractiveUrl(normalized.toString());
     } catch {
       setInteractiveUrl('');
+    }
+  };
+
+  const importHar = async (event: ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    event.target.value = '';
+    if (!file) return;
+    setHarError('');
+    try {
+      setImportedResult(await resultFromHar(file));
+      setInteractiveUrl('');
+    } catch (error) {
+      setHarError(safeError(error));
     }
   };
 
@@ -287,6 +452,22 @@ function Home() {
                 <span>Website selbst bedienen; Requests live erfassen.</span>
               </div>
             )}
+            {!interactiveOpen && (
+              <div className="har-import-row">
+                <label className={`button button-secondary har-import-button ${!hasPermission || analyze.isPending ? 'is-disabled' : ''}`}>
+                  <FileUp size={15} /> HAR aus deinem Browser importieren
+                  <input type="file" accept=".har,application/json" onChange={importHar} disabled={!hasPermission || analyze.isPending} data-testid="input-har-file" />
+                </label>
+                <span>Für Seiten mit Zugriffsschutz: im normalen Browser öffnen, Netzwerk-HAR exportieren und hier lokal auswerten. Keine Cloudflare-Umgehung.</span>
+              </div>
+            )}
+            <div className="har-import-row">
+              <button type="button" className="button button-secondary" onClick={() => window.postMessage({ source: 'atf-web', type: 'ATF_GET' }, window.location.origin)}>
+                <Sparkles size={15} /> Lokale Browser-Erfassung prüfen
+              </button>
+              <span>{companionSeen ? 'Companion verbunden. FUTBIN im normalen Browser benutzen, die Treffer erscheinen automatisch hier.' : 'Companion noch nicht verbunden. Nach einmaliger Installation erfasst er FUTBIN-Metadaten automatisch.'}</span>
+            </div>
+            {harError && <div className="error-notice" role="alert"><AlertCircle size={17} /><div><strong>HAR-Import fehlgeschlagen</strong><span>{harError}</span></div></div>}
           </form>
           <div className="privacy-note"><ShieldCheck size={15} /><span>Abfrageparameter werden entfernt. Im interaktiven Modus bedienst du die Website selbst; nichts wird automatisch angeklickt. JSON-Antworten werden nur kurz für Feldnamen und Datentypen ausgewertet. Antwortwerte, Bodies, Header, Cookies und Tokens werden nicht gespeichert oder exportiert.</span></div>
         </section>
