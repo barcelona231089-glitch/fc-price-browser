@@ -17,7 +17,7 @@ export function EndpointGroups({ requests }: { requests: TrafficRequest[] }) {
   return (
     <section className="endpoint-groups" aria-label="Endpoint-Gruppierung" data-testid="endpoint-groups">
       <div className="endpoint-heading"><h3>Endpoint-Gruppierung</h3><span>{groups.length} Endpunkte</span></div>
-      <p>Gleiche Methode, Host und Pfad werden zusammengefasst. Numerische IDs und UUIDs erscheinen als :id.</p>
+      <p>Gleiche Methode, Host und Pfad werden zusammengefasst. Numerische IDs und UUIDs erscheinen als :id. Schutzverkehr wie Cloudflare-Challenges wird nicht als Endpoint gruppiert.</p>
       {groups.length ? groups.map(group => (
         <details className="endpoint-group" key={group.key} data-testid="endpoint-group">
           <summary><span className="method-chip">{group.method}</span><code>{group.hostname}{group.path}</code><span>{group.requests.length}× · {group.type} · {group.averageDurationMs == null ? '—' : `${group.averageDurationMs} ms`}</span></summary>

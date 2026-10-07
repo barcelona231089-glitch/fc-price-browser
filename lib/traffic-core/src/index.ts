@@ -193,6 +193,7 @@ export function endpointPath(path: string): string {
 export function groupEndpoints<T extends { hostname: string; path: string; method: string; type: RequestType; durationMs?: number | null; statusCode?: number | null; jsonSchema?: unknown; }>(requests: T[]) {
   const groups = new Map<string, { key: string; hostname: string; path: string; method: string; type: RequestType; requests: T[]; fields: string[]; averageDurationMs: number | null }>();
   for (const request of requests) {
+    if (isProtectionTraffic(request.path)) continue;
     const path = endpointPath(request.path);
     const key = `${request.method} ${request.hostname}${path} ${request.type}`;
     const group = groups.get(key) ?? { key, hostname: request.hostname, path, method: request.method, type: request.type, requests: [], fields: [], averageDurationMs: null };

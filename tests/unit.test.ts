@@ -76,7 +76,7 @@ test('Cloudflare challenge traffic is never classified as an API candidate', () 
 });
 
 test('Endpoint grouping separates methods and hosts while combining numeric and UUID IDs', () => {
-  const grouped = groupEndpoints([sampleRequest,{...sampleRequest,id:'2',path:'/api/items/2',durationMs:22},{...sampleRequest,id:'3',method:'POST'},{...sampleRequest,id:'4',hostname:'other.example.com'}]);
+  const grouped = groupEndpoints([sampleRequest,{...sampleRequest,id:'2',path:'/api/items/2',durationMs:22},{...sampleRequest,id:'3',method:'POST'},{...sampleRequest,id:'4',hostname:'other.example.com'},{...sampleRequest,id:'5',path:'/cdn-cgi/challenge-platform/h/g/orchestrate/chl_page/v1',type:'fetch-xhr',resourceType:'xhr'}]);
   assert.equal(grouped.length,3);
   assert.equal(grouped[0].requests.length,2);
   assert.equal(grouped[0].path,'/api/items/:id');
