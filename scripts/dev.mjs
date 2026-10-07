@@ -17,8 +17,11 @@ await new Promise((resolve, reject) => {
   built.once('error', reject);
   built.once('exit', code => code === 0 ? resolve() : reject(new Error('Backend-Build fehlgeschlagen.')));
 });
-const api = run(path.join(apiDir, 'dist/index.mjs'), [], apiDir, { PORT: process.env.API_PORT ?? '5174', HOST: process.env.HOST ?? (process.env.REPL_ID ? '0.0.0.0' : '127.0.0.1'), NODE_ENV: production ? 'production' : 'development' });
-const ui = run(path.join(uiDir, 'node_modules/vite/bin/vite.js'), [production ? 'preview' : '--config', ...(production ? [] : ['vite.config.ts']), '--host', process.env.HOST ?? (process.env.REPL_ID ? '0.0.0.0' : '127.0.0.1'), ...(process.argv.includes('--open') ? ['--open'] : [])], uiDir, { PORT: process.env.UI_PORT ?? '5173', BASE_PATH: process.env.BASE_PATH ?? '/', API_PROXY_TARGET: `http://127.0.0.1:${process.env.API_PORT ?? '5174'}`, NODE_ENV: production ? 'production' : 'development' });
+const apiPort = process.env.API_PORT ?? '5174';
+const uiPort = process.env.UI_PORT ?? process.env.PORT ?? '5173';
+const host = process.env.HOST ?? (production || process.env.REPL_ID ? '0.0.0.0' : '127.0.0.1');
+const api = run(path.join(apiDir, 'dist/index.mjs'), [], apiDir, { PORT: apiPort, HOST: host, NODE_ENV: production ? 'production' : 'development' });
+const ui = run(path.join(uiDir, 'node_modules/vite/bin/vite.js'), [production ? 'preview' : '--config', ...(production ? [] : ['vite.config.ts']), '--host', host, '--port', uiPort, ...(process.argv.includes('--open') ? ['--open'] : [])], uiDir, { PORT: uiPort, BASE_PATH: process.env.BASE_PATH ?? '/', API_PROXY_TARGET: `http://127.0.0.1:${apiPort}`, NODE_ENV: production ? 'production' : 'development' });
 let stopping = false;
 function stop(code = 0) {
   if (stopping) return;
