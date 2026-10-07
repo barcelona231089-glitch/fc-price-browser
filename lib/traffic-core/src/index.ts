@@ -162,7 +162,12 @@ export function inferRequestType(path: string, contentType: string | null, graph
   return "fetch-xhr";
 }
 
+export function isProtectionTraffic(path: string): boolean {
+  return /^\/cdn-cgi\/(?:challenge-platform|turnstile)(?:\/|$)/i.test(path);
+}
+
 export function candidateReasons(request: Pick<TrafficMetadata, "type" | "resourceType" | "contentType" | "path">): string[] {
+  if (isProtectionTraffic(request.path)) return [];
   const reasons: string[] = [];
   if (["fetch", "xhr"].includes(request.resourceType)) reasons.push("Fetch/XHR");
   if (request.type === "graphql") reasons.push("GraphQL");

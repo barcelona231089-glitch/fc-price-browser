@@ -1,8 +1,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  cleanJsonSchema, countsFor, groupEndpoints, inferJsonSchema, jsonSchemaFields,
-  looksLikeSecret, matchesRequestFilter, safeRequestUrl, sanitizeUrl, sanitizedTrafficExport,
+  candidateReasons, cleanJsonSchema, countsFor, groupEndpoints, inferJsonSchema, jsonSchemaFields,
+  isProtectionTraffic, looksLikeSecret, matchesRequestFilter, safeRequestUrl, sanitizeUrl, sanitizedTrafficExport,
 } from '../lib/traffic-core/src/index';
 import { AnalyzeTrafficResponse, GetTrafficSessionStateResponse } from '../lib/api-zod/src/index';
 import { isPublicAddress, validateTarget } from '../artifacts/api-server/src/lib/traffic-analyzer';
@@ -63,6 +63,16 @@ test('Fetch/XHR overlaps REST and GraphQL; filters and counts preserve the trans
   assert(matchesRequestFilter({...sampleRequest,resourceType:'xhr',type:'graphql'},'fetch-xhr'));
   assert(!matchesRequestFilter({...sampleRequest,resourceType:'document'},'fetch-xhr'));
   assert.deepEqual(countsFor([sampleRequest,{...sampleRequest,type:'graphql',resourceType:'xhr'}]),{fetchXhr:2,rest:1,graphql:1,websocket:0});
+});
+
+test('Cloudflare challenge traffic is never classified as an API candidate', () => {
+  const challenge = { type:'fetch-xhr' as const, resourceType:'xhr', contentType:null, path:'/cdn-cgi/challenge-platform/h/g/orchestrate/chl_page/v1' };
+  const turnstile = { type:'fetch-xhr' as const, resourceType:'fetch', contentType:'application/json', path:'/cdn-cgi/turnstile/v0/b/rc' };
+  assert.equal(isProtectionTraffic(challenge.path), true);
+  assert.equal(isProtectionTraffic(turnstile.path), true);
+  assert.deepEqual(candidateReasons(challenge), []);
+  assert.deepEqual(candidateReasons(turnstile), []);
+  assert.deepEqual(candidateReasons({ type:'rest', resourceType:'xhr', contentType:'application/json', path:'/api/items' }), ['Fetch/XHR','JSON-Antwort','API-Pfad']);
 });
 
 test('Endpoint grouping separates methods and hosts while combining numeric and UUID IDs', () => {
