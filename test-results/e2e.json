@@ -1,0 +1,30 @@
+{
+  "passed": true,
+  "executedAt": "2026-10-05T23:30:54.798Z",
+  "checks": [
+    "Normal analysis over 5173 → /api proxy → 5174, correct methods/status/host/path/types/durations/schema",
+    "Normal API candidates, Fetch/XHR overlap, filters, schema field-name search, empty state and endpoint groups",
+    "Real normal JSON download contains only sanitized metadata and value-free jsonSchema",
+    "Malformed JSON response returns HTTP 200 with jsonSchema:null instead of HTTP 500",
+    "Single- and multi-hop redirects to private hosts and foreign browser origins are rejected",
+    "Interactive analysis starts, shows screenshot and polls actual requests",
+    "Credential input is blocked and masked in the actual screenshot",
+    "Pause prevents capture; Ab hier beobachten resets history; resumed clicks group numeric IDs",
+    "Interactive schema field-name search, filters, candidates and empty state",
+    "Ab hier beobachten excludes a genuinely in-flight earlier response",
+    "Interactive ordinary-field keyboard entry and Enter produce a real request",
+    "Real interactive JSON download excludes session IDs, screenshots, parameter values and secrets",
+    "Interactive concurrency limit is enforced without leaking or stopping existing sessions",
+    "Clean session shutdown, expired-state HTTP 404, no credentials sent, no browser JS errors",
+    "Mobile viewport has no page-level horizontal overflow"
+  ],
+  "requests": 9,
+  "counts": {
+    "fetchXhr": 8,
+    "rest": 4,
+    "graphql": 2,
+    "websocket": 1
+  },
+  "websocketStatus": null,
+  "fixture": "Real local HTTP/XHR/fetch/GraphQL/WebSocket server; no network or API mocks; fixture host policy injected only into test app."
+}

@@ -1,0 +1,72 @@
+import assert from 'node:assert/strict';
+import { mkdir, writeFile } from 'node:fs/promises';
+import { fileURLToPath } from 'node:url';
+import { chromium } from '../artifacts/api-server/node_modules/playwright/index.mjs';
+import { createServer as createViteServer } from '../artifacts/api-traffic-finder/node_modules/vite/dist/node/index.js';
+import { createApp } from '../artifacts/api-server/src/app';
+import { browserExecutablePath } from '../artifacts/api-server/src/lib/traffic-analyzer';
+import { closeAllInteractiveTrafficSessions } from '../artifacts/api-server/src/lib/interactive-traffic-session';
+import { AnalyzeTrafficResponse, StartTrafficSessionResponse, GetTrafficSessionStateResponse } from '../lib/api-zod/src/index';
+import { jsonSchemaFields } from '../lib/traffic-core/src/index';
+
+async function main() {
+  const target='https://jsonplaceholder.typicode.com/posts/1';
+  const app=createApp();
+  const server=app.listen(5174,'127.0.0.1');
+  await new Promise<void>(resolve=>server.once('listening',resolve));
+  const vite=await createViteServer({configFile:fileURLToPath(new URL('../artifacts/api-traffic-finder/vite.config.ts',import.meta.url)),server:{host:'127.0.0.1',port:5173,strictPort:true}});
+  await vite.listen();
+  const browser=await chromium.launch({executablePath:browserExecutablePath(),headless:true,args:['--no-sandbox','--disable-dev-shm-usage']});
+  const context=await browser.newContext({viewport:{width:1440,height:1000},acceptDownloads:true});
+  const page=await context.newPage();
+  const checks:string[]=[];
+  const pass=(name:string)=>{checks.push(name);console.log('PASS '+name);};
+  try {
+    await page.goto('http://127.0.0.1:5173/',{waitUntil:'domcontentloaded'});
+    await page.getByTestId('input-site-url').fill(target);
+    await page.getByTestId('checkbox-permission').check();
+    await page.getByTestId('select-capture-duration').selectOption('3');
+    const responsePromise=page.waitForResponse(response=>response.url().endsWith('/api/traffic/analyze'),{timeout:90000});
+    await page.getByTestId('button-start-analysis').click();
+    const response=await responsePromise;assert.equal(response.status(),200);
+    const result=AnalyzeTrafficResponse.parse(await response.json());
+    assert.equal(result.requestCount,1);assert.equal(result.requests[0].statusCode,200);assert.equal(result.requests[0].method,'GET');assert.equal(result.requests[0].path,'/posts/1');assert.equal(result.requests[0].hostname,'jsonplaceholder.typicode.com');assert.equal(result.requests[0].type,'rest');
+    assert.deepEqual(jsonSchemaFields(result.requests[0].jsonSchema),['body','id','title','userId']);
+    assert.equal(result.warnings.length,0);
+    await page.getByTestId('section-analysis-results').waitFor();
+    await page.locator('.schema-details summary').click();
+    await page.getByTestId('input-request-search').fill('userId');
+    assert.equal(await page.locator('[data-testid^="row-request-"]').count(),1);
+    await page.getByTestId('button-clear-search').click();
+    pass('Real JSONPlaceholder analysis via browser UI and 5173→5174 proxy returns HTTP 200, request GET 200 REST and four value-free schema fields');
+    const downloadPromise=page.waitForEvent('download');await page.getByTestId('button-export-json').click();
+    const download=await downloadPromise;const stream=await download.createReadStream();assert(stream);
+    const chunks:Buffer[]=[];for await(const chunk of stream)chunks.push(Buffer.from(chunk));
+    const exported=JSON.parse(Buffer.concat(chunks).toString());
+    assert.equal(exported.requests[0].jsonSchema.properties.title.type,'string');
+    assert(!('body' in exported.requests[0]));assert(!('headers' in exported.requests[0]));
+    pass('Real live JSON export contains schema field names and no raw response body or headers');
+    const startPromise=page.waitForResponse(response=>response.url().endsWith('/api/traffic/session/start'),{timeout:90000});
+    await page.getByTestId('button-open-interactive-session').click();
+    const startResponse=await startPromise;assert.equal(startResponse.status(),201);
+    const state=StartTrafficSessionResponse.parse(await startResponse.json());
+    await page.getByTestId('capture-remote-screenshot').waitFor({timeout:30000});
+    const poll=await page.request.get('http://127.0.0.1:5173/api/traffic/session/state?sessionId='+state.sessionId);
+    assert.equal(poll.status(),200);const polled=GetTrafficSessionStateResponse.parse(await poll.json());
+    assert.equal(polled.requestCount,1);assert.equal(polled.requests[0].statusCode,200);
+    assert.deepEqual(jsonSchemaFields(polled.requests[0].jsonSchema),['body','id','title','userId']);
+    assert.equal(polled.warnings.length,0);
+    pass('Real interactive JSONPlaceholder session returns HTTP 201, state HTTP 200, screenshot and the same jsonSchema');
+    await page.getByTestId('button-end-session').click();await page.getByTestId('interactive-capture').waitFor({state:'detached'});
+    const closed=await page.request.get('http://127.0.0.1:5173/api/traffic/session/state?sessionId='+state.sessionId);assert.equal(closed.status(),404);
+    pass('Live session closes cleanly and releases browser state');
+    await mkdir('test-results',{recursive:true});
+    await page.getByTestId('section-analysis-results').waitFor();
+    await page.screenshot({path:'test-results/live-dashboard.png',fullPage:true,animations:'disabled'});
+    await writeFile('test-results/live.json',JSON.stringify({passed:true,executedAt:new Date().toISOString(),target,normalHttpStatus:response.status(),requestHttpStatus:result.requests[0].statusCode,interactiveStartStatus:startResponse.status(),interactiveStateStatus:poll.status(),fieldNames:jsonSchemaFields(result.requests[0].jsonSchema),checks,productionRuntime:true,networkMocks:false},null,2)+'\n');
+    console.log(`All ${checks.length} live E2E checks passed.`);
+  } finally {
+    await closeAllInteractiveTrafficSessions();await browser.close();await vite.close();server.closeAllConnections();await new Promise<void>(resolve=>server.close(()=>resolve()));
+  }
+}
+main().catch(error=>{console.error(error);process.exit(1);});

@@ -1,0 +1,31 @@
+{
+  "name": "workspace",
+  "version": "0.0.0",
+  "license": "MIT",
+  "scripts": {
+    "preinstall": "node scripts/preinstall.mjs",
+    "build": "pnpm run typecheck && pnpm -r --if-present run build",
+    "typecheck:libs": "tsc --build",
+    "typecheck": "pnpm run typecheck:libs && pnpm -r --filter \"./artifacts/**\" --filter \"./scripts\" --if-present run typecheck",
+    "dev": "node scripts/dev.mjs",
+    "start": "node scripts/dev.mjs --production",
+    "codegen": "pnpm --filter @workspace/api-spec run codegen",
+    "test": "node --import ./scripts/node_modules/tsx/dist/loader.mjs --test tests/unit.test.ts",
+    "test:e2e": "node --import ./scripts/node_modules/tsx/dist/loader.mjs tests/e2e.ts",
+    "test:live": "node --import ./scripts/node_modules/tsx/dist/loader.mjs tests/live.ts",
+    "test:startup": "node tests/startup.mjs",
+    "setup:browser": "node scripts/setup-browser.mjs"
+  },
+  "private": true,
+  "dependencies": {
+    "@replit/connectors-sdk": "^0.4.3"
+  },
+  "devDependencies": {
+    "prettier": "^3.9.6",
+    "typescript": "~5.9.3"
+  },
+  "packageManager": "pnpm@11.25.0",
+  "engines": {
+    "node": ">=22.18.0"
+  }
+}

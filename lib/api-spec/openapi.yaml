@@ -1,0 +1,426 @@
+openapi: 3.1.0
+info:
+  # Do not change the title, if the title changes, the import paths will be broken
+  title: Api
+  version: 0.1.0
+  description: API specification
+servers:
+  - url: /api
+    description: Base API path
+tags:
+  - name: health
+    description: Health operations
+  - name: traffic
+    description: Authorized public website network analysis
+paths:
+  /healthz:
+    get:
+      operationId: healthCheck
+      tags: [health]
+      summary: Health check
+      description: Returns server health status
+      responses:
+        "200":
+          description: Healthy
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HealthStatus"
+  /traffic/analyze:
+    post:
+      operationId: analyzeTraffic
+      tags: [traffic]
+      summary: Capture request metadata from a public website
+      description: >
+        Loads a public website in a fresh unauthenticated browser context and
+        returns safe request metadata. Request/response bodies, headers,
+        cookies, tokens, and query strings are never returned or persisted. JSON responses are inspected temporarily to infer only value-free schema field names and types.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/TrafficAnalysisInput"
+      responses:
+        "200":
+          description: Captured request metadata
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TrafficAnalysisResult"
+        "400":
+          description: Invalid URL or capture settings
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiError"
+        "429":
+          description: Too many analyses are running
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiError"
+        "502":
+          description: The website could not be analyzed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiError"
+  /traffic/session/start:
+    post:
+      operationId: startTrafficSession
+      tags: [traffic]
+      summary: Open an interactive public website session
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/TrafficSessionInput"
+      responses:
+        "201":
+          description: Interactive browser session started
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TrafficSessionState"
+        "400":
+          description: Invalid URL or missing authorization confirmation
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiError"
+        "429":
+          description: Session limit reached
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiError"
+  /traffic/session/state:
+    get:
+      operationId: getTrafficSessionState
+      tags: [traffic]
+      summary: Get the current interactive session view and captured requests
+      parameters:
+        - name: sessionId
+          in: query
+          required: true
+          schema:
+            type: string
+            minLength: 32
+            maxLength: 64
+      responses:
+        "200":
+          description: Current session state with an in-memory screenshot
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TrafficSessionState"
+        "404":
+          description: Session not found or expired
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiError"
+  /traffic/session/recording:
+    post:
+      operationId: setTrafficSessionRecording
+      tags: [traffic]
+      summary: Start or stop recording requests in an interactive session
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/TrafficRecordingInput"
+      responses:
+        "200":
+          description: Updated recording state
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TrafficSessionState"
+        "404":
+          description: Session not found or expired
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiError"
+  /traffic/session/interact:
+    post:
+      operationId: interactWithTrafficSession
+      tags: [traffic]
+      summary: Forward a user click, scroll, or key press to the session browser
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/TrafficInteractionInput"
+      responses:
+        "200":
+          description: Interaction completed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TrafficInteractionResult"
+        "400":
+          description: Invalid or blocked interaction
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiError"
+        "404":
+          description: Session not found or expired
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiError"
+  /traffic/session/end:
+    post:
+      operationId: endTrafficSession
+      tags: [traffic]
+      summary: Close an interactive browser session
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/TrafficSessionEndInput"
+      responses:
+        "200":
+          description: Session closed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TrafficInteractionResult"
+        "404":
+          description: Session not found or expired
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiError"
+components:
+  schemas:
+    HealthStatus:
+      type: object
+      properties:
+        status:
+          type: string
+      required:
+        - status
+    TrafficAnalysisInput:
+      type: object
+      additionalProperties: false
+      properties:
+        url:
+          type: string
+          format: uri
+          maxLength: 2048
+        captureDurationSeconds:
+          type: integer
+          minimum: 3
+          maximum: 15
+        authorized:
+          type: boolean
+          description: Confirms that the user is authorized to analyze this website.
+      required: [url, authorized]
+    TrafficRequest:
+      type: object
+      required: [id, url, hostname, path, method, type, resourceType, startedAt, jsonSchema, isApiCandidate, candidateReasons]
+      properties:
+        id:
+          type: string
+        url:
+          type: string
+          description: Sanitized origin and path; query strings are always omitted.
+        hostname:
+          type: string
+          description: Sanitized hostname of the request.
+        path:
+          type: string
+          description: Sanitized path of the request; query strings are always omitted.
+        method:
+          type: string
+        statusCode:
+          type: ["integer", "null"]
+        contentType:
+          type: ["string", "null"]
+        startedAt:
+          type: string
+          format: date-time
+        durationMs:
+          type: ["number", "null"]
+        type:
+          type: string
+          enum: [fetch-xhr, rest, graphql, websocket]
+        resourceType:
+          type: string
+        jsonSchema:
+          type: ["object", "null"]
+          additionalProperties: true
+          description: Value-free JSON Schema containing only type, properties, items and anyOf. Sensitive and opaque field names are omitted.
+        isApiCandidate:
+          type: boolean
+        candidateReasons:
+          type: array
+          items:
+            type: string
+    TrafficTypeCounts:
+      type: object
+      required: [fetchXhr, rest, graphql, websocket]
+      properties:
+        fetchXhr:
+          type: integer
+        rest:
+          type: integer
+        graphql:
+          type: integer
+        websocket:
+          type: integer
+    TrafficAnalysisResult:
+      type: object
+      required: [url, capturedAt, durationMs, requestCount, blockedCount, counts, requests, warnings]
+      properties:
+        url:
+          type: string
+          description: Sanitized analyzed origin and path.
+        capturedAt:
+          type: string
+          format: date-time
+        durationMs:
+          type: number
+        requestCount:
+          type: integer
+        blockedCount:
+          type: integer
+        warnings:
+          type: array
+          items:
+            type: string
+        counts:
+          $ref: "#/components/schemas/TrafficTypeCounts"
+        requests:
+          type: array
+          items:
+            $ref: "#/components/schemas/TrafficRequest"
+    TrafficSessionInput:
+      type: object
+      additionalProperties: false
+      required: [url, authorized]
+      properties:
+        url:
+          type: string
+          format: uri
+          maxLength: 2048
+        authorized:
+          type: boolean
+          description: Confirms that the user is authorized to analyze this website.
+    TrafficRecordingInput:
+      type: object
+      additionalProperties: false
+      required: [sessionId, recording]
+      properties:
+        sessionId:
+          type: string
+          minLength: 32
+          maxLength: 64
+        recording:
+          type: boolean
+        reset:
+          type: boolean
+          description: Clear previous metadata and record only requests initiated from this point.
+    TrafficInteractionInput:
+      type: object
+      additionalProperties: false
+      required: [sessionId, action]
+      properties:
+        sessionId:
+          type: string
+          minLength: 32
+          maxLength: 64
+        action:
+          type: string
+          enum: [click, scroll, key]
+        x:
+          type: integer
+          minimum: 0
+          maximum: 1280
+        y:
+          type: integer
+          minimum: 0
+          maximum: 800
+        deltaX:
+          type: number
+          minimum: -1280
+          maximum: 1280
+        deltaY:
+          type: number
+          minimum: -1600
+          maximum: 1600
+        key:
+          type: string
+          minLength: 1
+          maxLength: 40
+    TrafficSessionEndInput:
+      type: object
+      additionalProperties: false
+      required: [sessionId]
+      properties:
+        sessionId:
+          type: string
+          minLength: 32
+          maxLength: 64
+    TrafficSessionState:
+      type: object
+      required: [sessionId, url, startedAt, recording, closed, durationMs, requestCount, blockedCount, counts, requests, screenshot, viewportWidth, viewportHeight, warnings]
+      properties:
+        sessionId:
+          type: string
+          minLength: 32
+        url:
+          type: string
+          description: Current sanitized origin and path.
+        startedAt:
+          type: string
+          format: date-time
+        recording:
+          type: boolean
+        closed:
+          type: boolean
+        durationMs:
+          type: number
+        requestCount:
+          type: integer
+        blockedCount:
+          type: integer
+        warnings:
+          type: array
+          items:
+            type: string
+        counts:
+          $ref: "#/components/schemas/TrafficTypeCounts"
+        requests:
+          type: array
+          items:
+            $ref: "#/components/schemas/TrafficRequest"
+        screenshot:
+          type: ["string", "null"]
+          contentEncoding: base64
+        viewportWidth:
+          type: integer
+        viewportHeight:
+          type: integer
+    TrafficInteractionResult:
+      type: object
+      required: [ok]
+      properties:
+        ok:
+          type: boolean
+    ApiError:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: string
+

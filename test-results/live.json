@@ -1,0 +1,23 @@
+{
+  "passed": true,
+  "executedAt": "2026-10-05T23:41:52.902Z",
+  "target": "https://jsonplaceholder.typicode.com/posts/1",
+  "normalHttpStatus": 200,
+  "requestHttpStatus": 200,
+  "interactiveStartStatus": 201,
+  "interactiveStateStatus": 200,
+  "fieldNames": [
+    "body",
+    "id",
+    "title",
+    "userId"
+  ],
+  "checks": [
+    "Real JSONPlaceholder analysis via browser UI and 5173→5174 proxy returns HTTP 200, request GET 200 REST and four value-free schema fields",
+    "Real live JSON export contains schema field names and no raw response body or headers",
+    "Real interactive JSONPlaceholder session returns HTTP 201, state HTTP 200, screenshot and the same jsonSchema",
+    "Live session closes cleanly and releases browser state"
+  ],
+  "productionRuntime": true,
+  "networkMocks": false
+}

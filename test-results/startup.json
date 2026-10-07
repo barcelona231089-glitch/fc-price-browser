@@ -1,0 +1,10 @@
+{
+  "passed": true,
+  "executedAt": "2026-10-05T23:44:16.160Z",
+  "checks": [
+    "Built project starts both servers, serves the production UI and proxies /api to the backend"
+  ],
+  "uiHttpStatus": 200,
+  "backendHttpStatus": 200,
+  "mode": "production"
+}

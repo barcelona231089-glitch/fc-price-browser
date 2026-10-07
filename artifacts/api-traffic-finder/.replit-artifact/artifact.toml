@@ -1,0 +1,28 @@
+kind = "web"
+previewPath = "/"
+title = "API Traffic Finder"
+description = "Analyze the network requests a website makes while loading, including Fetch/XHR, REST, GraphQL, and WebSocket traffic. Shows only safe request metadata and lets you export results as JSON."
+version = "1.0.0"
+id = "artifacts/api-traffic-finder"
+router = "path"
+
+[[services]]
+name = "web"
+paths = [ "/" ]
+localPort = 5173
+
+[services.development]
+run = "pnpm --filter @workspace/api-traffic-finder run dev"
+
+[services.production]
+build = [ "pnpm", "--filter", "@workspace/api-traffic-finder", "run", "build" ]
+serve = "static"
+publicDir = "artifacts/api-traffic-finder/dist/public"
+
+[[services.production.rewrites]]
+from = "/*"
+to = "/index.html"
+
+[services.env]
+PORT = "5173"
+BASE_PATH = "/"
