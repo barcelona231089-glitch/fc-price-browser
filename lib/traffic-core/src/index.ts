@@ -169,11 +169,16 @@ export function isProtectionTraffic(path: string): boolean {
 export function candidateReasons(request: Pick<TrafficMetadata, "type" | "resourceType" | "contentType" | "path">): string[] {
   if (isProtectionTraffic(request.path)) return [];
   const reasons: string[] = [];
-  if (["fetch", "xhr"].includes(request.resourceType)) reasons.push("Fetch/XHR");
-  if (request.type === "graphql") reasons.push("GraphQL");
+  const mime = request.contentType?.toLowerCase() ?? "";
+  const json = mime === "application/json" || mime.endsWith("+json");
+  const html = mime === "text/html" || mime === "application/xhtml+xml";
+  const apiPath = /(?:^|\/)(?:api|rest)(?:\/|$)|\/v\d+(?:\/|$)/i.test(request.path);
+  const pricePath = /(?:^|[\/_-])(?:prices?|market|sales?|listings?|history)(?:$|[\/_-])/i.test(request.path);
   if (request.type === "websocket") reasons.push("WebSocket");
-  if (request.contentType === "application/json" || request.contentType?.endsWith("+json")) reasons.push("JSON-Antwort");
-  if (/(?:^|\/)(?:api|rest)(?:\/|$)|\/v\d+(?:\/|$)/i.test(request.path)) reasons.push("API-Pfad");
+  if (request.type === "graphql" && !html) reasons.push("GraphQL");
+  if (json) reasons.push("JSON-Antwort");
+  if (apiPath && !html) reasons.push("API-Pfad");
+  if (pricePath && !html) reasons.push("Preis-/Markt-Pfad (unbestätigt)");
   return reasons;
 }
 
