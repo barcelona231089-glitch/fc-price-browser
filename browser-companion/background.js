@@ -12,6 +12,7 @@ let saving=Promise.resolve();
 function persist(){
   const snapshot={items:items.slice(-MAX),seen,filtered,lastEvent};
   saving=saving.catch(()=>{}).then(()=>chrome.storage.local.set({atfCapture:snapshot}));
+  return saving;
 }
 function safe(url){
   try{
