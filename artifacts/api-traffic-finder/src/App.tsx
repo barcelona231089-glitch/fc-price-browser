@@ -138,7 +138,7 @@ async function resultFromHar(file: File): Promise<TrafficAnalysisResult> {
   };
 }
 
-function resultFromLocal(items: unknown[]): TrafficAnalysisResult | null {
+function resultFromLocal(items: unknown[]): TrafficAnalysisResult {
   const requests: TrafficRequest[] = [];
   for (const [index, raw] of items.entries()) {
     const item = asRecord(raw);
@@ -147,8 +147,10 @@ function resultFromLocal(items: unknown[]): TrafficAnalysisResult | null {
     try { parsed = new URL(item.url); } catch { continue; }
     if (isProtectionTraffic(parsed.pathname)) continue;
     const resourceType = typeof item.resourceType === 'string' ? item.resourceType : 'other';
-    const type = resourceType === 'websocket' ? 'websocket' as const : inferRequestType(parsed.pathname, null);
-    const base = { type, resourceType, contentType: null, path: parsed.pathname };
+    if (!['xhr', 'fetch', 'websocket'].includes(resourceType)) continue;
+    const contentType = typeof item.contentType === 'string' ? item.contentType : null;
+    const type = resourceType === 'websocket' ? 'websocket' as const : inferRequestType(parsed.pathname, contentType);
+    const base = { type, resourceType, contentType, path: parsed.pathname };
     const reasons = candidateReasons(base);
     requests.push({
       id: typeof item.id === 'string' ? item.id : `local-${index + 1}`,
@@ -157,7 +159,7 @@ function resultFromLocal(items: unknown[]): TrafficAnalysisResult | null {
       path: parsed.pathname,
       method: typeof item.method === 'string' ? item.method : 'GET',
       statusCode: typeof item.statusCode === 'number' ? item.statusCode : null,
-      contentType: null,
+      contentType,
       startedAt: typeof item.startedAt === 'string' ? item.startedAt : new Date().toISOString(),
       durationMs: null,
       type,
@@ -167,18 +169,21 @@ function resultFromLocal(items: unknown[]): TrafficAnalysisResult | null {
       candidateReasons: reasons,
     });
   }
-  if (!requests.length) return null;
   const times = requests.map(r => Date.parse(r.startedAt)).filter(Number.isFinite);
-  const capturedAt = new Date(Math.min(...times)).toISOString();
+  const now = Date.now();
+  const first = times.length ? Math.min(...times) : now;
+  const last = times.length ? Math.max(...times) : now;
   return {
-    url: requests[0].url,
-    capturedAt,
-    durationMs: Math.max(0, Math.max(...times) - Math.min(...times)),
+    url: requests[0]?.url ?? 'https://www.futbin.com/',
+    capturedAt: new Date(first).toISOString(),
+    durationMs: Math.max(0, last - first),
     requestCount: requests.length,
     blockedCount: 0,
     counts: countsFor(requests),
     requests,
-    warnings: ['Lokale Browser-Erfassung aktiv: Nur URL ohne Abfrageparameter, Methode, Status und Ressourcentyp wurden übernommen. Keine Header, Cookies, Tokens oder Bodies.'],
+    warnings: [requests.length
+      ? 'Lokale Browser-Erfassung aktiv: Statische Dateien werden ausgeblendet. Angezeigt werden nur Daten-Requests (XHR/Fetch/WebSocket). Keine Header, Cookies, Tokens oder Bodies.'
+      : 'Companion verbunden. Noch kein FUTBIN-Datenrequest erkannt. Benutze FUTBIN normal; XHR/Fetch/WebSocket-Treffer erscheinen automatisch.'],
   };
 }
 
