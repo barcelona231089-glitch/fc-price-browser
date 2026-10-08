@@ -323,12 +323,15 @@ function Home() {
   const [importedResult, setImportedResult] = useState<TrafficAnalysisResult | null>(null);
   const [harError, setHarError] = useState('');
   const [companionSeen, setCompanionSeen] = useState(false);
+  const [companionDiagnostics, setCompanionDiagnostics] = useState<{ seen: number; filtered: number; kept: number; lastEvent: string | null; version: string } | null>(null);
   const analyze = useAnalyzeTraffic();
 
   useEffect(() => {
     const receive = (event: MessageEvent) => {
       if (event.source !== window || event.origin !== window.location.origin || event.data?.source !== 'atf-companion' || event.data?.type !== 'ATF_TRAFFIC') return;
       setCompanionSeen(true);
+      const d = event.data.diagnostics;
+      if (d && typeof d.seen === 'number' && typeof d.filtered === 'number' && typeof d.kept === 'number') setCompanionDiagnostics({ seen: d.seen, filtered: d.filtered, kept: d.kept, lastEvent: typeof d.lastEvent === 'string' ? d.lastEvent : null, version: String(d.version ?? '?') });
       const local = resultFromLocal(Array.isArray(event.data.items) ? event.data.items : []);
       if (local) setImportedResult(local);
     };
@@ -470,7 +473,7 @@ function Home() {
               <button type="button" className="button button-secondary" onClick={() => window.postMessage({ source: 'atf-web', type: 'ATF_GET' }, window.location.origin)}>
                 <Sparkles size={15} /> Lokale Browser-Erfassung prüfen
               </button>
-              <span>{companionSeen ? 'Companion verbunden. FUTBIN im normalen Browser benutzen, die Treffer erscheinen automatisch hier.' : 'Companion noch nicht verbunden. Nach einmaliger Installation erfasst er FUTBIN-Metadaten automatisch.'}</span>
+              <span>{!companionSeen ? 'Companion nicht verbunden. Erweiterung prüfen und diese Seite neu laden.' : companionDiagnostics ? `Companion v${companionDiagnostics.version} verbunden | FUTBIN-Ereignisse: ${companionDiagnostics.seen} | Ausgefiltert: ${companionDiagnostics.filtered} | Datenrequests: ${companionDiagnostics.kept} | Letztes Ereignis: ${companionDiagnostics.lastEvent ? new Date(companionDiagnostics.lastEvent).toLocaleTimeString('de-DE') : 'keines'}` : 'Companion verbunden, aber noch ohne Diagnosedaten. Bitte Erweiterung auf v1.2 aktualisieren.'}</span>
             </div>
             {harError && <div className="error-notice" role="alert"><AlertCircle size={17} /><div><strong>HAR-Import fehlgeschlagen</strong><span>{harError}</span></div></div>}
           </form>
