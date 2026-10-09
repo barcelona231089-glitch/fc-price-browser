@@ -11,6 +11,7 @@ REPO = ROOT / "repo"
 WORKER = REPO / "world-max-worker"
 PYTHON = WORKER / ".venv" / "Scripts" / "python.exe"
 CLOUDFLARED = Path(r"C:\Program Files (x86)\cloudflared\cloudflared.exe")
+NPX = Path(r"C:\Program Files\nodejs\npx.cmd")
 TOKEN_FILE = ROOT / "worker.token"
 LOG_FILE = ROOT / "watchdog.log"
 TUNNEL_LOG = ROOT / "tunnel.log"
@@ -195,9 +196,43 @@ def wait_tunnel_url(proc, timeout=90):
         time.sleep(1)
     return None
 
+
+def start_local_tunnel():
+    log_handle = TUNNEL_LOG.open("w", encoding="utf-8")
+    proc = subprocess.Popen(
+        [str(NPX), "--yes", "localtunnel", "--port", str(LOCAL_PORT)],
+        stdout=log_handle,
+        stderr=subprocess.STDOUT,
+        text=True,
+        creationflags=subprocess.CREATE_NO_WINDOW,
+    )
+    return proc, log_handle
+
+
+def wait_local_tunnel_url(proc, timeout=60):
+    deadline = time.time() + timeout
+    pattern = re.compile(r"https://[a-z0-9-]+\.loca\.lt")
+    while time.time() < deadline:
+        try:
+            text = TUNNEL_LOG.read_text(encoding="utf-8", errors="replace") if TUNNEL_LOG.exists() else ""
+        except Exception:
+            text = ""
+        match = pattern.search(text)
+        if match:
+            return match.group(0)
+        if proc.poll() is not None:
+            return None
+        time.sleep(1)
+    return None
+
+
 def public_health(url):
     try:
-        with urllib.request.urlopen(url.rstrip("/") + "/health", timeout=5) as resp:
+        headers = {}
+        if url.lower().endswith(".loca.lt"):
+            headers["bypass-tunnel-reminder"] = "true"
+        request = urllib.request.Request(url.rstrip("/") + "/health", headers=headers)
+        with urllib.request.urlopen(request, timeout=5) as resp:
             return resp.status == 200
     except Exception:
         return False
@@ -225,26 +260,27 @@ def main():
         log("CUDA Chronos worker healthy")
         tunnel, tunnel_log = start_tunnel()
         url = wait_tunnel_url(tunnel)
-        if not url:
+        provider = "cloudflare"
+        cloudflare_ok = bool(url) and wait_public_health(url)
+        if not cloudflare_ok:
             limited = tunnel_rate_limited()
-            log("Tunnel URL missing" + (" (Cloudflare rate limited)" if limited else "") + ", restarting pair")
+            reason = "rate limited" if limited else "public health failed"
+            log("Cloudflare tunnel " + reason + "; trying LocalTunnel fallback")
             kill_tree(tunnel)
             tunnel_log.close()
-            kill_tree(worker)
-            if limited:
-                backoff = min(max(backoff * 2, 30), 300)
-            time.sleep(backoff)
-            continue
-        if not wait_public_health(url):
-            limited = tunnel_rate_limited()
-            log("Public tunnel health failed" + (" (Cloudflare rate limited)" if limited else "") + ", recycling pair")
-            kill_tree(tunnel)
-            tunnel_log.close()
-            kill_tree(worker)
-            if limited:
-                backoff = min(max(backoff * 2, 30), 300)
-            time.sleep(backoff)
-            continue
+            tunnel, tunnel_log = start_local_tunnel()
+            url = wait_local_tunnel_url(tunnel)
+            provider = "localtunnel"
+            if not url or not wait_public_health(url):
+                log("LocalTunnel fallback unavailable, recycling worker")
+                kill_tree(tunnel)
+                tunnel_log.close()
+                kill_tree(worker)
+                if limited:
+                    backoff = min(max(backoff * 2, 30), 300)
+                time.sleep(backoff)
+                continue
+        log("Public tunnel healthy via " + provider)
         backoff = 5
         try:
             publish_registry(url)
