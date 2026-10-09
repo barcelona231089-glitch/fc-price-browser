@@ -519,7 +519,17 @@ function Home() {
             <section aria-label="FUTBIN FC27 sichtbare Preise" style={{ margin: '16px 0' }}>
               <h3>FUTBIN FC27: Konsolenpreise (PlayStation / Xbox)</h3>
               <p>{futbinPrices.length ? `Erfasste Spieler: ${futbinPrices.length}. PS-/Xbox-Konsolenpreise laut FUTBIN, keine bestätigten Verkäufe oder Live-API.` : 'Noch keine sichtbaren Coinpreise erfasst. Öffne eine FUTBIN-FC27-Spielerkarte und aktualisiere die lokale Browser-Erfassung.'}</p>
-              {futbinPrices.length > 0 && <div className="table-scroll"><table>
+              {futbinPrices.length > 0 && <button type="button" className="button button-secondary" onClick={() => {
+                const rows = futbinPrices.flatMap(p => p.prices.filter(v => v.platform === 'ps').map(v => ({
+                  source: 'FUTBIN', game: 'FC27', playerId: p.playerId, platform: 'console',
+                  coins: v.price, capturedAt: p.capturedAt, evidence: v.evidence,
+                  priceType: 'visible_listing', salesVerified: false
+                })));
+                const blob = new Blob([JSON.stringify({ schemaVersion: 1, source: 'FUTBIN', prices: rows }, null, 2)], { type: 'application/json' });
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a'); a.href = url; a.download = 'futbin-fc27-console-prices.json'; a.click();
+                setTimeout(() => URL.revokeObjectURL(url), 1000);
+              }}><ArrowDownToLine size={15} /> Konsolenpreise als JSON exportieren</button>}              {futbinPrices.length > 0 && <div className="table-scroll"><table>
                 <thead><tr><th>Spieler-ID</th><th>Konsole</th><th>Coins</th><th>Erfasst</th><th>Nachweis</th></tr></thead>
                 <tbody>{futbinPrices.flatMap(p => p.prices.filter(v => v.platform === 'ps').map(v => <tr key={p.playerId + ':' + v.platform}>
                   <td>{p.playerId}</td><td>PS / Xbox (FUTBIN)</td>
