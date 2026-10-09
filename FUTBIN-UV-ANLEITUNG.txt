@@ -1,15 +1,36 @@
-FC27 FUTBIN-KONSOLE: LOKALER IMPORTMODUS
-=======================================
-1. Doppelklick auf START-FUTBIN-UV.cmd.
-2. Browser: http://127.0.0.1:5187/uv/
-3. Vom API Traffic Finder exportierte futbin-fc27-console-prices.json auswählen.
-4. Budget eingeben und FUTBIN-Konsolenpreise prüfen klicken.
+FC27 FUTBIN-KONSOLE · AUTOMATISCHE LOKALE API (v2)
+==================================================
+Nach einmaliger Einrichtung sind KEINE JSON-Dateien mehr erforderlich.
+
+A) Browser-Companion v1.5.0 installieren bzw. vorhandene Erweiterung aktualisieren:
+   1. Brave öffnen: brave://extensions
+   2. Entwicklermodus einschalten.
+   3. "Entpackte Erweiterung laden": Wähle Downloads\API-Traffic-Finder-Companion-v1.5.0
+      (den Ordner mit manifest.json, nicht die ZIP).
+   4. Wenn die alte Companion-Version noch geladen ist, diese deaktivieren, damit nur eine läuft.
+
+B) Doppelklick START-FUTBIN-UV.cmd (falls App nicht schon läuft).
+   Öffne http://127.0.0.1:5187/uv/ und lasse den Browser-Tab geöffnet.
+
+C) Der Browser-Companion überträgt sichtbar erfasste FUTBIN-FC27-Spielerkarten
+   automatisch an die LOKALE ÜV-API. Die App fragt /api/uv/futbin-console/players
+   alle 5 Sekunden selbst ab. Du musst nichts exportieren oder importieren.
+
+D) Beim ersten Start zeigt die API eventuell noch 0 Spieler. Wenn du FUTBIN-
+   Spielerkarten im Browser öffnest, gelangen deren angezeigte Konsolenpreise in
+   den Feed. Veraltete IDs in der Tabelle sind als FUTBIN-Links anklickbar.
+
+API:
+  GET  http://127.0.0.1:5187/api/uv/futbin-console/players?budget=100000
+  POST http://127.0.0.1:5187/api/uv/futbin-console/sync  (nur lokaler Companion)
+  Ein /analyze-Endpunkt bleibt für Tests vorhanden.
 
 WICHTIG:
-- Nur FUTBIN, FC27, Konsole. PC-, FUT.GG- und Parse-Daten ausgeschlossen.
-- Angebotspreise sind keine nachgewiesenen Verkäufe. Keine Kaufempfehlungen ohne echte Belege.
-- Preise älter als 30 Minuten werden verworfen. Für eine neue Prüfung FUTBIN erneut öffnen und im Finder neu exportieren.
-- Daten werden pro Anfrage verarbeitet und nicht serverseitig gespeichert.
-- Kein Deplexo-Deployment, keine Änderungen an produktivem Trader Brain.
-- Der 100-Karten-Modus bleibt gesperrt, bis echte Verkaufsevidenz vorliegt.
-- Quellzweig: uv-futbin-console-20261009. Original-main bleibt unverändert.
+- Die API ist eine lokale Daten-API, KEINE offiziell bereitgestellte FUTBIN-API.
+- FUTBIN antwortet auf direkte Programmanfragen aktuell mit HTTP 403.
+- Die App sucht deshalb den gesamten Markt NICHT automatisch über FUTBIN ab.
+- Keine PC-Preise, FUT.GG, Parse oder erfundenen Verkäufe.
+- Spielerpreise sind sichtbare Angebots-Snapshots, keine Verkaufsnachweise.
+- Älter als 30 Minuten = ALT. Kein frischer Marktpreis ohne neue FUTBIN-Anzeige.
+- Solange keine echten Verkaufsbelege vorliegen, keine Kaufempfehlungen.
+- Öffentliche Hosting-Projekte, Deplexo und Trader Brain bleiben unverändert.

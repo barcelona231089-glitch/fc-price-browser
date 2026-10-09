@@ -17,24 +17,23 @@
     <section class="panel futbinConsolePanel" aria-label="FUTBIN FC27 Konsole">
       <div class="futbinConsoleHead">
         <div><h2>FUTBIN FC27 · Konsole 🎮</h2>
-        <p>Nur echte sichtbare FUTBIN-Angebotspreise. Kein PC, kein FUT.GG und keine Ersatzquellen.</p></div>
+        <p>Automatischer lokaler API-Feed aus echten, im Browser sichtbaren FUTBIN-Konsolenpreisen. Keine JSON-Dateien, kein PC, kein FUT.GG.</p></div>
         <strong class="futbinConsoleTag">FUTBIN ONLY</strong>
       </div>
       <div class="futbinConsoleControls">
-        <label for="futbinConsoleFile">Export aus dem API Traffic Finder (.json)</label>
-        <input type="file" id="futbinConsoleFile" accept=".json,application/json" />
-        <label for="futbinConsoleBudget">Budget in Coins</label>
+        <label for="futbinConsoleBudget">Dein Budget in Coins</label>
         <input type="number" id="futbinConsoleBudget" min="30000" max="100000000" value="100000" step="1000" />
-        <button id="futbinConsoleCheck" type="button">FUTBIN-Konsolenpreise prüfen</button>
+        <button id="futbinConsoleRefresh" type="button">API jetzt aktualisieren</button>
       </div>
-      <p id="futbinConsoleStatus" class="futbinConsoleStatus" role="status" aria-live="polite">JSON-Export auswählen und prüfen. Keine automatischen Käufe.</p>
+      <p id="futbinConnection" class="futbinConsoleStatus" role="status">Warte auf den Browser-Companion v1.5. Die Datenübertragung und API-Abfrage laufen automatisch.</p>
+      <p id="futbinConsoleStatus" class="futbinConsoleStatus" role="status" aria-live="polite">Lade Spieler automatisch von der lokalen API …</p>
       <div class="tableWrap">
         <table class="futbinConsoleTable">
-          <thead><tr><th>Spieler-ID</th><th>Konsole</th><th>FUTBIN Coins</th><th>Zeitpunkt</th><th>ÜV-Status</th></tr></thead>
+          <thead><tr><th>Spieler / ID</th><th>Konsole</th><th>FUTBIN Coins</th><th>Zeitpunkt</th><th>ÜV-Status</th></tr></thead>
           <tbody id="futbinConsoleRows"><tr><td colspan="5" class="empty">Noch keine geprüften FUTBIN-Konsolenpreise.</td></tr></tbody>
         </table>
       </div>
-      <p class="futbinConsoleWarning">Angebotspreise sind keine abgeschlossenen Verkäufe. Ohne bestätigte Verkaufsdaten wird keine Kaufempfehlung generiert.</p>
+      <p class="futbinConsoleWarning">Die App liest ihren API-Feed automatisch. Neue Preis-Snapshots entstehen nur, wenn der Companion sichtbare FUTBIN-Spielerseiten erfasst. FUTBIN sperrt direkte Serverabfragen derzeit (403). Ohne bestätigte Verkaufsdaten keine Kaufempfehlungen.</p>
     </section>
 
     <section class="generator panel compactGenerator" style="display:none">
@@ -129,6 +128,6 @@
     </section>
   </main>
 <!-- Old mixed-source calculator is intentionally disabled in FUTBIN-only mode. -->
-<script src="/uv/futbin-console.js?v=1" type="module"></script>
+<script src="/uv/futbin-console.js?v=2" type="module"></script>
 </body>
 </html>

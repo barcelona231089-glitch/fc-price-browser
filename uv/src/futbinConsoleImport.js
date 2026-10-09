@@ -13,6 +13,7 @@ export function analyzeFutbinConsoleExport(exportData, { now = Date.now(), budge
     throw new RangeError('Budget muss zwischen 30.000 und 100.000.000 Coins liegen.');
   }
   const unique = new Map();
+  const oldByPlayer = new Map();
   let invalid = 0;
   let stale = 0;
   for (const p of exportData.prices) {
@@ -32,6 +33,13 @@ export function analyzeFutbinConsoleExport(exportData, { now = Date.now(), budge
     }
     if (now - capturedMs > CONSOLE_MAX_AGE_MS) {
       stale++;
+      const id = String(p.playerId);
+      const previous = oldByPlayer.get(id);
+      if (!previous || Date.parse(previous.capturedAt) < capturedMs) {
+        oldByPlayer.set(id, { playerId: id, capturedAt: p.capturedAt,
+          playerName: typeof p.playerName === 'string' ? p.playerName.slice(0,90).trim() : null,
+          priceCoins: p.coins, status: 'STALE', source: 'FUTBIN', platform: 'console' });
+      }
       continue;
     }
     const id = String(p.playerId);
@@ -39,6 +47,7 @@ export function analyzeFutbinConsoleExport(exportData, { now = Date.now(), budge
     if (!prev || prev.capturedMs < capturedMs) {
       unique.set(id, {
         playerId: id, capturedMs, capturedAt: p.capturedAt,
+        playerName: typeof p.playerName === 'string' ? p.playerName.slice(0,90).trim() : null,
         platform: 'console', priceCoins: p.coins, source: 'FUTBIN',
         evidence: 'visible-price-box', priceType: 'visible_listing',
         completedSalesVerified: false, status: 'WAIT',
@@ -61,6 +70,7 @@ export function analyzeFutbinConsoleExport(exportData, { now = Date.now(), budge
     importedRows: exportData.prices.length, freshPlayers: cards.length,
     affordableListings, unaffordableListings: cards.length - affordableListings,
     staleRows: stale, invalidRows: invalid, targetCount: CONSOLE_TARGET_COUNT,
+    staleCards: [...oldByPlayer.values()].filter(c => !unique.has(c.playerId)).slice(0, 250),
     missingForTarget: missing, insufficientPlayerEvidence: insufficient,
     confirmedSales: 0, recommendations: [], recommendationCount: 0,
     readyForTrading: false, status: 'BLOCKED_NO_CONFIRMED_SALES',
