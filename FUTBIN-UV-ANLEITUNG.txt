@@ -1,36 +1,50 @@
-FC27 FUTBIN-KONSOLE · AUTOMATISCHE LOKALE API (v2)
-==================================================
-Nach einmaliger Einrichtung sind KEINE JSON-Dateien mehr erforderlich.
+FC27 FUTBIN-KONSOLENPREISE · AUTOMATISCHER JSON-DATENWEG
+========================================================
+KEIN Browser-Companion und KEINE JSON-Datei mehr erforderlich.
 
-A) Browser-Companion v1.5.0 installieren bzw. vorhandene Erweiterung aktualisieren:
-   1. Brave öffnen: brave://extensions
-   2. Entwicklermodus einschalten.
-   3. "Entpackte Erweiterung laden": Wähle Downloads\API-Traffic-Finder-Companion-v1.5.0
-      (den Ordner mit manifest.json, nicht die ZIP).
-   4. Wenn die alte Companion-Version noch geladen ist, diese deaktivieren, damit nur eine läuft.
+START
+1. Auf Messi in Downloads\FC-UV-FUTBIN-CONSOLE-INTEGRATION doppelt
+   auf START-FUTBIN-UV.cmd klicken, falls die App noch nicht läuft.
+2. Brave öffnen: http://127.0.0.1:5187/uv/
+3. Die App startet ihre FUTBIN-FC27-Spielersuche automatisch.
+4. Erste Befüllung kann ca. 30 Sekunden dauern. Automatischer
+   erneuter Abruf frühestens alle 10 Minuten, solange die Seite
+   regelmäßig GET-Abfragen sendet.
+5. Budget in Coins frei ändern. Es werden Marktangebote gezeigt,
+   die im Budget liegen. Keine automatischen Käufe.
 
-B) Doppelklick START-FUTBIN-UV.cmd (falls App nicht schon läuft).
-   Öffne http://127.0.0.1:5187/uv/ und lasse den Browser-Tab geöffnet.
+WIE FUNKTIONIERT DER ZUGRIFF?
+- www.futbin.com gibt auf Messi HTTP 403 (Cloudflare).
+- https://www.futbin.org/futbin/api/27/getFilteredPlayers antwortete
+  auf Messi mit HTTP 200 und FC27-Spielerkarten.
+- https://www.futbin.org/futbin/api/27/getPlayersPrice antwortete
+  auf Messi mit HTTP 200 und PS-Preisen pro Spieler.
+- Die App nutzt ausschließlich diese zwei FUTBIN-JSON-Endpunkte.
+- Node.js fetch bekam HTTP 403, Standard-Windows-curl und PowerShell
+  erhielten HTTP 200. Deshalb ist curl.exe der lokale HTTP-Client.
+  Keine Proxy-Rotation, Browser-Tarnung, Cookie-Übernahme oder
+  Umgehung einer Schutz-Challenge erforderlich.
+- Diese Schnittstelle ist NICHT als offiziell unterstützte
+  öffentliche Entwickler-API dokumentiert. Sie kann wegfallen.
 
-C) Der Browser-Companion überträgt sichtbar erfasste FUTBIN-FC27-Spielerkarten
-   automatisch an die LOKALE ÜV-API. Die App fragt /api/uv/futbin-console/players
-   alle 5 Sekunden selbst ab. Du musst nichts exportieren oder importieren.
+SICHERHEIT UND BELASTUNG
+- Entdeckung: maximal 8 Seiten zu je bis zu 32 FC27-Spielern
+  aus den Preis-/Rating-Bereichen 82,83,84,85 (keine Vollmarkt-Abdeckung).
+- Preisprüfung: maximal 110 Kandidaten, 11 pro Anfrage,
+  mindestens 1,4 Sekunden Pause zwischen Aufrufen.
+- Nach 403/401/429: mindestens 60 Minuten automatischer Backoff.
+- Keine FUT.GG-, Parse- oder PC-Preise; keine Erfindung von Sale-History.
+- Erfasst werden FUTBIN PS Lowest-BIN-Angebote, nicht Verkäufe.
+- Die API-Felder checked/LCPrice haben nicht zwingend die gleiche
+  Frische wie der Abrufzeitpunkt. SourceCheckedAt ist nur eine
+  Info und nicht der Nachweis eines abgeschlossenen Verkaufs.
+- Falls Preisbelege fehlen, keine Kaufempfehlungen.
 
-D) Beim ersten Start zeigt die API eventuell noch 0 Spieler. Wenn du FUTBIN-
-   Spielerkarten im Browser öffnest, gelangen deren angezeigte Konsolenpreise in
-   den Feed. Veraltete IDs in der Tabelle sind als FUTBIN-Links anklickbar.
+ENDPUNKTE (lokal auf Messi)
+  GET http://127.0.0.1:5187/api/uv/futbin-console/players?budget=100000
+  POST .../sync (optional: lokale Browser-Erfassung)
+  POST .../analyze (Kompatibilität mit vorheriger JSON-Datei)
 
-API:
-  GET  http://127.0.0.1:5187/api/uv/futbin-console/players?budget=100000
-  POST http://127.0.0.1:5187/api/uv/futbin-console/sync  (nur lokaler Companion)
-  Ein /analyze-Endpunkt bleibt für Tests vorhanden.
-
-WICHTIG:
-- Die API ist eine lokale Daten-API, KEINE offiziell bereitgestellte FUTBIN-API.
-- FUTBIN antwortet auf direkte Programmanfragen aktuell mit HTTP 403.
-- Die App sucht deshalb den gesamten Markt NICHT automatisch über FUTBIN ab.
-- Keine PC-Preise, FUT.GG, Parse oder erfundenen Verkäufe.
-- Spielerpreise sind sichtbare Angebots-Snapshots, keine Verkaufsnachweise.
-- Älter als 30 Minuten = ALT. Kein frischer Marktpreis ohne neue FUTBIN-Anzeige.
-- Solange keine echten Verkaufsbelege vorliegen, keine Kaufempfehlungen.
-- Öffentliche Hosting-Projekte, Deplexo und Trader Brain bleiben unverändert.
+Die bestehende Deplexo-App, Render-API-Traffic-Finder und
+der produktive Trader Brain wurden nicht verändert.
+Branch: uv-futbin-console-20261009 (isoliert).

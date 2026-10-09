@@ -17,6 +17,7 @@ app.get('/uv', (_req, res) => res.sendFile(path.join(publicDir,'index.html')));
 app.get('/uv/*', (_req, res) => res.sendFile(path.join(publicDir,'index.html')));
 app.listen(port, '127.0.0.1', () => {
   console.log('FC27 FUTBIN-Konsole: http://127.0.0.1:' + port + '/uv/');
-  console.log('API: /api/uv/futbin-console/players | Quelle: sichtbare FUTBIN-Browserdaten.');
-  console.log('Keine FUT.GG-Abfragen, kein Daten-Fallback und keine automatisierten FUTBIN-Webrequests.');
+  console.log('API: /api/uv/futbin-console/players | FC27-Spielersuche + PS-Preise via FUTBIN JSON.');
+  console.log('Standard-Windows-curl als HTTP-Transport: feste FUTBIN-HTTPS-Endpunkte, 10-Minuten-Cache.');
+  console.log('Keine FUT.GG-Abfragen, kein Parse, kein Proxy und keine erfundenen Verkäufe.');
 });

@@ -1,5 +1,5 @@
-// Automatic local REST feed from the authorized FUTBIN browser companion.
-// Only captures already visible in FUTBIN. No undocumented API or network workarounds.
+// Automatic FUTBIN FC27 JSON discovery + console prices, with optional browser captures.
+// Uses the functioning futbin.org JSON endpoint, not the Cloudflare-blocked www.futbin.com pages.
 const budgetInput = document.querySelector('#futbinConsoleBudget');
 const refreshButton = document.querySelector('#futbinConsoleRefresh');
 const connection = document.querySelector('#futbinConnection');
@@ -54,15 +54,20 @@ function rowForCard(card, old = false) {
   link.href = 'https://www.futbin.com/27/player/' + encodeURIComponent(card.playerId);
   link.target = '_blank';
   link.rel = 'noopener noreferrer';
-  link.textContent = (card.playerName || ('#' + card.playerId)) + ' · ' + card.playerId + ' ↗';
-  link.title = 'FUTBIN-Spielerseite öffnen, damit der Companion den sichtbaren Preis neu erfasst';
+  link.textContent = (card.playerName || ('#' + card.playerId)) +
+    (card.rating ? ' (' + card.rating + ')' : '') + ' · ' + card.playerId + ' ↗';
+  link.title = 'FUTBIN-Spielerseite öffnen';
   first.append(link);
   tr.append(first);
   const other = [
     'PS / Konsole',
     coinFormat(card.priceCoins),
-    new Date(card.capturedAt).toLocaleString('de-DE'),
-    old ? 'ALT · neu öffnen' : 'WAIT · Verkauf unbestätigt'
+    'Abruf ' + new Date(card.capturedAt).toLocaleTimeString('de-DE') +
+      (card.sourceCheckedAt ? ' · FUTBIN geprüft: ' + String(card.sourceCheckedAt).slice(0,25) : ''),
+    old ? 'ALT · nächster API-Abruf nötig' :
+      card.evidence === 'futbin-direct-json'
+        ? 'FUTBIN JSON · Verkauf unbestätigt'
+        : 'Browser · Verkauf unbestätigt'
   ];
   for (const content of other) {
     const td = document.createElement('td');
@@ -80,13 +85,36 @@ function renderResponse(data) {
     const row = document.createElement('tr'), cell = document.createElement('td');
     cell.colSpan = 5;
     cell.className = 'empty';
-    cell.textContent = 'Noch keine FUTBIN-Spieler über den Browser-Companion erfasst.';
+    cell.textContent = 'FUTBIN-API sucht Spieler. Die erste Suche kann einige Sekunden dauern.';
     row.append(cell);
     tableBody.append(row);
   }
-  const last = data.lastSyncAt ? new Date(data.lastSyncAt).toLocaleTimeString('de-DE') : 'noch nie';
-  const message = `API automatisch: ${data.cachedPlayers} gespeicherte Spieler · ${data.freshPlayers} frisch · ${data.staleRows} veraltet · ${data.affordableListings} im Budget (Angebotsvergleich) · ${data.missingForTarget} fehlen für 100 · Kaufempfehlungen: 0. Letzter Browserabgleich: ${last}.`;
-  showStatus(message, data.freshPlayers === 0);
+  const direct = data.directFutbin || {};
+  const last = direct.lastSuccessAt
+    ? new Date(direct.lastSuccessAt).toLocaleTimeString('de-DE') : 'noch nie';
+  const progress = direct.active
+    ? ' · Suche läuft: ' + direct.currentPhase +
+      ', ' + (direct.discoveredPlayers || 0) + ' entdeckt, ' +
+      (direct.pricedPlayers || 0) + ' bepreist'
+    : '';
+  const message = `FUTBIN-API: ${data.cachedPlayers} Spieler · ${data.freshPlayers} frische Preis-Snapshots · ${data.staleRows} veraltet · ${data.affordableListings} im Budget (reiner Angebotsvergleich) · ${data.missingForTarget} fehlen für 100. ${progress} Letzter erfolgreicher JSON-Abruf: ${last}. Keine bestätigten Verkäufe, daher 0 Kaufempfehlungen.`;
+  showStatus(message, data.freshPlayers === 0 && !direct.active);
+  if (direct.active) {
+    connection.textContent = '✅ Direkte FUTBIN-FC27-JSON-API antwortet. Spieler und PS-Konsolenpreise werden automatisch geladen (' +
+      (direct.requests || 0) + ' begrenzte Anfragen). Kein Browser-Companion nötig.';
+  } else if (direct.hasSuccessfulFetch) {
+    connection.textContent = '✅ FUTBIN-FC27-JSON-API läuft! ' +
+      (direct.pricedPlayers || 0) + ' Spieler automatisch geladen. Nächste Aktualisierung frühestens ' +
+      (direct.nextRefreshAt ? new Date(direct.nextRefreshAt).toLocaleTimeString('de-DE') : 'in einigen Minuten') +
+      '. Browser-Companion optional.';
+  } else if (direct.lastError) {
+    connection.textContent = 'FUTBIN-JSON-API meldet ' + direct.lastError +
+      '. Automatische Pause bis ' +
+      (direct.nextRefreshAt ? new Date(direct.nextRefreshAt).toLocaleTimeString('de-DE') : 'zum nächsten Versuch') +
+      '; vorhandene Browserdaten bleiben getrennt.';
+  } else {
+    connection.textContent = 'Verbindung zur direkten FUTBIN-FC27-JSON-API wird aufgebaut …';
+  }
 }
 
 async function refreshFromApi() {
@@ -100,9 +128,6 @@ async function refreshFromApi() {
     if (!res.ok || data.source !== 'FUTBIN' || data.mode !== 'FUTBIN_FC27_CONSOLE_ONLY')
       throw new Error(data.error || 'FUTBIN-API nicht erreichbar');
     renderResponse(data);
-    if (!companionConnectedAt) {
-      connection.textContent = 'Lokale API läuft. Browser-Companion v1.5 noch nicht verbunden. In Brave unter brave://extensions aktualisieren; danach werden neue FUTBIN-Preise automatisch übertragen.';
-    }
   } catch (error) {
     showStatus('Lokale API-Fehler: ' + String(error?.message || error), true);
   } finally {
@@ -141,8 +166,8 @@ window.addEventListener('message', event => {
     event.data?.type !== 'ATF_TRAFFIC') return;
   companionConnectedAt = Date.now();
   const version = String(event.data?.diagnostics?.version || '?');
-  connection.textContent = 'Browser-Companion v' + version +
-    ' verbunden. Automatische API-Versorgung aktiv; neue Preise entstehen auf sichtbaren FUTBIN-Seiten.';
+  // Optional: the direct JSON feed works without the browser companion.
+  connection.title = 'Optionaler Browser-Companion v' + version + ' verbunden';
   const packet = extractConsoleRows(event.data.prices);
   if (packet && packet.prices.length) {
     lastPrices = packet;
@@ -157,9 +182,6 @@ refreshButton.addEventListener('click', () => {
 });
 budgetInput.addEventListener('change', () => { void refreshFromApi(); });
 setInterval(() => {
-  if (companionConnectedAt && Date.now() - companionConnectedAt > 12000) {
-    connection.textContent = 'Keine aktuellen Companion-Meldungen: Erweiterung prüfen und lokale ÜV-Seite neu laden.';
-  }
   void refreshFromApi();
 }, 5000);
 window.postMessage({ source: 'atf-web', type: 'ATF_GET' }, location.origin);

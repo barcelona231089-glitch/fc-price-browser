@@ -20,7 +20,8 @@ export function analyzeFutbinConsoleExport(exportData, { now = Date.now(), budge
     if (!p || p.source !== 'FUTBIN' || p.game !== 'FC27' ||
         p.platform !== 'console' || !/^[1-9]\d{0,14}$/.test(String(p.playerId)) ||
         !Number.isSafeInteger(p.coins) || p.coins < 100 || p.coins > 15_000_000 ||
-        p.priceType !== 'visible_listing' || p.evidence !== 'visible-price-box' ||
+        !((p.priceType === 'visible_listing' && p.evidence === 'visible-price-box') ||
+          (p.priceType === 'lowest_listing' && p.evidence === 'futbin-direct-json')) ||
         p.salesVerified !== false || typeof p.capturedAt !== 'string' ||
         !/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d+)?Z$/.test(p.capturedAt)) {
       invalid++;
@@ -38,6 +39,9 @@ export function analyzeFutbinConsoleExport(exportData, { now = Date.now(), budge
       if (!previous || Date.parse(previous.capturedAt) < capturedMs) {
         oldByPlayer.set(id, { playerId: id, capturedAt: p.capturedAt,
           playerName: typeof p.playerName === 'string' ? p.playerName.slice(0,90).trim() : null,
+          rating: Number.isInteger(Number(p.rating)) ? Number(p.rating) : null,
+          cardType: p.cardType || null, sourceCheckedAt: p.sourceCheckedAt || null,
+          evidence: p.evidence, priceType: p.priceType,
           priceCoins: p.coins, status: 'STALE', source: 'FUTBIN', platform: 'console' });
       }
       continue;
@@ -48,8 +52,11 @@ export function analyzeFutbinConsoleExport(exportData, { now = Date.now(), budge
       unique.set(id, {
         playerId: id, capturedMs, capturedAt: p.capturedAt,
         playerName: typeof p.playerName === 'string' ? p.playerName.slice(0,90).trim() : null,
+        rating: Number.isInteger(Number(p.rating)) ? Number(p.rating) : null,
+        cardType: p.cardType || null, sourceCheckedAt: p.sourceCheckedAt || null,
+        position: p.position || null,
         platform: 'console', priceCoins: p.coins, source: 'FUTBIN',
-        evidence: 'visible-price-box', priceType: 'visible_listing',
+        evidence: p.evidence, priceType: p.priceType,
         completedSalesVerified: false, status: 'WAIT',
         buyMax: null, sellPrice: null, expectedProfit: null
       });
@@ -62,7 +69,7 @@ export function analyzeFutbinConsoleExport(exportData, { now = Date.now(), budge
   const affordableListings = cards.filter(c => c.priceCoins <= budget).length;
   const insufficient = cards.length < CONSOLE_TARGET_COUNT;
   const note = !cards.length
-    ? 'Keine frischen FUTBIN-Konsolenpreise vorhanden. FUTBIN erneut im Browser öffnen und neu exportieren.'
+    ? 'Keine frischen FUTBIN-Konsolenpreise vorhanden. Der automatische FUTBIN-JSON-Abruf wird geprüft.'
     : 'Nur FUTBIN-Angebotspreise vorhanden, keine bestätigten Verkäufe. Deshalb keine Kaufempfehlung.';
   return {
     ok: true, mode: 'FUTBIN_FC27_CONSOLE_ONLY', source: 'FUTBIN',

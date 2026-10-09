@@ -1,7 +1,8 @@
-// Local FUTBIN-only REST feed. Data arrives solely from user-visible browser captures.
-// No direct FUTBIN server requests, FUT.GG, Parse or EA account credentials.
+// FUTBIN-only REST feed: direct JSON catalog/prices, plus optional browser captures.
+// No FUT.GG, Parse, user credentials, proxy rotation or security-challenge evasion.
 import express from 'express';
 import { analyzeFutbinConsoleExport } from './futbinConsoleImport.js';
+import { createFutbinDirectFeed } from './futbinDirectFeed.js';
 
 const MAX_CAPTURED = 1000;
 const SNAPSHOT_RETENTION_MS = 24 * 60 * 60 * 1000;
@@ -19,7 +20,9 @@ const allowLocalOrigin = req => {
   return /^http:\/\/(?:127\.0\.0\.1|localhost):5187$/.test(origin);
 };
 
-export function createFutbinConsoleRouter({ clock = Date.now } = {}) {
+export function createFutbinConsoleRouter({
+  clock = Date.now, direct = createFutbinDirectFeed({ clock })
+} = {}) {
   const api = express.Router();
   api.use(express.json({ limit: '512kb' }));
   const byPlayer = new Map();
@@ -31,17 +34,27 @@ export function createFutbinConsoleRouter({ clock = Date.now } = {}) {
     for (const [key, entry] of byPlayer) {
       if (now - Date.parse(entry.capturedAt) > SNAPSHOT_RETENTION_MS) byPlayer.delete(key);
     }
-    return makePacket([...byPlayer.values()]);
+    return makePacket([...byPlayer.values(), ...direct.getRows()]);
   }
 
   api.get('/api/uv/futbin-console/players', (req, res) => {
     res.set('Cache-Control', 'no-store');
     try {
-      const result = analyzeFutbinConsoleExport(snapshot(),
-        { budget: parseBudget(req.query.budget), now: clock() });
-      return res.json({ ...result, apiSource: 'browser-captured-futbin',
-        autoTransfer: true, directFutbinApiAvailable: false,
-        lastSyncAt, receivedEvents, cachedPlayers: byPlayer.size });
+      const budget = parseBudget(req.query.budget);
+      if (!Number.isSafeInteger(budget) || budget < 30_000 || budget > 100_000_000) {
+        return res.status(400).json({ error: 'Budget ungueltig.' });
+      }
+      // Initiates a bounded background pull at most every 10 minutes. GET returns promptly.
+      direct.ensureRefreshed();
+      const result = analyzeFutbinConsoleExport(snapshot(), { budget, now: clock() });
+      const directStatus = direct.getStatus();
+      return res.json({ ...result,
+        apiSource: directStatus.hasSuccessfulFetch
+          ? 'futbin-direct-json' : 'browser-captured-futbin',
+        autoTransfer: true, directFutbinApiAvailable: directStatus.hasSuccessfulFetch,
+        directFutbin: directStatus,
+        lastSyncAt, receivedEvents,
+        cachedPlayers: new Set([...byPlayer.keys(), ...direct.getRows().map(p => p.playerId)]).size });
     } catch (error) {
       return res.status(400).json({ error: String(error?.message || error) });
     }

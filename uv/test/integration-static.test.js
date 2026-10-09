@@ -26,7 +26,7 @@ test('UV browser UI uses the production /api/uv namespace and /uv assets', () =>
   assert.equal(ui.includes("fetch('/api/status')"), false);
   assert.ok(html.includes('href="/uv/styles.css"'));
   // Default UI is now strictly FUTBIN-only; the old mixed-source script must not load.
-  assert.ok(html.includes('src="/uv/futbin-console.js?v=2"'));
+  assert.ok(html.includes('src="/uv/futbin-console.js?v=4"'));
   assert.ok(html.includes('href="/uv/futbin-console.css"'));
   assert.equal(html.includes('<script src="/uv/app.js'), false);
   assert.ok(uvApp.includes('app.use(createFutbinConsoleRouter())'));

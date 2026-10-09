@@ -9,7 +9,9 @@
 .futbinConsoleControls button { grid-column: 1 / -1; width: fit-content; }
 .futbinConsoleStatus { font-weight: 650; line-height: 1.5; }
 .futbinConsoleError, .futbinConsoleWarning { color: #e3a56e; }
+.futbinConsolePanel .tableWrap { max-height: 65vh; overflow: auto; }
 .futbinConsoleTable { width: 100%; }
+.futbinConsoleTable thead th { position: sticky; top: 0; z-index: 1; }
 .futbinConsoleTable td, .futbinConsoleTable th { white-space: nowrap; padding: 12px 14px; text-align: left; }
 .futbinConsoleWarning { margin-bottom: 0; line-height: 1.6; }
 @media (max-width: 650px) { .futbinConsoleControls { grid-template-columns: minmax(0,1fr); } }

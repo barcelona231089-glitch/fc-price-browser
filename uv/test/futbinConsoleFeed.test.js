@@ -14,7 +14,9 @@ const pack = prices => ({ schemaVersion:1,source:'FUTBIN',prices });
 test('auto API delivers genuine console snapshots, rejects PC, and never fabricates trades', async () => {
   let clock = now;
   const app = express();
-  app.use(createFutbinConsoleRouter({clock:()=>clock}));
+  const fakeDirect = { ensureRefreshed: () => false, getRows: () => [],
+    getStatus: () => ({ hasSuccessfulFetch: false }) };
+  app.use(createFutbinConsoleRouter({clock:()=>clock,direct:fakeDirect}));
   const server = app.listen(0, '127.0.0.1');
   await once(server,'listening');
   const base = 'http://127.0.0.1:' + server.address().port;
