@@ -248,6 +248,11 @@ function Results({ result }: { result: TrafficAnalysisResult }) {
   }, [filter, result.requests, search, candidatesOnly]);
 
   const exportJson = () => downloadTrafficJson(result);
+  const futbinRequests = result.requests.filter(request => /(^|\\.)futbin\\.com$/i.test(request.hostname));
+  const marketHints = futbinRequests.filter(request => /(?:price|market|sale|listing|history|auction|trade|bid)/i.test(request.path));
+  const jsonMarketHints = marketHints.filter(request => request.statusCode === 200 && /(?:json|graphql)/i.test(request.contentType ?? ''));
+  const marketPaths = [...new Set(marketHints.map(request => request.path))].slice(0, 12);
+  const htmlPriceHints = futbinRequests.filter(request => request.statusCode === 200 && /(?:playerhover|player\/)/i.test(request.path) && /html/i.test(request.contentType ?? ''));
 
   return (
     <section className="results-section fade-in" aria-label="Analyseergebnis" data-testid="section-analysis-results">
@@ -272,6 +277,12 @@ function Results({ result }: { result: TrafficAnalysisResult }) {
         <Metric label="Blockiert" value={result.blockedCount} detail="durch Browser" tone="metric-muted" />
       </div>
 
+      <div className="capture-warnings" role="status" data-testid="futbin-source-audit">
+        <p><strong>FUTBIN-Quellenprüfung für ÜV:</strong> {futbinRequests.length} FUTBIN-Datenrequests, {marketHints.length} Markt-/Preispfad-Hinweise, {jsonMarketHints.length} erfolgreiche JSON-/GraphQL-Markthinweise.</p>
+        <p>{jsonMarketHints.length ? 'Markt-Endpunkte entdeckt, aber Preisfelder, Aktualität, Berechtigung und echte Verkaufsnachweise sind noch nicht verifiziert.' : 'Noch keine bestätigte Live-Preis-API. Der Finder erfindet keine Preis- oder Verkaufsdaten.'}</p>
+        {htmlPriceHints.length > 0 && <p>{htmlPriceHints.length} HTML-Spieleransicht(en) erkannt: mögliche öffentliche Preisdarstellung, keine bestätigte API und kein Verkaufsnachweis.</p>}
+        {marketPaths.length > 0 && <p>Beobachtete Pfade: {marketPaths.join(' · ')}</p>}
+      </div>
       {result.warnings.length > 0 && <div className="capture-warnings" role="status">{result.warnings.map(warning => <p key={warning}>{warning}</p>)}</div>}
       <div className="table-panel">
         <div className="table-toolbar">
