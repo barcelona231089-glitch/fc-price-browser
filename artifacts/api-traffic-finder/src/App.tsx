@@ -248,7 +248,24 @@ function Results({ result }: { result: TrafficAnalysisResult }) {
   }, [filter, result.requests, search, candidatesOnly]);
 
   const exportJson = () => downloadTrafficJson(result);
-  const futbinRequests = result.requests.filter(request => /(^|\\.)futbin\\.com$/i.test(request.hostname));
+  const exportEndpoints = () => {
+    const candidates = result.requests.filter(request => request.isApiCandidate && !isProtectionTraffic(request.path));
+    const endpoints = [...new Map(candidates.map(request => [
+      request.method + ' ' + request.hostname + request.path,
+      { url: request.url, method: request.method, hostname: request.hostname, path: request.path,
+        statusCode: request.statusCode, contentType: request.contentType, observedAt: request.startedAt,
+        fields: [], verified: false, usableForUV: false,
+        note: 'Beobachteter API-Kandidat. Preisinhalt, Zugriffserlaubnis, Aktualität und Verkaufsnachweise separat prüfen.' }
+    ])).values()];
+    const blob = new Blob([JSON.stringify({ format: 'atf-endpoint-candidates-v1', exportedAt: new Date().toISOString(), endpoints }, null, 2)], { type: 'application/json' });
+    const href = URL.createObjectURL(blob);
+    const anchor = document.createElement('a');
+    anchor.href = href;
+    anchor.download = 'atf-api-kandidaten.json';
+    anchor.click();
+    URL.revokeObjectURL(href);
+  };
+  const futbinRequests = result.requests.filter(request => /(^|\.)futbin\.com$/i.test(request.hostname));
   const marketHints = futbinRequests.filter(request => /(?:price|market|sale|listing|history|auction|trade|bid)/i.test(request.path));
   const jsonMarketHints = marketHints.filter(request => request.statusCode === 200 && /(?:json|graphql)/i.test(request.contentType ?? ''));
   const marketPaths = [...new Set(marketHints.map(request => request.path))].slice(0, 12);
@@ -262,6 +279,7 @@ function Results({ result }: { result: TrafficAnalysisResult }) {
           <h2>Netzwerkübersicht</h2>
           <p className="result-url mono" title={result.url}><Globe2 size={14} />{result.url}</p>
         </div>
+        <button className="button button-secondary export-button" onClick={exportEndpoints} data-testid="button-export-endpoints">API-Kandidaten exportieren</button>
         <button className="button button-secondary export-button" onClick={exportJson} data-testid="button-export-json">
           <ArrowDownToLine size={16} /> JSON exportieren
         </button>
