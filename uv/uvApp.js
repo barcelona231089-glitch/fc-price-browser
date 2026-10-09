@@ -12,6 +12,7 @@ import { buildTraderKnowledge, TRADER_KNOWLEDGE_SOURCES } from './src/traderKnow
 import { attachTargetLearningProfiles } from './src/targetLearning.js';
 import { buildRecommendationLifecycle, recheckRecommendation } from './src/lifecycle.js';
 import { runCandidatePipeline, deriveAdaptiveMarketPolicy, buildHard100SellabilityFallback, buildBudgetAdaptiveSellabilityFallback, buildBudgetSafetyReserveFallback } from './src/candidatePipeline.js';
+import { analyzeFutbinConsoleExport } from './src/futbinConsoleImport.js';
 import { buildReportedOutcomeScore } from './src/outcomeLearning.js';
 
 export const uvRouter = express.Router();
@@ -21,6 +22,20 @@ const app = uvRouter;
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 app.use(express.json({ limit: '1mb' }));
 app.use('/uv', express.static(path.join(__dirname, 'public')));
+
+// FUTBIN-only FC27 console import: stateless, no database writes or third-party fetches.
+// Existing legacy generation stays isolated and is never used by this endpoint.
+app.post('/api/uv/futbin-console/analyze', (req, res) => {
+  res.set('Cache-Control', 'no-store');
+  try {
+    const result = analyzeFutbinConsoleExport(req.body?.export,
+      { budget: Number(req.body?.budget), now: Date.now() });
+    return res.json(result);
+  } catch (error) {
+    const status = error instanceof TypeError || error instanceof RangeError ? 400 : 500;
+    return res.status(status).json({ error: String(error?.message || 'FUTBIN-Import fehlgeschlagen.') });
+  }
+});
 
 
 let lastGenerationAt = null;

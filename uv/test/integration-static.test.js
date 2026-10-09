@@ -25,7 +25,11 @@ test('UV browser UI uses the production /api/uv namespace and /uv assets', () =>
   assert.ok(ui.includes("fetch('/api/uv/generate'"));
   assert.equal(ui.includes("fetch('/api/status')"), false);
   assert.ok(html.includes('href="/uv/styles.css"'));
-  assert.ok(html.includes('src="/uv/app.js?v=2.10.12-feasibility2"'));
+  // Default UI is now strictly FUTBIN-only; the old mixed-source script must not load.
+  assert.ok(html.includes('src="/uv/futbin-console.js?v=1"'));
+  assert.ok(html.includes('href="/uv/futbin-console.css"'));
+  assert.equal(html.includes('<script src="/uv/app.js'), false);
+  assert.ok(uvApp.includes("app.post('/api/uv/futbin-console/analyze'"));
 });
 
 test('compact UV UI exposes status filters, essential columns and recheck-aware pricing', () => {

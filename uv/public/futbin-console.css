@@ -1,0 +1,15 @@
+.futbinConsolePanel { display: grid; gap: 18px; margin-top: 20px; }
+.futbinConsoleHead { display: flex; justify-content: space-between; align-items: start; flex-wrap: wrap; gap: 12px; }
+.futbinConsoleHead h2 { margin: 0 0 8px; font-size: 22px; }
+.futbinConsoleHead p { margin: 0; opacity: .82; }
+.futbinConsoleTag { border: 1px solid currentColor; padding: 7px 10px; border-radius: 8px; font-size: 12px; }
+.futbinConsoleControls { display: grid; grid-template-columns: minmax(0,1fr) minmax(150px,190px); gap: 10px 18px; align-items: center; }
+.futbinConsoleControls label { font-weight: 600; }
+.futbinConsoleControls input { width: 100%; min-width: 0; border-radius: 9px; padding: 10px; }
+.futbinConsoleControls button { grid-column: 1 / -1; width: fit-content; }
+.futbinConsoleStatus { font-weight: 650; line-height: 1.5; }
+.futbinConsoleError, .futbinConsoleWarning { color: #e3a56e; }
+.futbinConsoleTable { width: 100%; }
+.futbinConsoleTable td, .futbinConsoleTable th { white-space: nowrap; padding: 12px 14px; text-align: left; }
+.futbinConsoleWarning { margin-bottom: 0; line-height: 1.6; }
+@media (max-width: 650px) { .futbinConsoleControls { grid-template-columns: minmax(0,1fr); } }

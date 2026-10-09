@@ -1,0 +1,15 @@
+FC27 FUTBIN-KONSOLE: LOKALER IMPORTMODUS
+=======================================
+1. Doppelklick auf START-FUTBIN-UV.cmd.
+2. Browser: http://127.0.0.1:5187/uv/
+3. Vom API Traffic Finder exportierte futbin-fc27-console-prices.json auswählen.
+4. Budget eingeben und FUTBIN-Konsolenpreise prüfen klicken.
+
+WICHTIG:
+- Nur FUTBIN, FC27, Konsole. PC-, FUT.GG- und Parse-Daten ausgeschlossen.
+- Angebotspreise sind keine nachgewiesenen Verkäufe. Keine Kaufempfehlungen ohne echte Belege.
+- Preise älter als 30 Minuten werden verworfen. Für eine neue Prüfung FUTBIN erneut öffnen und im Finder neu exportieren.
+- Daten werden pro Anfrage verarbeitet und nicht serverseitig gespeichert.
+- Kein Deplexo-Deployment, keine Änderungen an produktivem Trader Brain.
+- Der 100-Karten-Modus bleibt gesperrt, bis echte Verkaufsevidenz vorliegt.
+- Quellzweig: uv-futbin-console-20261009. Original-main bleibt unverändert.
