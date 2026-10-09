@@ -26,13 +26,19 @@ test('UV browser UI uses the production /api/uv namespace and /uv assets', () =>
   assert.equal(ui.includes("fetch('/api/status')"), false);
   assert.ok(html.includes('href="/uv/styles.css"'));
   // Default UI is now strictly FUTBIN-only; the old mixed-source script must not load.
-  assert.ok(html.includes('src="/uv/futbin-console.js?v=4"'));
-  assert.ok(html.includes('href="/uv/futbin-console.css"'));
-  assert.equal(html.includes('<script src="/uv/app.js'), false);
+  assert.ok(html.includes('src="/uv/app.js?v=2.10.12-feasibility2"'));
+  assert.ok(html.includes('src="/uv/futbin-source-panel.js?v=1"'));
+  assert.ok(html.includes('href="/uv/futbin-source-panel.css"'));
+  assert.ok(html.includes('id="generateBtn"'));
+  assert.ok(html.includes('id="recheckBtn"'));
+  assert.ok(html.includes('id="rebalanceBtn"'));
+  assert.ok(html.includes('id="futbinSourcePanel"'));
   assert.ok(uvApp.includes('app.use(createFutbinConsoleRouter())'));
   const consoleApi = fs.readFileSync(path.join(uvRoot, 'src', 'futbinConsoleApi.js'), 'utf8');
   assert.ok(consoleApi.includes("api.get('/api/uv/futbin-console/players'"));
   assert.ok(consoleApi.includes("api.post('/api/uv/futbin-console/sync'"));
+  assert.ok(uvApp.includes("app.get('/api/uv/source/market'"));
+  assert.ok(uvApp.includes('if (!requireVerifiedTradeSource(res)) return;'));
 });
 
 test('compact UV UI exposes status filters, essential columns and recheck-aware pricing', () => {

@@ -103,10 +103,13 @@ export function createFutbinDirectFeed({
             if (!price) continue;
             catalogue.set(String(player.ID), {
               playerId: String(player.ID),
+              resourceId: Number(player.resource_id) || Number(player.playerid) || null,
               name: sanitizeName(player.playername || player.name),
               overall: Number(player.rating) || null,
               cardType: sanitizeName(player.rareTypeName) || 'Unbekannt',
               position: sanitizeName(player.position),
+              club: sanitizeName(player.club_name), nation: sanitizeName(player.nation_name),
+              league: sanitizeName(player.league_name),
               catalogPrice: price
             });
           }
@@ -133,6 +136,9 @@ export function createFutbinDirectFeed({
             verified.set(id, {
               source: 'FUTBIN', game: 'FC27', playerId: id,
               playerName: sanitizeName(entry.Player_Fullname) || item?.name || null,
+              resourceId: Number(entry.Player_Resource) || item?.resourceId || null,
+              club: item?.club || null, nation: item?.nation || null,
+              league: item?.league || null,
               platform: 'console', coins: price, capturedAt: returnedAt,
               sourceCheckedAt: typeof entry.checked === 'string' ? entry.checked : null,
               rating: item?.overall ?? null, position: item?.position || null,

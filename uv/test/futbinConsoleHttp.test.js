@@ -15,8 +15,8 @@ test('FUTBIN-only console endpoint serves public UI and safely analyzes exports'
     const html = await page.text();
     assert.equal(page.status, 200);
     assert.match(html, /FUTBIN FC27/);
-    assert.match(html, /futbin-console\.js/);
-    assert.doesNotMatch(html, /<script src="\/uv\/app\.js/);
+    assert.match(html, /futbin-source-panel\.js/);
+    assert.match(html, /<script src="\/uv\/app\.js/);
     const script = await fetch(base + '/uv/futbin-console.js');
     assert.equal(script.status, 200);
 

@@ -13,6 +13,7 @@ import { attachTargetLearningProfiles } from './src/targetLearning.js';
 import { buildRecommendationLifecycle, recheckRecommendation } from './src/lifecycle.js';
 import { runCandidatePipeline, deriveAdaptiveMarketPolicy, buildHard100SellabilityFallback, buildBudgetAdaptiveSellabilityFallback, buildBudgetSafetyReserveFallback } from './src/candidatePipeline.js';
 import { createFutbinConsoleRouter } from './src/futbinConsoleApi.js';
+import { isFutbinOnlyUvMode, getOriginalFutbinSourceStatus, getOriginalFutbinMarketSnapshot } from './src/futbinOriginalSource.js';
 import { buildReportedOutcomeScore } from './src/outcomeLearning.js';
 
 export const uvRouter = express.Router();
@@ -82,6 +83,17 @@ function scheduleLiveRecheckJobCleanup(job) {
 }
 
 async function getLiveFutggCards(platform = 'console', options = {}) {
+  if (isFutbinOnlyUvMode()) {
+    if (platform === 'pc') {
+      const error = new Error('FUTBIN_ONLY ist ausschließlich für FC27 Konsolenpreise konfiguriert.');
+      error.code = 'UV_FUTBIN_PC_DISABLED';
+      throw error;
+    }
+    if (Number(GAME_YEAR) !== 27) {
+      throw new Error('FUTBIN_ONLY erwartet GAME_YEAR=27. Keine FC26/FC27-Mischung.');
+    }
+    return getOriginalFutbinMarketSnapshot({ minCards: 1 });
+  }
   const normalized = platform === 'pc' ? 'pc' : 'console';
   if (normalized === 'console' && typeof sharedMarketProvider === 'function') {
     const shared = await sharedMarketProvider(normalized, options);
@@ -110,6 +122,22 @@ async function getLiveFutggCards(platform = 'console', options = {}) {
 
 
 function uvWriteAllowed() { return uvActive === true; }
+
+// The old optimizer depends on FUT.GG tradeability, demand and historical
+// signals. Do not silently reuse those signals as FUTBIN evidence.
+// This guard preserves the original UI/engine but keeps buy/sell advice off
+// until its evidence gates are migrated and independently tested.
+function requireVerifiedTradeSource(res) {
+  if (!isFutbinOnlyUvMode()) return true;
+  res.status(409).json({
+    ok: false,
+    code: 'FUTBIN_ONLY_LISTINGS_NOT_SALES',
+    source: 'FUTBIN_JSON_FC27_PS',
+    error: 'FUTBIN ist jetzt die einzige Konsolen-Preisquelle. Die Daten enthalten Lowest-BIN-Angebote, aber keine bestätigten Verkäufe. Bestehende FUT.GG-Abhängigkeiten im ÜV-Optimizer dürfen nicht als FUTBIN-Beweise ausgegeben werden. Die Kauf-/Verkaufsliste bleibt bis zur abgesicherten Umstellung der Trading-Gates gesperrt.',
+    currentPricesEndpoint: '/api/uv/futbin-console/players?budget=100000'
+  });
+  return false;
+}
 
 function requireUvActive(req, res) {
   if (uvWriteAllowed()) return true;
@@ -245,17 +273,41 @@ app.get('/api/uv/health', (req, res) => res.json({
   }
 }));
 
+// The original UV application's native price-provider contract, now FUTBIN-backed.
+app.get('/api/uv/source/market', (req, res) => {
+  res.set('Cache-Control', 'no-store');
+  if (!isFutbinOnlyUvMode()) {
+    return res.status(404).json({ ok:false, error:'FUTBIN_ONLY-Modus nicht aktiviert.' });
+  }
+  try {
+    const market = getOriginalFutbinMarketSnapshot();
+    return res.json({
+      ok: true, source: market.priceSource, gameYear: 27, platform: 'console',
+      listingOnly: true, confirmedSales: 0, updatedAt: market.updatedAt,
+      cards: market.cards, count: market.cards.length
+    });
+  } catch (error) {
+    return res.status(503).json({ ok:false, code:error.code || 'UV_FUTBIN_NOT_READY',
+      error:String(error?.message || error), sourceStatus:getOriginalFutbinSourceStatus() });
+  }
+});
+
 app.get('/api/uv/status', (req, res) => {
   const futbinExtended = getFutbinExtendedDataStatus();
   res.json({
     ok: true, version: UV_VERSION, gameYear: GAME_YEAR,
+    priceSourceMode: isFutbinOnlyUvMode() ? 'FUTBIN_ONLY' : 'LEGACY_FUTGG',
+    primaryPriceSource: isFutbinOnlyUvMode() ? 'FUTBIN_JSON_FC27_PS' : 'FUT.GG',
+    futbinOnlyPriceStatus: isFutbinOnlyUvMode() ? getOriginalFutbinSourceStatus() : null,
     activeInstance: uvActive,
     runtimeMode: uvActive ? 'ACTIVE' : 'HA_STANDBY_READ_ONLY',
     databaseConfigured: isDbEnabled(), futbinParseConfigured: Boolean(process.env.FUTBIN_PARSE_API_KEY),
     mode: 'external-analysis-only', automation: 'none',
     futbinExtended,
     currentCapabilities: {
-      futggLivePrices: true,
+      futggLivePrices: !isFutbinOnlyUvMode(),
+      futbinOnlyPrimaryPrices: isFutbinOnlyUvMode(),
+      futbinConfirmedSales: false,
       futbinCrosscheck: Boolean(process.env.FUTBIN_PARSE_API_KEY) || Boolean(futbinExtended.directFutbinApi?.configured),
       futbinMarketTrends: Boolean(process.env.FUTBIN_PARSE_API_KEY),
       futbinStructuredEvidenceAdapter: true,
@@ -284,6 +336,7 @@ function scheduleHistoryMonitorRetry(delayMs = 10_000) {
 }
 
 async function runHistoryMonitorOnce() {
+  if (isFutbinOnlyUvMode()) return; // Never mix legacy FUT.GG-derived history into new FUTBIN-only prices.
   if (!uvActive || !isDbEnabled() || historyMonitorBusy) return;
   if (generationBusy) {
     lastHistoryMonitorDeferredAt = new Date().toISOString();
@@ -342,6 +395,7 @@ async function runHistoryMonitorOnce() {
 }
 
 function startHistoryMonitor() {
+  if (isFutbinOnlyUvMode()) return;
   if (!uvActive || !isDbEnabled() || historyIntervalHandle) return;
   historyStartTimeoutHandle = setTimeout(() => runHistoryMonitorOnce(), 8_000);
   historyStartTimeoutHandle.unref?.();
@@ -885,6 +939,7 @@ function startLiveRecheckJob(listId) {
 }
 
 function handleLiveRecheckStart(req, res) {
+  if (!requireVerifiedTradeSource(res)) return;
   if (!requireUvActive(req, res)) return;
   if (!isDbEnabled()) return res.status(503).json({ error: 'PostgreSQL ist fuer gespeicherte Listen-Rechecks erforderlich.' });
   try {
@@ -918,6 +973,7 @@ app.get('/api/uv/recheck-job/:jobId', (req, res) => {
 });
 
 app.post('/api/uv/rebalance/:listId', async (req, res) => {
+  if (!requireVerifiedTradeSource(res)) return;
   if (!requireUvActive(req, res)) return;
   if (generationBusy) return res.status(429).json({ error: 'Eine Generierung oder ein Rebalance läuft gerade. Bitte kurz warten.' });
   generationBusy = true;
@@ -1142,6 +1198,7 @@ app.post('/api/uv/rebalance/:listId', async (req, res) => {
 });
 
 app.post('/api/uv/generate', async (req, res) => {
+  if (!requireVerifiedTradeSource(res)) return;
   if (!requireUvActive(req, res)) return;
   if (generationBusy) return res.status(429).json({ error: 'Eine Liste wird gerade berechnet. Bitte kurz warten.' });
   generationBusy = true;

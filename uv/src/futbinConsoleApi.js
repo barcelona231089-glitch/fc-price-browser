@@ -20,8 +20,10 @@ const allowLocalOrigin = req => {
   return /^http:\/\/(?:127\.0\.0\.1|localhost):5187$/.test(origin);
 };
 
+export const originalUvFutbinPriceFeed = createFutbinDirectFeed();
+
 export function createFutbinConsoleRouter({
-  clock = Date.now, direct = createFutbinDirectFeed({ clock })
+  clock = Date.now, direct = originalUvFutbinPriceFeed
 } = {}) {
   const api = express.Router();
   api.use(express.json({ limit: '512kb' }));

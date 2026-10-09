@@ -1,0 +1,12 @@
+/* Only supplements the EXISTING FC ÜV Brain UI. No alternate layout. */
+#futbinSourcePanel { margin-top: 18px; display: grid; gap: 14px; }
+#futbinSourcePanel.hidden { display: none; }
+#futbinSourcePanel .tableHead { display: flex; justify-content: space-between; align-items: start; gap: 12px; }
+#futbinSourcePanel .tableHead p { margin-bottom: 0; }
+#futbinSourcePanel strong { border: 1px solid currentColor; border-radius: 8px; padding: 7px 10px; white-space: nowrap; }
+.futbinSourceNotice { font-size: 13px; line-height: 1.55; opacity: .8; margin: 0; }
+.futbinSourceScroll { max-height: 52vh; overflow-y: auto; }
+.futbinSourceScroll table { width: 100%; }
+.futbinSourceScroll th { position: sticky; top: 0; z-index: 2; }
+.futbinSourceScroll th,.futbinSourceScroll td { text-align: left; padding: 9px 12px; white-space: nowrap; }
+.futbinSourceScroll a { text-decoration: underline; text-underline-offset: 2px; }

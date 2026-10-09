@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>FC ÜV Brain</title>
   <link rel="stylesheet" href="/uv/styles.css" />
-  <link rel="stylesheet" href="/uv/futbin-console.css" />
+  <link rel="stylesheet" href="/uv/futbin-source-panel.css" />
 </head>
 <body>
   <main class="shell">
@@ -14,29 +14,7 @@
       <div class="status" id="statusBadge">System wird geprüft…</div>
     </header>
 
-    <section class="panel futbinConsolePanel" aria-label="FUTBIN FC27 Konsole">
-      <div class="futbinConsoleHead">
-        <div><h2>FUTBIN FC27 · Konsole 🎮</h2>
-        <p>FUTBIN-FC27-Spieler werden automatisch über den erreichbaren JSON-Endpunkt gesucht. PS-Konsolenpreise werden direkt abgefragt. Kein PC, kein FUT.GG und keine JSON-Dateien.</p></div>
-        <strong class="futbinConsoleTag">FUTBIN ONLY</strong>
-      </div>
-      <div class="futbinConsoleControls">
-        <label for="futbinConsoleBudget">Dein Budget in Coins</label>
-        <input type="number" id="futbinConsoleBudget" min="30000" max="100000000" value="100000" step="1000" />
-        <button id="futbinConsoleRefresh" type="button">Aktuelle Spieler anzeigen</button>
-      </div>
-      <p id="futbinConnection" class="futbinConsoleStatus" role="status">FUTBIN-JSON-Suche startet automatisch. Der Browser-Companion ist dafür nicht nötig.</p>
-      <p id="futbinConsoleStatus" class="futbinConsoleStatus" role="status" aria-live="polite">Lade Spieler automatisch von der lokalen API …</p>
-      <div class="tableWrap">
-        <table class="futbinConsoleTable">
-          <thead><tr><th>Spieler / ID</th><th>Konsole</th><th>FUTBIN Coins</th><th>Abrufzeit / FUTBIN-Prüfzeit</th><th>ÜV-Status</th></tr></thead>
-          <tbody id="futbinConsoleRows"><tr><td colspan="5" class="empty">Noch keine geprüften FUTBIN-Konsolenpreise.</td></tr></tbody>
-        </table>
-      </div>
-      <p class="futbinConsoleWarning">Die Website futbin.com meldete HTTP 403, der separat getestete FC27-JSON-Endpunkt auf futbin.org lieferte HTTP 200. Dieser nicht offiziell dokumentierte Zugang kann sich ändern. Preise sind Angebots-/BIN-Snapshots, keine nachgewiesenen Verkäufe. Die App berücksichtigt die EA-Steuer bei zukünftiger ÜV-Berechnung, gibt ohne Verkaufsnachweise derzeit aber keine Kaufempfehlungen frei.</p>
-    </section>
-
-    <section class="generator panel compactGenerator" style="display:none">
+    <section class="generator panel compactGenerator">
       <div class="field grow budgetField">
         <label for="budget">Budget</label>
         <div class="coinInput"><span>🪙</span><input id="budget" type="number" min="30000" step="1000" value="300000" inputmode="numeric" /></div>
@@ -60,6 +38,21 @@
       <div class="generatorNote">Top 100 fürs Budget • Budget frei eingeben oder Schnellbetrag wählen • Speichern nur wenn du es auswählst • FUT.GG + FUTBIN • Demand/Trend vor Rating</div>
     </section>
 
+    <section id="futbinSourcePanel" class="panel hidden" aria-label="FUTBIN-Preisquelle">
+      <div class="tableHead">
+        <div><h2>FUTBIN FC27 · Konsolenpreise</h2>
+        <p id="futbinSourceState" role="status" aria-live="polite">Prüfe die originale ÜV-Preisquelle …</p></div>
+        <strong>FUTBIN ONLY</strong>
+      </div>
+      <p class="futbinSourceNotice">Die bestehende ÜV-App bleibt erhalten. Die Preise stammen ausschließlich aus FUTBIN-PS-JSON-Daten. Niedrigste Angebotspreise sind keine bestätigten Verkäufe. Kaufempfehlungen ohne belegte Verkaufs- und Handelbarkeitssignale bleiben gesperrt.</p>
+      <div class="tableWrap futbinSourceScroll">
+        <table>
+          <thead><tr><th>Spieler / Version</th><th>Rating</th><th>FUTBIN PS</th><th>Preisquelle</th><th>Stand</th></tr></thead>
+          <tbody id="futbinSourceRows"><tr><td colspan="5">FUTBIN-Suche wird vorbereitet …</td></tr></tbody>
+        </table>
+      </div>
+    </section>
+
     <section id="loading" class="panel loading hidden">
       <div class="spinner"></div>
       <div><strong>ÜV Brain baut deine Liste…</strong><p>FUT.GG Livepreise, Nachfrage, FUTBIN-Abgleich, Preissicherheit, Budget-Tier, Karten-Version, Trade-Quality, Wiederholbarkeit, Langfrist-Profit und 100-Slot-Kapitalverteilung laufen.</p></div>
@@ -68,7 +61,7 @@
     <section id="summary" class="summary hidden"></section>
     <section id="notice" class="notice hidden"></section>
 
-    <section class="tablePanel panel" style="display:none">
+    <section class="tablePanel panel">
       <div class="tableHead">
         <div>
           <h2>ÜV-Liste</h2>
@@ -127,7 +120,9 @@
       </div>
     </section>
   </main>
-<!-- Old mixed-source calculator is intentionally disabled in FUTBIN-only mode. -->
-<script src="/uv/futbin-console.js?v=4" type="module"></script>
+<script src="/uv/generate-async-v2105.js"></script>
+<script src="/uv/unsaved-live-v2108.js"></script>
+<script src="/uv/app.js?v=2.10.12-feasibility2" type="module"></script>
+<script src="/uv/futbin-source-panel.js?v=1" type="module"></script>
 </body>
 </html>

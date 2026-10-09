@@ -1,0 +1,38 @@
+FUTBIN ALS EINZIGE PREISQUELLE IN DER URSPRUENGLICHEN FC UEV BRAIN
+=================================================================
+Diese Fassung ist KEINE neue App. Vorhandene UI, Budgetsteuerung, DB-Schema,
+gespeicherte Listen, 100-Karten-Optimizer, Recheck und Rebalance bleiben im
+Originalcode bestehen.
+
+LOKAL STARTEN AUF MESSI
+- Downloads\FC-UV-ORIGINAL-FUTBIN-SOURCE\START-ORIGINAL-UV-FUTBIN.cmd
+- Im Browser: http://127.0.0.1:5188/uv/
+- Quelle: FUTBIN FC27 PS/Konsole, FUTBIN JSON API auf www.futbin.org
+- Spieler und Lowest-BIN-Preise werden automatisch entdeckt, Preise werden
+  höchstens alle 10 Minuten erneut abgefragt.
+- Die Preisquelle erscheint in der existierenden FC-UEV-Ansicht im neuen
+  Quellnachweis-Abschnitt. Originale Bedienelemente sind weiterhin vorhanden.
+- GET /api/uv/status zeigt "priceSourceMode": "FUTBIN_ONLY".
+- GET /api/uv/source/market liefert Spielerkarten im originalen UEV-Datenmodell,
+  mit priceSource FUTBIN_JSON_FC27_PS, priceStatusCode null, und saleVerified false.
+- GET /api/uv/futbin-console/players?budget=100000 zeigt die Preissnapshots.
+
+EINSCHRAENKUNGEN / KEINE FALSCHEN VERSPRECHEN
+- Der nachgewiesene 403 betraf futbin.com. Der getrennte futbin.org-JSON-Weg
+  antwortete mit HTTP 200 auf Messi ueber Windows-curl, nicht ueber Node fetch.
+- Diese JSON-Schnittstelle ist nicht als offiziell unterstuetzte API bestaetigt.
+- Es handelt sich um abgefragte Lowest-BIN-Angebotspreise, NICHT um
+  nachgewiesene EA-Verkaeufe oder bestaetigte Wiederverkaufsgewinne.
+- Die Original-UEV-100-Karten-Logik ist aktuell noch abhaengig von FUT.GG
+  Meta-, Nachfrage-, Handelbarkeits- und historischen Signalen.
+- Deshalb sind neue Kaufempfehlungen, altes Listen-Recheck und Rebalance im
+  FUTBIN_ONLY-Modus aktiv GESPERRT, bis deren Evidenz-Gates nachvollziehbar
+  auf FUTBIN-only-Signale umgestellt und ausreichend geprueft sind.
+- Es werden KEINE geschätzten Gewinne als bestaetigte Verkaufe ausgegeben.
+- Die bisherigen Deplexo- und Render-Projekte sowie "main" bleiben unveraendert.
+- Falls spaeter deployed: Umgebungsvariablen UV_PRICE_SOURCE=FUTBIN_ONLY und
+  GAME_YEAR=27 setzen; Linux-Hosting muss einen funktionierenden curl-Binary
+  besitzen. Das wurde fuer die Produktionsplattform noch NICHT getestet.
+
+Der vorliegende Branch prueft nur die Datenquelle in der bestehenden App,
+ohne den kompletten Trading-Algorithmus bereits als FUTBIN-only zu behaupten.
