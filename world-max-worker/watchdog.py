@@ -169,7 +169,7 @@ def wait_health(timeout=90):
 def start_tunnel():
     log_handle = TUNNEL_LOG.open("w", encoding="utf-8")
     proc = subprocess.Popen(
-        [str(CLOUDFLARED), "tunnel", "--url", f"http://127.0.0.1:{LOCAL_PORT}", "--no-autoupdate"],
+        [str(CLOUDFLARED), "tunnel", "--url", f"http://127.0.0.1:{LOCAL_PORT}", "--protocol", "http2", "--region", "us", "--edge-ip-version", "4", "--no-autoupdate"],
         stdout=log_handle,
         stderr=subprocess.STDOUT,
         text=True,
