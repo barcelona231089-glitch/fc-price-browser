@@ -174,6 +174,7 @@ export function candidateReasons(request: Pick<TrafficMetadata, "type" | "resour
   const html = mime === "text/html" || mime === "application/xhtml+xml";
   const apiPath = /(?:^|\/)(?:api|rest)(?:\/|$)|\/v\d+(?:\/|$)/i.test(request.path);
   const pricePath = /(?:^|[\/_-])(?:prices?|market|sales?|listings?|history)(?:$|[\/_-])/i.test(request.path);
+  if (["fetch", "xhr"].includes(request.resourceType) && (json || apiPath)) reasons.push("Fetch/XHR");
   if (request.type === "websocket") reasons.push("WebSocket");
   if (request.type === "graphql" && !html) reasons.push("GraphQL");
   if (json) reasons.push("JSON-Antwort");
