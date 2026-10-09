@@ -14,6 +14,8 @@ CLOUDFLARED = Path(r"C:\Program Files (x86)\cloudflared\cloudflared.exe")
 TOKEN_FILE = ROOT / "worker.token"
 LOG_FILE = ROOT / "watchdog.log"
 TUNNEL_LOG = ROOT / "tunnel.log"
+REGISTRY_REPO = Path(r"C:\Users\barce\FCWorldMaxRegistry")
+REGISTRY_FILE = REGISTRY_REPO / "worker-registry.json"
 HOST = "db.01m276fzstgaf9hnbarb66613f.demo.vela.run"
 PORT = 23006
 DB = "postgres"
@@ -25,6 +27,42 @@ def log(message):
     print(text, flush=True)
     with LOG_FILE.open("a", encoding="utf-8") as f:
         f.write(text + "\n")
+
+def cleanup_orphans():
+    # A Scheduled Task stop does not reliably terminate child uvicorn/cloudflared
+    # processes on Windows. Clean only this standby stack before taking ownership.
+    script = (
+        "Get-CimInstance Win32_Process | Where-Object { "
+        "($_.CommandLine -match '--port 18082') -or "
+        "($_.Name -eq 'cloudflared.exe' -and $_.CommandLine -match '127\\.0\\.0\\.1:18082') "
+        "} | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }"
+    )
+    subprocess.run(
+        ["powershell.exe", "-NoProfile", "-Command", script],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        creationflags=subprocess.CREATE_NO_WINDOW,
+        check=False,
+    )
+
+def kill_tree(proc):
+    if proc is None or proc.poll() is not None:
+        return
+    subprocess.run(
+        ["taskkill", "/PID", str(proc.pid), "/T", "/F"],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        creationflags=subprocess.CREATE_NO_WINDOW,
+        check=False,
+    )
+
+def tunnel_rate_limited():
+    try:
+        text = TUNNEL_LOG.read_text(encoding="utf-8", errors="replace")
+    except Exception:
+        return False
+    lower = text.lower()
+    return "status 429" in lower or "error code: 1015" in lower
 
 def ensure_token():
     if TOKEN_FILE.exists():
@@ -43,6 +81,29 @@ def pg_credentials():
         raise RuntimeError("PGPASS_ENTRY_NOT_FOUND")
     parts = line.split(":")
     return parts[3], ":".join(parts[4:])
+
+def publish_registry(url):
+    payload = (
+        '{\n'
+        f'  "workerUrl": "{url}",\n'
+        '  "enabled": true,\n'
+        '  "shadowMode": true,\n'
+        '  "productionConfirmed": false,\n'
+        f'  "updatedAt": "{time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}"\n'
+        '}\n'
+    )
+    if not REGISTRY_REPO.exists():
+        raise RuntimeError("REGISTRY_REPO_MISSING")
+    subprocess.run(["git", "-C", str(REGISTRY_REPO), "fetch", "origin", "worldmax-registry"], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, creationflags=subprocess.CREATE_NO_WINDOW)
+    subprocess.run(["git", "-C", str(REGISTRY_REPO), "reset", "--hard", "origin/worldmax-registry"], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, creationflags=subprocess.CREATE_NO_WINDOW)
+    REGISTRY_FILE.write_text(payload, encoding="utf-8")
+    subprocess.run(["git", "-C", str(REGISTRY_REPO), "add", "worker-registry.json"], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, creationflags=subprocess.CREATE_NO_WINDOW)
+    diff = subprocess.run(["git", "-C", str(REGISTRY_REPO), "diff", "--cached", "--quiet"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, creationflags=subprocess.CREATE_NO_WINDOW)
+    if diff.returncode == 0:
+        return
+    subprocess.run(["git", "-C", str(REGISTRY_REPO), "commit", "-m", "Refresh World-Max tunnel registry"], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, creationflags=subprocess.CREATE_NO_WINDOW)
+    subprocess.run(["git", "-C", str(REGISTRY_REPO), "push", "origin", "worldmax-registry"], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, creationflags=subprocess.CREATE_NO_WINDOW)
+
 
 def upsert_runtime_config(url, token):
     import psycopg
@@ -127,6 +188,8 @@ def wait_tunnel_url(proc, timeout=90):
         match = pattern.search(text)
         if match:
             return match.group(0)
+        if tunnel_rate_limited():
+            return None
         if proc.poll() is not None:
             return None
         time.sleep(1)
@@ -150,26 +213,47 @@ def wait_public_health(url, timeout=45):
 def main():
     token = ensure_token()
     log("World-Max watchdog starting")
+    cleanup_orphans()
+    backoff = 5
     while True:
         worker = start_worker(token)
         if not wait_health():
             log("Worker health failed, restarting")
-            worker.kill()
-            time.sleep(5)
+            kill_tree(worker)
+            time.sleep(backoff)
             continue
         log("CUDA Chronos worker healthy")
         tunnel, tunnel_log = start_tunnel()
         url = wait_tunnel_url(tunnel)
         if not url:
-            log("Tunnel URL missing, restarting pair")
-            tunnel.kill()
+            limited = tunnel_rate_limited()
+            log("Tunnel URL missing" + (" (Cloudflare rate limited)" if limited else "") + ", restarting pair")
+            kill_tree(tunnel)
             tunnel_log.close()
-            worker.kill()
-            time.sleep(5)
+            kill_tree(worker)
+            if limited:
+                backoff = min(max(backoff * 2, 30), 300)
+            time.sleep(backoff)
             continue
+        if not wait_public_health(url):
+            limited = tunnel_rate_limited()
+            log("Public tunnel health failed" + (" (Cloudflare rate limited)" if limited else "") + ", recycling pair")
+            kill_tree(tunnel)
+            tunnel_log.close()
+            kill_tree(worker)
+            if limited:
+                backoff = min(max(backoff * 2, 30), 300)
+            time.sleep(backoff)
+            continue
+        backoff = 5
+        try:
+            publish_registry(url)
+            log("Public registry updated after tunnel health passed")
+        except Exception as exc:
+            log("Public registry update failed: " + str(exc))
         try:
             upsert_runtime_config(url, token)
-            log("Runtime config updated in PostgreSQL")
+            log("Runtime config updated in PostgreSQL after public health passed")
         except Exception as exc:
             log("Runtime config update failed: " + str(exc))
 
@@ -181,9 +265,9 @@ def main():
 
         log("Worker or tunnel unhealthy, recycling pair")
         if worker.poll() is None:
-            worker.kill()
+            kill_tree(worker)
         if tunnel.poll() is None:
-            tunnel.kill()
+            kill_tree(tunnel)
         tunnel_log.close()
         time.sleep(5)
 
