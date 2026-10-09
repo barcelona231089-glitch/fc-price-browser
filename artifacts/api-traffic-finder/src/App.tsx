@@ -352,6 +352,7 @@ function Home() {
   const [importedResult, setImportedResult] = useState<TrafficAnalysisResult | null>(null);
   const [harError, setHarError] = useState('');
   const [companionSeen, setCompanionSeen] = useState(false);
+  const [futbinPrices, setFutbinPrices] = useState<Array<{ playerId: string; pagePath: string; capturedAt: string; prices: Array<{ platform: string; price: number; evidence: string }> }>>([]);
   const [companionDiagnostics, setCompanionDiagnostics] = useState<{ seen: number; filtered: number; kept: number; lastEvent: string | null; version: string } | null>(null);
   const analyze = useAnalyzeTraffic();
 
@@ -359,6 +360,17 @@ function Home() {
     const receive = (event: MessageEvent) => {
       if (event.source !== window || event.origin !== window.location.origin || event.data?.source !== 'atf-companion' || event.data?.type !== 'ATF_TRAFFIC') return;
       setCompanionSeen(true);
+      const captures = Array.isArray(event.data.prices) ? event.data.prices : [];
+      setFutbinPrices(captures.filter((p: any) =>
+        p?.source === 'futbin' && p?.year === 27 && /^\d+$/.test(String(p.playerId)) &&
+        typeof p.pagePath === 'string' && /^\/27\/player\/\d+/.test(p.pagePath) &&
+        !Number.isNaN(Date.parse(p.capturedAt)) && Array.isArray(p.prices)
+      ).map((p: any) => ({
+        playerId: String(p.playerId), pagePath: p.pagePath, capturedAt: p.capturedAt,
+        prices: p.prices.filter((v: any) => ['ps', 'pc'].includes(v?.platform) &&
+          Number.isInteger(v.price) && v.price >= 100 && v.price <= 15000000 &&
+          v.evidence === 'visible-price-box')
+      })).filter((p: any) => p.prices.length > 0));
       const d = event.data.diagnostics;
       if (d && typeof d.seen === 'number' && typeof d.filtered === 'number' && typeof d.kept === 'number') setCompanionDiagnostics({ seen: d.seen, filtered: d.filtered, kept: d.kept, lastEvent: typeof d.lastEvent === 'string' ? d.lastEvent : null, version: String(d.version ?? '?') });
       const local = resultFromLocal(Array.isArray(event.data.items) ? event.data.items : []);
@@ -504,6 +516,18 @@ function Home() {
               </button>
               <span>{!companionSeen ? 'Companion nicht verbunden. Erweiterung prüfen und diese Seite neu laden.' : companionDiagnostics ? `Companion v${companionDiagnostics.version} verbunden | FUTBIN-Ereignisse: ${companionDiagnostics.seen} | Ausgefiltert: ${companionDiagnostics.filtered} | Datenrequests: ${companionDiagnostics.kept} | Letztes Ereignis: ${companionDiagnostics.lastEvent ? new Date(companionDiagnostics.lastEvent).toLocaleTimeString('de-DE') : 'keines'}` : 'Companion verbunden, aber noch ohne Diagnosedaten. Bitte Erweiterung auf v1.2 aktualisieren.'}</span>
             </div>
+            <section aria-label="FUTBIN FC27 sichtbare Preise" style={{ margin: '16px 0' }}>
+              <h3>FUTBIN FC27: sichtbare Coinpreise</h3>
+              <p>{futbinPrices.length ? `Erfasste Spieler: ${futbinPrices.length}. Sichtbare Angebotspreise, keine bestätigten Verkäufe oder Live-API.` : 'Noch keine sichtbaren Coinpreise erfasst. Öffne eine FUTBIN-FC27-Spielerkarte und aktualisiere die lokale Browser-Erfassung.'}</p>
+              {futbinPrices.length > 0 && <div className="table-scroll"><table>
+                <thead><tr><th>Spieler-ID</th><th>Plattform</th><th>Coins</th><th>Erfasst</th><th>Nachweis</th></tr></thead>
+                <tbody>{futbinPrices.flatMap(p => p.prices.map(v => <tr key={p.playerId + ':' + v.platform}>
+                  <td>{p.playerId}</td><td>{v.platform.toUpperCase()}</td>
+                  <td>{v.price.toLocaleString('de-DE')}</td>
+                  <td>{new Date(p.capturedAt).toLocaleString('de-DE')}</td><td>FUTBIN HTML-Preisanzeige</td>
+                </tr>))}</tbody>
+              </table></div>}
+            </section>
             {harError && <div className="error-notice" role="alert"><AlertCircle size={17} /><div><strong>HAR-Import fehlgeschlagen</strong><span>{harError}</span></div></div>}
           </form>
           <div className="privacy-note"><ShieldCheck size={15} /><span>Abfrageparameter werden entfernt. Im interaktiven Modus bedienst du die Website selbst; nichts wird automatisch angeklickt. JSON-Antworten werden nur kurz für Feldnamen und Datentypen ausgewertet. Antwortwerte, Bodies, Header, Cookies und Tokens werden nicht gespeichert oder exportiert.</span></div>
