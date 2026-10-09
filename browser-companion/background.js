@@ -49,7 +49,7 @@ chrome.webRequest.onCompleted.addListener(d=>{
 chrome.runtime.onMessage.addListener((msg,sender,sendResponse)=>{
   if(msg?.type==="ATF_FUTBIN_PRICE"){
     const p=msg.payload;
-    if(sender.url?.startsWith("https://") && /(^|\\.)futbin\\.com$/.test(new URL(sender.url).hostname) && p?.source==="futbin" && p?.year===27 && /^\\d+$/.test(String(p.playerId)) && Array.isArray(p.prices)){
+    if(sender.url?.startsWith("https://") && /(^|\.)futbin\.com$/.test(new URL(sender.url).hostname) && p?.source==="futbin" && p?.year===27 && /^\d+$/.test(String(p.playerId)) && Array.isArray(p.prices)){
       prices=prices.filter(x=>!(x.playerId===p.playerId && x.pagePath===p.pagePath));
       prices.push(p); prices=prices.slice(-500); persist();
     }
