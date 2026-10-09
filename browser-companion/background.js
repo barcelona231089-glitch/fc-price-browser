@@ -63,8 +63,8 @@ chrome.runtime.onMessage.addListener((msg,sender,sendResponse)=>{
       sendResponse({ok:true});
       return;
     }
-    sendResponse({items:items.slice(),prices:prices.slice(),diagnostics:{seen,filtered,kept:items.length,lastEvent,version:"1.4.0"}});
-  }).catch(()=>sendResponse({items:[],diagnostics:{seen:0,filtered:0,kept:0,lastEvent:null,version:"1.4.0"}}));
+    sendResponse({items:items.slice(),prices:prices.slice(),diagnostics:{seen,filtered,kept:items.length,lastEvent,version:"1.5.0"}});
+  }).catch(()=>sendResponse({items:[],diagnostics:{seen:0,filtered:0,kept:0,lastEvent:null,version:"1.5.0"}}));
   return true;
 });
 

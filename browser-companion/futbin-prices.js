@@ -22,11 +22,16 @@
       prices.push({ platform, price, evidence: 'visible-price-box' });
     }
     if (!prices.length) return;
+    const visibleName = String(document.querySelector('h1')?.textContent || '')
+      .replace(/\s+/g, ' ').trim();
+    const playerName = visibleName.length >= 2 && visibleName.length <= 90 ? visibleName : null;
     const payload = { source: 'futbin', year, playerId, pagePath: location.pathname,
-      capturedAt: new Date().toISOString(), prices };
-    const json = JSON.stringify(payload);
-    if (json === last) return;
-    last = json;
+      playerName, capturedAt: new Date().toISOString(), prices };
+    // Deduplicate by actual visible values, not capturedAt (which changes every scan).
+    // A real page reload gets a fresh timestamp because this content script restarts.
+    const fingerprint = JSON.stringify({ year, playerId, playerName, prices });
+    if (fingerprint === last) return;
+    last = fingerprint;
     chrome.runtime.sendMessage({ type: 'ATF_FUTBIN_PRICE', payload }, () => void chrome.runtime.lastError);
   }
   scan();
