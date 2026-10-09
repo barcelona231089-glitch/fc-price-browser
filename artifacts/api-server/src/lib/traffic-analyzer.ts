@@ -358,6 +358,40 @@ export async function analyzeTraffic(inputUrl: string, captureDurationSeconds = 
     } catch {
       warnings.push("Die Seite wurde nicht vollständig geladen. Angezeigt werden nur tatsächlich beobachtete Requests.");
     }
+    // Follow a few ordinary, same-origin public links to reveal lazy-loaded market APIs.
+    // No forms, logins, guessed endpoints, CAPTCHA interaction or cross-site crawling.
+    const landing = new URL(url);
+    const links = await page.locator('a[href]').evaluateAll(nodes => nodes.map(node => ({
+      href: node.getAttribute('href') || '',
+      label: (node.textContent || '').slice(0, 120),
+    }))).catch(() => [] as Array<{ href: string; label: string }>);
+    const explored = new Set<string>([landing.origin + landing.pathname]);
+    const discoveryLinks = links.filter(link => {
+      try {
+        const target = new URL(link.href, landing);
+        if (target.origin !== landing.origin || target.search || target.hash || !/^https?:$/.test(target.protocol)) return false;
+        if (!/(?:player|price|market|transfer|sale|squad|card|listing)/i.test(target.pathname + ' ' + link.label)) return false;
+        if (/(?:login|signin|logout|account|auth|purchase|checkout|delete|admin|captcha|challenge)/i.test(target.pathname)) return false;
+        const key = target.origin + target.pathname;
+        if (explored.has(key)) return false;
+        explored.add(key);
+        return true;
+      } catch { return false; }
+    }).slice(0, 3);
+    const landingBlocked = warnings.some(w => /HTTP (?:401|403|429)/.test(w));
+    if (!landingBlocked) {
+      for (const link of discoveryLinks) {
+        try {
+          const response = await page.goto(new URL(link.href, landing).href, { waitUntil: 'domcontentloaded', timeout: 8000 });
+          if (response && [401, 403, 429].includes(response.status())) {
+            warnings.push('Automatische Erkundung gestoppt: Zugriffsschutz oder Begrenzung.');
+            break;
+          }
+          await page.waitForTimeout(1200);
+        } catch { warnings.push('Eine öffentliche Unterseite konnte nicht vollständig untersucht werden.'); }
+      }
+    }
+    if (discoveryLinks.length && !landingBlocked) warnings.push(`Automatische Erkundung: bis zu ${discoveryLinks.length} öffentliche Markt-Unterseiten besucht; API-Kandidaten müssen weiterhin geprüft werden.`);
     await page.waitForTimeout(captureDurationSeconds * 1000);
     await capture.drain();
     const snapshot = capture.snapshot();
