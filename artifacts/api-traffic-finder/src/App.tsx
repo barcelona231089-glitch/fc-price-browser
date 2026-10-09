@@ -517,12 +517,12 @@ function Home() {
               <span>{!companionSeen ? 'Companion nicht verbunden. Erweiterung prüfen und diese Seite neu laden.' : companionDiagnostics ? `Companion v${companionDiagnostics.version} verbunden | FUTBIN-Ereignisse: ${companionDiagnostics.seen} | Ausgefiltert: ${companionDiagnostics.filtered} | Datenrequests: ${companionDiagnostics.kept} | Letztes Ereignis: ${companionDiagnostics.lastEvent ? new Date(companionDiagnostics.lastEvent).toLocaleTimeString('de-DE') : 'keines'}` : 'Companion verbunden, aber noch ohne Diagnosedaten. Bitte Erweiterung auf v1.2 aktualisieren.'}</span>
             </div>
             <section aria-label="FUTBIN FC27 sichtbare Preise" style={{ margin: '16px 0' }}>
-              <h3>FUTBIN FC27: sichtbare Coinpreise</h3>
-              <p>{futbinPrices.length ? `Erfasste Spieler: ${futbinPrices.length}. Sichtbare Angebotspreise, keine bestätigten Verkäufe oder Live-API.` : 'Noch keine sichtbaren Coinpreise erfasst. Öffne eine FUTBIN-FC27-Spielerkarte und aktualisiere die lokale Browser-Erfassung.'}</p>
+              <h3>FUTBIN FC27: Konsolenpreise (PlayStation / Xbox)</h3>
+              <p>{futbinPrices.length ? `Erfasste Spieler: ${futbinPrices.length}. PS-/Xbox-Konsolenpreise laut FUTBIN, keine bestätigten Verkäufe oder Live-API.` : 'Noch keine sichtbaren Coinpreise erfasst. Öffne eine FUTBIN-FC27-Spielerkarte und aktualisiere die lokale Browser-Erfassung.'}</p>
               {futbinPrices.length > 0 && <div className="table-scroll"><table>
-                <thead><tr><th>Spieler-ID</th><th>Plattform</th><th>Coins</th><th>Erfasst</th><th>Nachweis</th></tr></thead>
-                <tbody>{futbinPrices.flatMap(p => p.prices.map(v => <tr key={p.playerId + ':' + v.platform}>
-                  <td>{p.playerId}</td><td>{v.platform.toUpperCase()}</td>
+                <thead><tr><th>Spieler-ID</th><th>Konsole</th><th>Coins</th><th>Erfasst</th><th>Nachweis</th></tr></thead>
+                <tbody>{futbinPrices.flatMap(p => p.prices.filter(v => v.platform === 'ps').map(v => <tr key={p.playerId + ':' + v.platform}>
+                  <td>{p.playerId}</td><td>PS / Xbox (FUTBIN)</td>
                   <td>{v.price.toLocaleString('de-DE')}</td>
                   <td>{new Date(p.capturedAt).toLocaleString('de-DE')}</td><td>FUTBIN HTML-Preisanzeige</td>
                 </tr>))}</tbody>
