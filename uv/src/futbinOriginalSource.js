@@ -1,9 +1,9 @@
 // Original FC ÜV Brain FUTBIN-only primary *price* source.
 // FUTBIN Lowest BIN is a listing quote, NEVER evidence of an actual sale.
-import { originalUvFutbinPriceFeed } from './futbinConsoleApi.js';
+import { originalUvFutbinPriceFeed } from './futbinFeedInstance.js';
 
 export function isFutbinOnlyUvMode() {
-  return String(process.env.UV_PRICE_SOURCE || '').trim().toUpperCase() === 'FUTBIN_ONLY';
+  return true;
 }
 
 const positiveInt = x => Number.isSafeInteger(Number(x)) && Number(x) > 0 ? Number(x) : null;
@@ -21,7 +21,8 @@ export function mapFutbinQuoteToUvCard(row) {
   let cardType;
   if (type.includes('non rare') || type.includes('common')) cardType = 'Base Common';
   else if (type.includes('gold rare') || type.includes('silver rare')) cardType = 'Base Rare';
-  else cardType = 'Special';
+  else if (type && !/unknown|unbekannt/.test(type)) cardType = 'Special';
+  else return null;
   const price = Number(row.coins);
   return {
     eaId: Number(row.resourceId), id: Number(row.playerId),
@@ -32,7 +33,7 @@ export function mapFutbinQuoteToUvCard(row) {
     nation: row.nation || null, league: row.league || null,
     cardType, rarityName: row.cardType || null,
     price, futbinPrice: price,
-    priceStatusCode: null, // FUTBIN Lowest BIN is not a FUT.GG tradeability confirmation.
+    priceStatusCode: null, // An observed listing is not a completed sale.
     priceSource: 'FUTBIN_JSON_FC27_PS',
     priceEvidence: 'lowest_bin_listing_only',
     priceCheckedAt: row.capturedAt,
@@ -40,6 +41,8 @@ export function mapFutbinQuoteToUvCard(row) {
     futbinChecked: true,
     saleVerified: false, futbinSoldSampleCount: 0,
     marketTradeableConfirmed: false,
+    source: 'FUTBIN', gameYear: 27, platform: 'console',
+    futbinGamesCount: null, salesHistoryAvailable: false,
     salesProbability: null,
     url: 'https://www.futbin.com/27/player/' + Number(row.playerId)
   };

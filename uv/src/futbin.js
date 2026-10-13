@@ -1,4 +1,7 @@
-import { FUTBIN_PARSE_API_BASE, FUTBIN_CROSSCHECK_LIMIT, FUTBIN_SEARCH_ENDPOINT } from './config.js';
+// Historical adapter, never imported by the FUTBIN-only app router.
+import { FUTBIN_CROSSCHECK_LIMIT, GAME_YEAR } from './config.js';
+const FUTBIN_PARSE_API_BASE = String(process.env.FUTBIN_PARSE_API_BASE || 'https://api.parse.bot/scraper/21963078-8a17-40ff-a896-9b0b0ec3e828').replace(/\/$/, '');
+const FUTBIN_SEARCH_ENDPOINT = String(process.env.FUTBIN_SEARCH_ENDPOINT || `search_players_fc${GAME_YEAR}`);
 import { clamp, fetchJson, mapLimit, normalizeName } from './utils.js';
 import { extractFutbinStructuredEvidence } from './futbinEvidence.js';
 import { getDirectFutbinCards, getFutbinDirectStatus, isDirectFutbinEnabled } from './futbinDirect.js';

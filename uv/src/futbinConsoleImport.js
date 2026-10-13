@@ -82,7 +82,7 @@ export function analyzeFutbinConsoleExport(exportData, { now = Date.now(), budge
     confirmedSales: 0, recommendations: [], recommendationCount: 0,
     readyForTrading: false, status: 'BLOCKED_NO_CONFIRMED_SALES',
     cards, notice: note,
-    safeguards: ['no_pc', 'no_futgg', 'no_parse', 'no_fallback',
+    safeguards: ['no_pc', 'single_source', 'no_parse', 'no_fallback',
       'no_unverified_sales', 'no_stale_listings', 'no_fabricated_buy_prices']
   };
 }

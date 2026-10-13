@@ -4,10 +4,13 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "start": "node ./v1069965LeakHotfixL7Bootstrap.mjs",
-    "test": "node --test test/*.test.mjs uv/test/*.test.js"
+    "start": "node scripts/run-original-uv-futbin.mjs",
+    "test": "node --test test/*.test.mjs uv/test/*.test.js",
+    "test:uv": "node --test uv/test/*.test.js",
+    "test:ui": "node scripts/test-original-uv-ui.mjs"
   },
   "engines": { "node": ">=20" },
+  "devDependencies": { "jsdom": "26.1.0" },
   "dependencies": {
     "express": "^4.21.2",
     "pg": "^8.13.1",

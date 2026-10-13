@@ -72,7 +72,7 @@ export function recheckRecommendation(previous = {}, fresh = null, now = new Dat
     return {
       status: 'MISSING',
       actionable: false,
-      reasons: ['Kein aktueller FUT.GG-Preis für diese Kartenposition verfügbar.'],
+      reasons: ['Kein aktueller Marktpreis für diese Kartenposition verfügbar.'],
       previousBuyPrice: oldBuy,
       previousSellPrice: oldSell,
       currentPrice: null,

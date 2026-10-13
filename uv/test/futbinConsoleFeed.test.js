@@ -63,7 +63,7 @@ test('auto API delivers genuine console snapshots, rejects PC, and never fabrica
     assert.equal(result.cards[0].priceCoins,52000);
     assert.equal(result.staleCards.length,1);
     assert.equal(result.recommendationCount,0);
-    const counterfeit = await post(pack([{...mk('9',3000), source:'FUT.GG'}]));
+    const counterfeit = await post(pack([{...mk('9',3000), source:'OTHER_PROVIDER'}]));
     assert.equal(counterfeit.status,200);
     assert.equal((await counterfeit.json()).invalid,1);
     result=await get();

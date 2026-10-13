@@ -17,12 +17,20 @@ export function parseCurlResponse(stdout) {
   const status = Number(match[1]);
   if (status < 100 || status > 599) throw new Error('curl HTTP status invalid');
   const contentType = match[2].trim();
-  const body = stdout.slice(0, index);
+  let body = stdout.slice(0, index);
+  let retryAfter = null;
+  while(/^HTTP\/\S+ \d{3}/.test(body)) {
+    const split=body.match(/\r?\n\r?\n/);
+    if(!split) break;
+    const header=body.slice(0,split.index);
+    retryAfter=header.match(/^retry-after:\s*(.+)$/im)?.[1]?.trim() || retryAfter;
+    body=body.slice(split.index+split[0].length);
+  }
   return {
     ok: status >= 200 && status < 300,
     status,
     headers: {
-      get: name => String(name).toLowerCase() === 'content-type' ? contentType : null
+      get: name => String(name).toLowerCase() === 'content-type' ? contentType : String(name).toLowerCase() === 'retry-after' ? retryAfter : null
     },
     async json() { return JSON.parse(body); },
     async text() { return body; }
@@ -37,7 +45,7 @@ export async function futbinCurlFetch(url, _options = {}, execute = execAsync) {
   }
   const bin = process.platform === 'win32' ? 'curl.exe' : 'curl';
   const args = [
-    '--silent', '--show-error', '--compressed',
+    '--silent', '--show-error', '--compressed', '--include',
     '--proto', '=https',
     '--connect-timeout', '8', '--max-time', '15',
     '--header', 'Accept: application/json',
@@ -45,7 +53,7 @@ export async function futbinCurlFetch(url, _options = {}, execute = execAsync) {
     '--', url
   ];
   const { stdout } = await execute(bin, args, {
-    timeout: 22_000, maxBuffer: MAX_BYTES, encoding: 'utf8'
+    signal: _options.signal, timeout: 22_000, maxBuffer: MAX_BYTES, encoding: 'utf8'
   });
   return parseCurlResponse(stdout);
 }

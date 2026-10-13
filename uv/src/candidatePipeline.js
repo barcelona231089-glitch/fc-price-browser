@@ -196,7 +196,7 @@ function hasAdaptiveRelaxationEvidence(card = {}, ratingGap = 1, mode = 'STRICT'
   if (verified && liquid >= (feasibilityMode ? 54 : balancedMode ? 62 : 68)) return true;
 
   // FUTBIN Games/Sales are optional. When those structured fields are missing,
-  // live FUT.GG demand + sale-likelihood + trade-quality + repeatability may
+  // live Marktquelle demand + sale-likelihood + trade-quality + repeatability may
   // still prove that a cheaper card is liquid enough for a 100-slot portfolio.
   if (feasibilityMode) {
     // Live-market fallback for hosts where FUTBIN is not configured: require a
@@ -269,7 +269,7 @@ function allocatorAwareFeasibility(cards = [], budget, count = 100) {
  *
  * This matters for 300k / 100 portfolios late in the FC cycle: rating is no
  * longer a useful proxy for liquidity by itself. A cheap 82+ Rare with strong
- * FUT.GG usage/popularity, healthy price activity/trend and sale-likelihood can
+ * Marktquelle usage/popularity, healthy price activity/trend and sale-likelihood can
  * be a better manual ÜV card than an expensive 90+ that consumes four slots of
  * budget.
  */
@@ -938,7 +938,7 @@ export function deriveAdaptiveMarketPolicy(cards = [], { budget, count = 100, ga
     demandGateBelowRating: budgetRelaxed ? preferredMinimumRating : null,
     specialDemandExceptionRating,
     reason: budgetRelaxed
-      ? `Live-Markt ${promoMarketRegime}: bevorzugt ${preferredMinimumRating}+, für exakt ${count} Slots wird bis ${chosenFloor} gelockert. Unter dem bevorzugten Floor kommen nur demand-belegte Karten durch (FUT.GG Usage/Momentum, FUTBIN Games/Sales, Popularität, Trend/Performance).`
+      ? `Live-Markt ${promoMarketRegime}: bevorzugt ${preferredMinimumRating}+, für exakt ${count} Slots wird bis ${chosenFloor} gelockert. Unter dem bevorzugten Floor kommen nur demand-belegte Karten durch (Marktquelle Usage/Momentum, FUTBIN Games/Sales, Popularität, Trend/Performance).`
       : `Live-Markt ${promoMarketRegime}: ${count} Slots sind mit dem bevorzugten ${preferredMinimumRating}+-Band im Budget machbar.`
   };
 }

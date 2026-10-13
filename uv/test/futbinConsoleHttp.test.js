@@ -40,7 +40,7 @@ test('FUTBIN-only console endpoint serves public UI and safely analyzes exports'
     assert.equal(result.confirmedSales,0);
     assert.equal(response.headers.get('cache-control'),'no-store');
 
-    const invalid = await analyze({budget:100000,export:{source:'FUT.GG',prices:[]}});
+    const invalid = await analyze({budget:100000,export:{source:'OTHER_PROVIDER',prices:[]}});
     assert.equal(invalid.status,400);
   } finally {
     await new Promise((resolve,reject)=>server.close(error=>error?reject(error):resolve()));

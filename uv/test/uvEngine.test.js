@@ -526,7 +526,7 @@ test('v2.1 special target rises for genuinely hot in-packs promos, not supply-on
 });
 
 
-test('v2.3 sellability score rewards FUT.GG/FUTBIN games, sales, popularity and healthy trend', () => {
+test('v2.3 sellability score rewards OTHER_PROVIDER/FUTBIN games, sales, popularity and healthy trend', () => {
   const base = {
     gameplayDemandScore: 60, popularityScore: 60, saleLikelihoodIndex: 60, turnoverIndex: 60,
     tradeQualityScore: 70, repeatabilityScore: 65, demandDataConfidence: 55, confidenceScore: 65,
@@ -717,7 +717,7 @@ test('v2.7 budget tier profiles change portfolio shape by total budget, not rati
   assert.ok(p500.specialTargetRatio < p1m.specialTargetRatio);
   assert.ok(p1m.specialTargetRatio < p3m.specialTargetRatio);
   assert.ok(p3m.specialTargetRatio < p12m.specialTargetRatio);
-  assert.equal(p12m.livePriceSource, 'FUT.GG');
+  assert.equal(p12m.livePriceSource, 'FUTBIN');
   assert.equal(p12m.referenceMode, 'observed-shape-soft-prior');
 });
 

@@ -2,6 +2,14 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { parseCurlResponse, futbinCurlFetch } from '../src/futbinCurlTransport.js';
 
+test('curl response headers do not corrupt JSON and Retry-After survives header parsing',async()=>{
+  const ok=parseCurlResponse('HTTP/1.1 200 Connection established\r\n\r\nHTTP/2 200\r\ncontent-type: application/json\r\n\r\n{"data":[1]}\n__FUTBIN_HTTP_STATUS__:200|application/json');
+  assert.deepEqual((await ok.json()).data,[1]);
+  const limited=parseCurlResponse('HTTP/2 429\r\nRetry-After: 7200\r\n\r\n{}\n__FUTBIN_HTTP_STATUS__:429|application/json');
+  assert.equal(limited.headers.get('retry-after'),'7200');
+  assert.equal(limited.ok,false);
+});
+
 test('curl transport parses successful JSON and blocks invalid output',async()=>{
   const result=parseCurlResponse('{"data":[{"ID":506}]}\n__FUTBIN_HTTP_STATUS__:200|application/json');
   assert.equal(result.ok,true);

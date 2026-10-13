@@ -1,38 +1,111 @@
-FUTBIN ALS EINZIGE PREISQUELLE IN DER URSPRUENGLICHEN FC UEV BRAIN
-=================================================================
-Diese Fassung ist KEINE neue App. Vorhandene UI, Budgetsteuerung, DB-Schema,
-gespeicherte Listen, 100-Karten-Optimizer, Recheck und Rebalance bleiben im
-Originalcode bestehen.
+FC ÜV Brain – bestehende App, FUTBIN-only
+=======================================
 
-LOKAL STARTEN AUF MESSI
-- Downloads\FC-UV-ORIGINAL-FUTBIN-SOURCE\START-ORIGINAL-UV-FUTBIN.cmd
-- Im Browser: http://127.0.0.1:5188/uv/
-- Quelle: FUTBIN FC27 PS/Konsole, FUTBIN JSON API auf www.futbin.org
-- Spieler und Lowest-BIN-Preise werden automatisch entdeckt, Preise werden
-  höchstens alle 10 Minuten erneut abgefragt.
-- Die Preisquelle erscheint in der existierenden FC-UEV-Ansicht im neuen
-  Quellnachweis-Abschnitt. Originale Bedienelemente sind weiterhin vorhanden.
-- GET /api/uv/status zeigt "priceSourceMode": "FUTBIN_ONLY".
-- GET /api/uv/source/market liefert Spielerkarten im originalen UEV-Datenmodell,
-  mit priceSource FUTBIN_JSON_FC27_PS, priceStatusCode null, und saleVerified false.
-- GET /api/uv/futbin-console/players?budget=100000 zeigt die Preissnapshots.
+Stand der vorbereiteten Integration: 13.10.2026.
+Branch: uv-original-futbin-source-20261009.
+Basis: 60e8abef1bc90c12f7484d58520a7281bc8bb577.
 
-EINSCHRAENKUNGEN / KEINE FALSCHEN VERSPRECHEN
-- Der nachgewiesene 403 betraf futbin.com. Der getrennte futbin.org-JSON-Weg
-  antwortete mit HTTP 200 auf Messi ueber Windows-curl, nicht ueber Node fetch.
-- Diese JSON-Schnittstelle ist nicht als offiziell unterstuetzte API bestaetigt.
-- Es handelt sich um abgefragte Lowest-BIN-Angebotspreise, NICHT um
-  nachgewiesene EA-Verkaeufe oder bestaetigte Wiederverkaufsgewinne.
-- Die Original-UEV-100-Karten-Logik ist aktuell noch abhaengig von FUT.GG
-  Meta-, Nachfrage-, Handelbarkeits- und historischen Signalen.
-- Deshalb sind neue Kaufempfehlungen, altes Listen-Recheck und Rebalance im
-  FUTBIN_ONLY-Modus aktiv GESPERRT, bis deren Evidenz-Gates nachvollziehbar
-  auf FUTBIN-only-Signale umgestellt und ausreichend geprueft sind.
-- Es werden KEINE geschätzten Gewinne als bestaetigte Verkaufe ausgegeben.
-- Die bisherigen Deplexo- und Render-Projekte sowie "main" bleiben unveraendert.
-- Falls spaeter deployed: Umgebungsvariablen UV_PRICE_SOURCE=FUTBIN_ONLY und
-  GAME_YEAR=27 setzen; Linux-Hosting muss einen funktionierenden curl-Binary
-  besitzen. Das wurde fuer die Produktionsplattform noch NICHT getestet.
+Auf Messi starten:
+  START-ORIGINAL-UV-FUTBIN.cmd
+  oder npm start
+  Browser: http://127.0.0.1:5188/uv/
 
-Der vorliegende Branch prueft nur die Datenquelle in der bestehenden App,
-ohne den kompletten Trading-Algorithmus bereits als FUTBIN-only zu behaupten.
+Bedienung:
+1. Budget eingeben (30.000 bis 100.000.000 Coins).
+2. Preisbereich und optional Mindestwerte für Games/Sales setzen.
+3. Liste generieren. Es werden bis zu 100 Positionen innerhalb des Budgets
+   ausgewählt. Das ursprüngliche Design und der vorhandene Budgetallocator
+   mit maximal zwei Exemplaren pro genauer Kartenversion bleiben erhalten.
+4. Mit „Liste speichern“ bleibt die Liste nach einem Neustart erhalten.
+   Ohne Häkchen ist sie nur in der laufenden Sitzung prüfbar (maximal 24 h).
+5. „Liste live prüfen“ kontrolliert die vorhandenen Positionen anhand der
+   zuletzt abgerufenen FUTBIN-Preise. Die Abrufpause wird dabei eingehalten.
+   Neu ausbalancieren berechnet die Liste erneut mit ihrem Budget/Filter.
+
+Datenlage – tatsächlich auf Messi geprüft am 09.10.2026, 21:04 UTC:
+  FUTBIN getFilteredPlayers: HTTP 200, JSON-Spielerlisten.
+  FUTBIN getPlayersPrice: HTTP 200, PS-Konsolen-Angebotspreise.
+  FUTBIN /27/pgp: HTTP 403.
+  FUTBIN /27/sales/506?platform=ps: HTTP 403.
+  FC27-Variante eines historischen getPlayerSales-URL-Musters: HTTP 403.
+    Das bestätigt nicht, dass diese alte URL heute noch ein gültiger API-Pfad ist.
+  Parse.bot get_fc27_sales_history ohne Schlüssel: HTTP 401, API-Key erforderlich.
+  Anakin PGP-Aktion ohne Schlüssel: HTTP 401, API-Key erforderlich.
+
+Am 13.10.2026 war Messi beim Fortsetzen offline. Die neue Integration wurde
+deshalb noch NICHT auf Messi eingespielt, mit aktuellen Preisen geprüft oder
+dort im Browser abgenommen. Die Erreichbarkeitsaussagen oben sind datierte
+Messergebnisse, keine Garantie für den heutigen oder dauerhaften Zugang.
+
+Was die App daraus macht:
+- Ausschließlich direkte FUTBIN-FC27-PS-JSON-Daten für die Budgetauswahl.
+- Keine alternativen Provider, kostenpflichtigen API-Aufrufe oder automatischen
+  Käufe. Alte Nachfrage-/Ranking-Fallbacks sind aus dem aktiven Router entfernt.
+- Katalog und Preisantwort müssen dieselbe genaue EA-Ressourcen-ID enthalten.
+  FC26, PC, unbekannte Versionen, unzulässige Preisstufen, veraltete Abrufe
+  und erkannte Reward-/SBC-/Evolutionskarten werden nicht ausgewählt.
+- Preise sind Lowest-BIN-Angebote, keine abgeschlossenen Verkäufe.
+- Games und echte Sales History bleiben unbekannt. Ein Mindestfilter > 0
+  ergibt daher aktuell keine Treffer. Unbekannt wird nicht zu null Verkäufen
+  oder zu einem erfundenen Nachfragewert umgedeutet.
+- Die Liste ist eine Beobachtungsliste. Verkaufsziele und Zielgewinne sind
+  ausdrücklich Rechenziele nach 5 % Steuer, keine Gewinngarantie oder
+  Verkaufswahrscheinlichkeit. Es gibt keine Kauf-Freigabe ohne Nachweise.
+- Abrufe frühestens alle zehn Minuten; 401/403/429 führen zu mindestens einer
+  Stunde Pause. Retry-After und die Pause bleiben über Neustarts erhalten.
+- Unvollständige/fehlgeschlagene Abrufe werden nicht als neue Daten veröffentlicht.
+- Abrufzeit und die unveränderte FUTBIN-Zeitangabe werden getrennt behandelt.
+  Die Zeitzone der FUTBIN-Angabe ist nicht bestätigt.
+- Listen und Quellen-Cache liegen getrennt unter .uv-data/futbin27/ oder UV_DATA_DIR.
+  Alte gemischte Listen/Verkaufshistorien werden nicht als FUTBIN-Daten umbenannt.
+- Der begrenzte Katalogabruf umfasst Ratingbereiche 82 bis 92 mit je bis zu
+  zwei Seiten und maximal 330 separat bepreisten Kandidaten. Er ist kein
+  vollständiger Scan sämtlicher FC27-Karten.
+
+Untersuchte Open-Source-Projekte:
+- https://github.com/daojiAnime/futbin-sdk
+  Bestätigt Muster für getFilteredPlayers/getPlayersPrice auf futbin.org.
+  Ältere Antwortmodelle passen nicht unverändert zum getesteten FC27-JSON.
+  Keine implementierte verlässliche Games-/Sales-Quelle festgestellt.
+- https://github.com/WilgotM/quick-fut-price
+  HTML-basierter Preiszugang; kein Ersatz für blockierte Games/Sales.
+- https://github.com/MarkDyson/futbin-app/blob/main/futbinApi.py
+  Historische FC23/24-Aufrufe, unter anderem getPlayerSales. Das alte Muster
+  ist kein Nachweis für einen heute funktionierenden FC27-Endpunkt.
+Es wurde kein fremdes SDK ungeprüft als neue Datenpipeline übernommen.
+
+Dokumentierte Dienste (am 09.10.2026 geprüft):
+- https://parse.bot/marketplace/1b6234f9-0dfb-4cca-99b4-2d6d37aec6a7/futbin-com-api
+  FC27-Spielerliste, Preis, Market Snapshot und Sales History dokumentiert.
+  Sales History unterscheidet Gebote/Sofortkauf/ungültige bzw. unverkaufte
+  Angebote; eine Preisreihe ist nicht automatisch eine Sales History.
+- https://parse.bot/pricing
+  Begrenzte kostenlose Credits, danach verbrauchsabhängige Tarife.
+- https://anakin.io/catalog/futbin-com
+  PGP-Rankings als act_futbin_com_pgp_rankings über /v1/wire/task dokumentiert.
+  API-Key und Credits erforderlich; keine unbegrenzt kostenlose direkte Quelle.
+- https://www.futbin.com/27/pgp
+  PGP-Spielstatistik ist kein Nachweis abgeschlossener Kartenverkäufe.
+
+Prüfung der vorbereiteten Änderungen:
+  npm run test:uv
+    Unit- und HTTP-Tests für ursprünglichen Allocator, Budget, Quelle, genaue
+    Kartenversion, Filter, Speichern, Recheck/Rebalance, Cache und Abrufpausen.
+  npm run test:ui
+    DOM-Funktionstest mit ausdrücklich synthetischen TEST-FIXTURES und lokaler
+    Test-API. Generierung, Speichern/Öffnen, Recheck, Rebalance, Filter, Details,
+    Suche, fehlende Preise und HTML-Escaping.
+    Dies ersetzt weder einen visuellen Browsercheck noch den Live-Test auf Messi.
+    Benötigt npm install einschließlich devDependencies (jsdom).
+
+Noch vor der Abnahme auf Messi:
+- Verbindung wiederherstellen; Branch und lokale Änderungen prüfen.
+- Den gesicherten Commit ohne Überschreiben neuerer Arbeit übernehmen.
+- Vorhandene lokale App neu starten; echten FUTBIN-Abruf und 95k/100k/300k
+  mit den dann verfügbaren Karten prüfen.
+- Desktop-/schmale Browseransicht sowie Speichern/Öffnen/Prüfen bestätigen.
+- Games/Sales nur dann ergänzen, wenn ein freier, tatsächlich funktionierender
+  Zugang belastbare versions- und plattformgenaue Nachweise liefert.
+
+Main, Hostless, Render und andere Deployments werden durch diesen Zweig
+nicht geändert oder neu gestartet.

@@ -1,8 +1,9 @@
 // FUTBIN-only REST feed: direct JSON catalog/prices, plus optional browser captures.
-// No FUT.GG, Parse, user credentials, proxy rotation or security-challenge evasion.
+// Direct public FUTBIN JSON only; no paid service or alternate provider.
 import express from 'express';
+import { originalUvFutbinPriceFeed } from './futbinFeedInstance.js';
+export { originalUvFutbinPriceFeed, FUTBIN_DATA_DIR } from './futbinFeedInstance.js';
 import { analyzeFutbinConsoleExport } from './futbinConsoleImport.js';
-import { createFutbinDirectFeed } from './futbinDirectFeed.js';
 
 const MAX_CAPTURED = 1000;
 const SNAPSHOT_RETENTION_MS = 24 * 60 * 60 * 1000;
@@ -17,10 +18,10 @@ const parseBudget = input => input === undefined ? 100000 : Number(input);
 const allowLocalOrigin = req => {
   const origin = req.get('origin');
   if (!origin) return true;
-  return /^http:\/\/(?:127\.0\.0\.1|localhost):5187$/.test(origin);
+  return /^http:\/\/(?:127\.0\.0\.1|localhost):518[78]$/.test(origin);
 };
 
-export const originalUvFutbinPriceFeed = createFutbinDirectFeed();
+
 
 export function createFutbinConsoleRouter({
   clock = Date.now, direct = originalUvFutbinPriceFeed

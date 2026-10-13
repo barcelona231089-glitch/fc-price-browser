@@ -35,7 +35,7 @@ function targetProfitRange(buy) {
 
 /**
  * Conservative "buy now" ceiling. It never invents a snipe price miles below
- * the observed market. FUT.GG remains the primary anchor; a matching FUTBIN
+ * the observed market. The supplied market quote is the primary anchor; a matching FUTBIN
  * price and our own recent history can only make the ceiling a little safer.
  */
 export function buildBuyPlan(card, history = null) {
@@ -660,7 +660,7 @@ function normalizedNation(card = {}) {
  *
  * The observed FutStarz 500k / 1m / 3m / 12m lists are used only as a soft
  * portfolio-shape prior. They are NOT a live price source, not copied player
- * picks and never override FUT.GG, PostgreSQL history, risk gates or the total
+ * picks and never override observed quotes, stored history, risk gates or the total
  * budget. The profile keeps our historical requirement: exactly 100 actual
  * portfolio slots when the market can safely support them.
  */
@@ -730,7 +730,7 @@ export function buildBudgetTierProfile(budget, count = 100) {
     softMaxPositionPct,
     specialTargetRatio,
     referenceMode: name.startsWith('FUTSTARZ_') ? 'observed-shape-soft-prior' : 'internal-budget-shape',
-    livePriceSource: 'FUT.GG'
+    livePriceSource: 'FUTBIN'
   };
 }
 
@@ -798,7 +798,7 @@ export function buildBudgetTierScore(card = {}, { budget = null, count = 100, ga
     tags.push('POSITION_SIZE_PENALTY');
   }
   if (ratio >= 0.75 && ratio <= 1.65) tags.push('CORE_PRICE_TIER');
-  if (usage > 0) tags.push('FUTGG_USAGE');
+  if (usage > 0) tags.push('VERIFIED_USAGE');
   if (card?.momentumHit === true) tags.push('MOMENTUM');
 
   score -= risk * 0.34;
@@ -1035,7 +1035,7 @@ export function buildPublicTraderEndgameScore(card = {}, { budget = null, count 
   }
 
   // Old but repeatedly documented manual ÜV practice uses popular leagues and
-  // nations as a tie-breaker. Keep this deliberately small; live FUT.GG demand
+  // nations as a tie-breaker. Keep this deliberately small; verified live demand
   // remains far more important than static league/nation priors.
   const league = normalizedLeague(card);
   if (['premier league', 'laliga', 'la liga', 'serie a', 'bundesliga', 'ligue 1'].some(x => league.includes(x))) {
@@ -1064,7 +1064,7 @@ export function buildPublicTraderEndgameScore(card = {}, { budget = null, count 
  * This deliberately does not scrape or depend on private/premium trader feeds.
  * It translates the strongest publicly observable trading ideas into one score:
  * - Futpepi-style budget suitability / complete portfolio fit
- * - FUT.GG usage + momentum as real demand evidence
+ * - verified usage + momentum, when available, as demand evidence
  * - FUTZIP-style price stability/volatility thinking, implemented with our own
  *   PostgreSQL history, trend and price-activity features
  * - FutStarz-style demand-window/promo awareness
@@ -1128,7 +1128,7 @@ export function buildTraderConsensusScore(card = {}, { budget = null, count = 10
     promoComponent * 0.09;
 
   const tags = [];
-  if (usage > 0) tags.push('FUTGG_USAGE');
+  if (usage > 0) tags.push('VERIFIED_USAGE');
   if (card?.momentumHit === true) tags.push('DEMAND_SPIKE');
   if (stability >= 70 && activity >= 60) tags.push('STABLE_ACTIVE_MARKET');
   if (sale >= 70) tags.push('SELLABILITY');

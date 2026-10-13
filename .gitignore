@@ -1,0 +1,4 @@
+node_modules/
+.uv-data/
+.uv-audit/
+*.log

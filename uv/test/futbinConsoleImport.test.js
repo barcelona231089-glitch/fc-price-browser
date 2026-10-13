@@ -28,7 +28,7 @@ test('actual 4-row screenshot export: console only, no buying despite positive p
 
 test('PC or wrong game or other providers cannot enter market',()=>{
   const result=check([good(), {...good('99'), platform:'pc'},
-    {...good('100'),game:'FC26'}, {...good('101'),source:'FUT.GG'},
+    {...good('100'),game:'FC26'}, {...good('101'),source:'OTHER_PROVIDER'},
     {...good('102'),salesVerified:true}, {...good('103'),priceType:'completed_sale'}]);
   assert.equal(result.freshPlayers,1);
   assert.equal(result.invalidRows,5);
@@ -51,6 +51,6 @@ test('latest capture wins for duplicate player',()=>{
 
 test('malformed exports and budgets fail closed',()=>{
   assert.throws(()=>analyzeFutbinConsoleExport(packet([]),{now:baseTime,budget:1000}),/Budget/);
-  assert.throws(()=>analyzeFutbinConsoleExport({schemaVersion:1,source:'FUT.GG',prices:[]}),/Ungültiger/);
+  assert.throws(()=>analyzeFutbinConsoleExport({schemaVersion:1,source:'OTHER_PROVIDER',prices:[]}),/Ungültiger/);
   assert.equal(check([{...good(),coins:'54000'}]).invalidRows,1);
 });

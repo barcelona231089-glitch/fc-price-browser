@@ -11,19 +11,8 @@ const number = n => Number(n).toLocaleString('de-DE');
 let modeEnabled = false, loading = false;
 let lastFingerprint = '';
 
-function gateLegacyOrders() {
-  platform.value = 'console';
-  platform.disabled = true;
-  generate.disabled = true;
-  generate.title = 'FUTBIN-only: Handelsvorschläge werden erst nach unabhängigen Verkaufssignalen freigegeben';
-  for (const id of ['saveListChoice','loadSavedBtn','savedListSelect','recheckBtn','rebalanceBtn']) {
-    const control = document.getElementById(id);
-    if (control) control.disabled = true;
-  }
-  const note = document.querySelector('.generatorNote');
-  if (note) note.textContent = 'FUTBIN ONLY · FC27 Konsole · automatische PS-Preise · bestehende ÜV-Logik bleibt erhalten · Kaufempfehlungen ohne Verkaufsnachweise gesperrt';
-  const sub = document.querySelector('#tableSub');
-  if (sub && sub.textContent.includes('Noch keine Liste')) sub.textContent = 'Die Original-ÜV-Berechnung bleibt erhalten. FUTBIN-Angebote findest du oben.';
+function setConsolePlatform() {
+  platform.value='console';
 }
 function createCell(content) {
   const el = document.createElement('td');
@@ -78,7 +67,7 @@ async function update() {
     if (!r.ok || data.source !== 'FUTBIN' || data.platform !== 'console') {
       throw new Error(data.error || 'FUTBIN-Preise nicht abrufbar');
     }
-    gateLegacyOrders();
+    setConsolePlatform();
     badge.textContent = 'FUTBIN ONLY · FC27 Konsole';
     const direct = data.directFutbin || {};
     if (direct.active) {
@@ -87,9 +76,9 @@ async function update() {
         (direct.pricedPlayers || 0) + ' bepreist. ';
     } else if (direct.lastError) {
       state.textContent = 'FUTBIN-Zugriff gestört: ' + direct.lastError +
-        '. Kein Wechsel zu FUT.GG; erneuter Versuch erst nach Ablauf der Pause.';
+        '. Erneuter Versuch erst nach Ablauf der Pause.';
     } else {
-      state.textContent = data.freshPlayers + ' frische FUTBIN-PS-Preise, ' +
+      state.textContent = data.freshPlayers + ' kürzlich abgerufene FUTBIN-PS-Preise, ' +
         data.staleRows + ' veraltet, ' + data.affordableListings +
         ' Angebote einzeln innerhalb deines Budgets. ' +
         (direct.nextRefreshAt ? 'Nächster Datenabruf frühestens ' +
