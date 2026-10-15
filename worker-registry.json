@@ -1,7 +1,7 @@
 {
-  "workerUrl": "https://api.trycloudflare.com",
+  "workerUrl": "https://wicked-games-pick.loca.lt",
   "enabled": true,
   "shadowMode": true,
   "productionConfirmed": false,
-  "updatedAt": "2026-10-15T03:11:46Z"
+  "updatedAt": "2026-10-15T03:19:21Z"
 }
