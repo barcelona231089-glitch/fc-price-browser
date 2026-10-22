@@ -1,7 +1,7 @@
 {
-  "workerUrl": "https://api.trycloudflare.com",
+  "workerUrl": "https://thirty-cycles-punch.loca.lt",
   "enabled": true,
   "shadowMode": true,
   "productionConfirmed": false,
-  "updatedAt": "2026-10-22T00:46:59Z"
+  "updatedAt": "2026-10-22T00:50:49Z"
 }
