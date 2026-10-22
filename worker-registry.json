@@ -1,7 +1,7 @@
 {
-  "workerUrl": "https://eager-eagles-fold.loca.lt",
+  "workerUrl": "https://api.trycloudflare.com",
   "enabled": true,
   "shadowMode": true,
   "productionConfirmed": false,
-  "updatedAt": "2026-10-21T22:21:01Z"
+  "updatedAt": "2026-10-22T00:46:59Z"
 }
