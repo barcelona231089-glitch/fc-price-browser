@@ -1,7 +1,7 @@
 {
-  "workerUrl": "https://api.trycloudflare.com",
+  "workerUrl": "https://uses-cassette-bargains-blocking.trycloudflare.com",
   "enabled": true,
   "shadowMode": true,
   "productionConfirmed": false,
-  "updatedAt": "2026-10-23T00:07:58Z"
+  "updatedAt": "2026-10-23T00:11:14Z"
 }
