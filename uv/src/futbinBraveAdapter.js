@@ -126,6 +126,29 @@ function choosePrice(parsed, platform) {
     : Number(parsed?.pricePlayStation);
   return Number.isFinite(value) && value > 0 ? value : null;
 }
+function searchHitResourceId(hit) {
+  const image = hit?.playerImage?.fixed?.url?.image1x || hit?.playerImage?.url || "";
+  const match = String(image).match(/\/players\/(\d+)\.png/i);
+  return match ? String(match[1]) : null;
+}
+
+function choosePublicSearchHit(hits = [], card = {}) {
+  const wantedEa = String(card?.eaId || "");
+  const wantedRating = Number(card?.overall || card?.rating || 0);
+  return [...hits]
+    .map(hit => {
+      let score = 0;
+      if (wantedEa && searchHitResourceId(hit) === wantedEa) score += 100;
+      if (wantedRating > 0 && Number(hit?.ratingSquare?.rating || 0) === wantedRating) score += 40;
+      const wantedName = normalizeSlug(card?.name || "");
+      const hitName = normalizeSlug(hit?.name || "");
+      if (wantedName && hitName === wantedName) score += 60;
+      else if (wantedName && hitName && (hitName.includes(wantedName) || wantedName.includes(hitName))) score += 30;
+      return { hit, score };
+    })
+    .sort((a, b) => b.score - a.score || Number(a.hit?.id || 0) - Number(b.hit?.id || 0))[0]?.hit || null;
+}
+
 async function resolvePlayerUrl(session, card, cfg) {
   if (card?.futbinId) {
     const slug = normalizeSlug(card?.slug || card?.name || "");
@@ -134,6 +157,31 @@ async function resolvePlayerUrl(session, card, cfg) {
 
   const name = String(card?.name || "").trim();
   if (!name) return null;
+
+  try {
+    const query = new URLSearchParams({
+      targetPage: "PLAYER_PAGE",
+      query: name,
+      year: "27",
+      evolutions: "false"
+    });
+    const response = await fetch(`https://www.futbin.com/players/search?${query.toString()}`, {
+      headers: { accept: "application/json", "user-agent": "Mozilla/5.0 FCTraderBrain/27" }
+    });
+    if (response.ok) {
+      const hits = await response.json();
+      const best = choosePublicSearchHit(Array.isArray(hits) ? hits : [], card);
+      const locationUrl = best?.location?.url;
+      if (locationUrl) return /^https?:\/\//i.test(locationUrl) ? locationUrl : `https://www.futbin.com${locationUrl}`;
+      if (best?.id) {
+        const slug = normalizeSlug(best?.name || name);
+        return `https://www.futbin.com/27/player/${encodeURIComponent(String(best.id))}${slug ? `/${slug}` : ""}`;
+      }
+    }
+  } catch {
+    // Public JSON search is optional. Fall back to the visible player list page.
+  }
+
   await session.navigate(`https://www.futbin.com/27/players?search=${encodeURIComponent(name)}`, cfg.pageWaitMs);
   const html = await session.html();
   const candidates = parseFutbinSearchHtml(html, card, "27");
