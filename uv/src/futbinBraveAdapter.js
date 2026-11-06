@@ -1,5 +1,6 @@
-import { parseFutbinPlayerHtml, parseFutbinSearchHtml, parseFutbinMarketHtml } from "../../futbinMarketV1064.js";
+import { parseFutbinPlayerHtml, parseFutbinSearchHtml } from "../../futbinMarketV1064.js";
 import { extractFutbinStructuredEvidence } from "./futbinEvidence.js";
+import { buildFutbinVisibleMarketExpression, parseFutbinVisibleMarketSnapshot } from "./futbinVisibleMarket.js";
 
 const SOURCE = "FUTBIN_BRAVE_PUBLIC_FC27";
 const cache = new Map();
@@ -223,27 +224,39 @@ export async function getFutbinBraveCards(cards = [], platform = "console", opti
       const html = await session.html();
       const parsed = parseFutbinPlayerHtml(html);
       const value = resultFromParsed(card, parsed, url, platform);
+      const gamesObserved = platform === "pc" ? value.gamesPlayedPc : value.gamesPlayedConsole;
+      value.evidence = extractFutbinStructuredEvidence({ games: gamesObserved }, value.price);
 
       if (options.includeSalesHistory && value.id) {
-        const salesPlatform = platform === "pc" ? "pc" : "ps";
-        const salesSlug = normalizeSlug(card?.slug || value.name || card?.name || "");
-        const salesUrl = `https://www.futbin.com/27/sales/${encodeURIComponent(String(value.id))}${salesSlug ? `/${salesSlug}` : ""}?platform=${salesPlatform}`;
+        const marketUrl = `${String(url).replace(/\/$/, "")}/market`;
         try {
-          await session.navigate(salesUrl, cfg.pageWaitMs);
-          const salesHtml = await session.html();
-          const market = parseFutbinMarketHtml(salesHtml);
-          const salesHistory = (market?.sales || []).map(row => ({
-            date: row.observedAt,
-            listed_for: row.listedPrice,
-            sold_for: row.soldPrice,
-            status: row.sold ? "sold" : "unsold",
-            ea_tax: row.eaTax,
-            net_price: row.netPrice,
-            type: row.type
-          }));
-          value.evidence = extractFutbinStructuredEvidence({ sales_history: salesHistory }, value.price);
-          value.salesHistoryUrl = salesUrl;
-          value.salesHistoryRows = salesHistory.length;
+          await session.navigate(marketUrl, cfg.pageWaitMs);
+          const snapshot = await session.evaluate(buildFutbinVisibleMarketExpression(value.id, platform));
+          const visibleMarket = parseFutbinVisibleMarketSnapshot(snapshot, value.price);
+          const gamesEvidence = value.evidence || {};
+
+          if (Number(visibleMarket.lowestListingPrice) > 0) {
+            value.price = Number(visibleMarket.lowestListingPrice);
+            if (platform === "pc") value.pricePc = value.price;
+            else value.priceConsole = value.price;
+          }
+
+          value.evidence = {
+            ...gamesEvidence,
+            ...visibleMarket.evidence,
+            gamesAvailable: gamesEvidence.gamesAvailable === true,
+            futbinGamesCount: gamesEvidence.futbinGamesCount ?? null,
+            futbinGamesScore: gamesEvidence.futbinGamesScore ?? null,
+            futbinPopularRank: gamesEvidence.futbinPopularRank ?? value.popularRank ?? null
+          };
+          value.marketUrl = marketUrl;
+          value.salesHistoryUrl = marketUrl;
+          value.currentListings = visibleMarket.listingPrices;
+          value.listingsObserved = visibleMarket.listingPrices.length;
+          value.latestSales = visibleMarket.latestSales;
+          value.salesHistoryRows = visibleMarket.latestSales.length;
+          value.salesEvidenceSource = "FUTBIN_VISIBLE_MARKET_PAGE";
+          value.sourceUpdatedLabel = visibleMarket.sourceUpdatedLabel;
         } catch (salesError) {
           const salesMessage = String(salesError?.message || salesError);
           value.salesEvidenceReason = salesMessage;
