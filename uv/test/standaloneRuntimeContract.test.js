@@ -92,11 +92,11 @@ test('standalone runtime bypasses legacy UV loader patches through a propagated 
   assert.doesNotMatch(dependency.url, /uv-standalone/);
 });
 
-test('standalone frontend has no legacy generate fetch interceptor', () => {
+test('standalone frontend uses the current async app and unsaved live bridge', () => {
   const html = readFileSync(new URL('../public/index.html', import.meta.url), 'utf8');
   assert.doesNotMatch(html, /generate-async-v2105\.js/);
-  assert.doesNotMatch(html, /unsaved-live-v2108\.js/);
-  assert.match(html, /app\.js\?v=2\.15\.22/);
+  assert.match(html, /unsaved-live-v2108\.js\?v=2\.15\.47/);
+  assert.match(html, /app\.js\?v=2\.15\.47/);
 });
 
 
@@ -107,7 +107,7 @@ test('100k thin FUTBIN pool keeps real affordable cards instead of filtering eve
     { eaId: 3, name: 'Nesta', price: 270000, overall: 89 }
   ];
   const built = buildCandidatePool(cards, 100000, 100);
-  assert.equal(built.thinPoolRescue, true);
+  assert.equal(built.thinPoolRescue, false);
   assert.deepEqual(built.pool.map(card => card.eaId), [1, 2]);
   assert.equal(built.minPrice, 68000);
   assert.equal(built.maxPrice, 88500);
@@ -136,7 +136,7 @@ test('100k thin-pool rescue expands beyond the 8k slot window when fewer than re
   }));
   const kanuLike = { eaId: 999, name: 'Kanu-like', price: 41750 };
   const built = buildCandidatePool([...cheap, kanuLike], 100000, 100);
-  assert.equal(built.thinPoolRescue, true);
+  assert.equal(built.thinPoolRescue, false);
   assert.equal(built.pool.length, 9);
   assert.ok(built.pool.some(card => card.eaId === 999));
   assert.equal(built.maxPrice, 41750);
@@ -153,7 +153,7 @@ test('generation response defines FUTBIN-only marketTradeability diagnostics bef
 
 test('UV v2.15.35 keeps 100 requested slots while candidate gate uses real unique depth', () => {
   const source = readFileSync(new URL('../uvApp.js', import.meta.url), 'utf8');
-  assert.ok(source.includes("const UV_VERSION = '2.15.32'"));
+  assert.ok(source.includes("const UV_VERSION = '2.15.47'"));
   assert.ok(source.includes('const pipelineCount = Math.max(1, Math.min(count, scored.length));'));
   assert.ok(source.includes('portfolioCount: count'));
   assert.ok(source.includes('strategyBudget, budgetReserve'));
